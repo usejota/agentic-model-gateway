@@ -5,11 +5,11 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 from dotenv import dotenv_values
 from pydantic import Field, field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from .constants import HTTP_CONNECT_TIMEOUT_DEFAULT
 from .nim import NimSettings
@@ -307,6 +307,17 @@ class Settings(BaseSettings):
     # (`X-Admin-Token` or `Authorization: Bearer ...`). Set via env
     # `ADMIN_API_TOKEN`; intentionally not editable through the admin UI itself.
     admin_api_token: str = Field(default="", validation_alias="ADMIN_API_TOKEN")
+    # Optional per-user proxy tokens for per-user audit logging. When set, each
+    # token authenticates as a named identity so logs can attribute a request to
+    # an individual. The shared ``anthropic_auth_token`` (if set) keeps working.
+    #
+    # Format (env ``PROXY_USER_TOKENS``): comma-separated ``name:token`` pairs,
+    # e.g. ``alice:tok-a,bob:tok-b``. A JSON object mapping name->token is also
+    # accepted, e.g. ``{"alice": "tok-a", "bob": "tok-b"}``. The token itself may
+    # contain colons (only the first colon splits name from token in pair form).
+    proxy_user_tokens: Annotated[dict[str, str], NoDecode] = Field(
+        default_factory=dict, validation_alias="PROXY_USER_TOKENS"
+    )
 
     # Handle empty strings for optional string fields
     @field_validator(
@@ -334,6 +345,55 @@ class Settings(BaseSettings):
         if v == "" or v is None:
             return None
         return v
+
+    @field_validator("proxy_user_tokens", mode="before")
+    @classmethod
+    def parse_proxy_user_tokens(cls, v: Any) -> Any:
+        """Parse per-user proxy tokens from a string or pass through a mapping.
+
+        Accepts either a JSON object string (``{"alice": "tok-a"}``) or a
+        comma-separated list of ``name:token`` pairs (``alice:tok-a,bob:tok-b``).
+        Only the first colon in each pair splits name from token, so tokens may
+        themselves contain colons. Blank entries and surrounding whitespace are
+        ignored. An empty/blank value yields an empty mapping (no-op).
+        """
+        if v is None or v == "":
+            return {}
+        if isinstance(v, Mapping):
+            return {str(k).strip(): str(val).strip() for k, val in v.items()}
+        if not isinstance(v, str):
+            return v
+
+        text = v.strip()
+        if not text:
+            return {}
+        if text.startswith("{"):
+            import json
+
+            parsed = json.loads(text)
+            if not isinstance(parsed, Mapping):
+                raise ValueError("PROXY_USER_TOKENS JSON must be an object")
+            return {str(k).strip(): str(val).strip() for k, val in parsed.items()}
+
+        result: dict[str, str] = {}
+        for pair in text.split(","):
+            entry = pair.strip()
+            if not entry:
+                continue
+            if ":" not in entry:
+                raise ValueError(
+                    f"Invalid PROXY_USER_TOKENS entry {entry!r}; expected 'name:token'"
+                )
+            name, token = entry.split(":", 1)
+            name = name.strip()
+            token = token.strip()
+            if not name or not token:
+                raise ValueError(
+                    f"Invalid PROXY_USER_TOKENS entry {entry!r}; "
+                    "name and token must be non-empty"
+                )
+            result[name] = token
+        return result
 
     @property
     def claude_workspace(self) -> str:
