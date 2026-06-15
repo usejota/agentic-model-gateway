@@ -20,6 +20,7 @@ spec:
       name: fcc-provider-key
   providerConfigRef:
     name: default
+  deletionPolicy: Orphan
 ---
 # Allow the proxy SA to write Cloud Logging entries (loguru -> journald -> Cloud
 # Logging). Project-level is the supported scope for this role.
@@ -38,3 +39,50 @@ spec:
     member: "" # patched per-env: serviceAccount:fcc-sa@<project>.iam.gserviceaccount.com
   providerConfigRef:
     name: default
+  deletionPolicy: Orphan
+---
+# ACCESS CONTROL (declarative) — instance-level IAM gating who may reach the VM.
+# Tunnel users: the eng group may open IAP TCP tunnels to the proxy. This is the
+# entire access surface — not in the group => IAP rejects before any byte reaches
+# the proxy. See domain_docs/networking.md / free-claude-code-gcp-plan.md §4.
+apiVersion: compute.gcp.upbound.io/v1beta1
+kind: InstanceIAMMember
+metadata:
+  name: fcc-iap-tunnel-users
+  namespace: crossplane-system
+  labels:
+    service: free-claude-code
+    managed-by: crossplane
+spec:
+  forProvider:
+    project: "" # patched per-env
+    zone: "" # patched per-env
+    instanceNameRef:
+      name: fcc-proxy
+    role: roles/iap.tunnelResourceAccessor
+    member: "" # patched per-env: group:eng-claude@jota.ai
+  providerConfigRef:
+    name: default
+  deletionPolicy: Orphan
+---
+# Admin SSH: a smaller admins group gets OS Login on the VM (SSH over IAP for
+# config/maintenance). Gated by OS Login + IAM, not SSH keys. See security.md #10.
+apiVersion: compute.gcp.upbound.io/v1beta1
+kind: InstanceIAMMember
+metadata:
+  name: fcc-oslogin-admins
+  namespace: crossplane-system
+  labels:
+    service: free-claude-code
+    managed-by: crossplane
+spec:
+  forProvider:
+    project: "" # patched per-env
+    zone: "" # patched per-env
+    instanceNameRef:
+      name: fcc-proxy
+    role: roles/compute.osLogin
+    member: "" # patched per-env: group:eng-claude-admins@jota.ai
+  providerConfigRef:
+    name: default
+  deletionPolicy: Orphan

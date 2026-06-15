@@ -18,6 +18,7 @@ spec:
       name: fcc-network
   providerConfigRef:
     name: default
+  deletionPolicy: Orphan
 ---
 # Cloud NAT — outbound egress for the VM (no external IP) to reach the provider API.
 # Mirrors the gke-cluster composition RouterNAT spec (AUTO_ONLY).
@@ -41,3 +42,4 @@ spec:
       name: fcc-router
   providerConfigRef:
     name: default
+  deletionPolicy: Orphan

@@ -29,6 +29,7 @@ spec:
       name: fcc-network
   providerConfigRef:
     name: default
+  deletionPolicy: Orphan
 ---
 # Tag-scoped firewall: allow IAP SSH (admin plane) to the admin tag only.
 apiVersion: compute.gcp.upbound.io/v1beta1
@@ -57,3 +58,4 @@ spec:
       name: fcc-network
   providerConfigRef:
     name: default
+  deletionPolicy: Orphan

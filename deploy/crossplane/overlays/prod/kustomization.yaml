@@ -16,6 +16,12 @@ kind: Kustomization
 resources:
   - ../../base
 
+# Octopus convention: tag every resource with its environment.
+labels:
+  - pairs:
+      environment: prod
+    includeSelectors: false
+
 patches:
   # --- Network ---
   - target:
@@ -130,3 +136,31 @@ patches:
       - op: replace
         path: /spec/forProvider/metadata/PROVIDER_KEY_SECRET_RESOURCE
         value: projects/<PROJECT>/secrets/fcc-provider-key/versions/latest
+
+  # --- Access-control IAM (instance-level) ---
+  - target:
+      kind: InstanceIAMMember
+      name: fcc-iap-tunnel-users
+    patch: |-
+      - op: replace
+        path: /spec/forProvider/project
+        value: <PROJECT>
+      - op: replace
+        path: /spec/forProvider/zone
+        value: <ZONE>
+      - op: replace
+        path: /spec/forProvider/member
+        value: group:eng-claude@jota.ai
+  - target:
+      kind: InstanceIAMMember
+      name: fcc-oslogin-admins
+    patch: |-
+      - op: replace
+        path: /spec/forProvider/project
+        value: <PROJECT>
+      - op: replace
+        path: /spec/forProvider/zone
+        value: <ZONE>
+      - op: replace
+        path: /spec/forProvider/member
+        value: group:eng-claude-admins@jota.ai

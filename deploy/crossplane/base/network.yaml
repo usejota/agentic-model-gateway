@@ -20,6 +20,7 @@ spec:
     autoCreateSubnetworks: false
   providerConfigRef:
     name: default
+  deletionPolicy: Orphan
 ---
 # Subnetwork with Private Google Access so the VM (no external IP) can reach
 # Google APIs (Secret Manager, Cloud Logging). Explicit CIDR avoids overlap with
@@ -44,3 +45,4 @@ spec:
       name: fcc-network
   providerConfigRef:
     name: default
+  deletionPolicy: Orphan

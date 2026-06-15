@@ -54,3 +54,4 @@ spec:
       - fcc-admin
   providerConfigRef:
     name: default
+  deletionPolicy: Orphan

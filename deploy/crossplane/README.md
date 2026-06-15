@@ -109,6 +109,39 @@ fully-declarative access control is wanted.
 - [ ] IAP quota raised; IAP group + OS Login IAM bound
 - [ ] End-to-end: `deploy/fcc-connect` → prompt streams; admin UI requires `ADMIN_API_TOKEN`; per-user token audit line in JSON logs
 
+## Octopus conventions: what's followed, what diverges
+
+Checked against `octopus/infra-as-code` practices:
+
+| Practice | Here |
+|----------|------|
+| Upbound `provider-gcp-*`, `ProviderConfig: default` + Workload Identity | ✅ followed |
+| Raw MR + kustomize base/overlays | ✅ followed |
+| `deletionPolicy: Orphan` on every MR | ✅ followed (all 13 MRs) |
+| `service:` + `environment:` labels on all resources | ✅ followed (env via overlay `labels:`) |
+| Least-privilege per-workload GSA | ✅ + stricter: **secret-LEVEL** accessor (marble uses project-level) |
+| Secret value out-of-band (never in git) | ✅ followed |
+| Fully declarative access-control IAM | ✅ `InstanceIAMMember` for IAP tunnel users + OS Login admins |
+| **Secret delivery via ESO** (SecretStore + ExternalSecret, `gcpsm` provider) | ⚠️ **N/A — intentional divergence** (see below) |
+| Vault (PKI/mTLS infra) | ⚠️ N/A — not applicable to a single proxy VM (see below) |
+| `deletion_protection` on stateful infra | n/a — no GKE/CloudSQL here; Orphan covers the VM/secret |
+
+### Why no ESO / Vault (intentional divergence)
+Octopus delivers app secrets with **External Secrets Operator** (`gcpsm` SecretStore +
+ExternalSecret → k8s Secret → pod env), and runs **Vault** purely for PKI/mTLS infra —
+neither is used for workload secret delivery. **Both assume workloads run as pods in
+GKE.** This proxy runs on a **standalone GCE VM, not GKE** — there is no kubelet to mount
+a k8s Secret and no Workload Identity pod binding. The correct VM-native analog of the
+ESO pattern is exactly what's implemented: the VM's GSA (`fcc-sa`) reads the secret
+**directly from Secret Manager at runtime** via `PROVIDER_KEY_SECRET_RESOURCE` (in-memory,
+never on disk) — same source of truth (GCP Secret Manager), same least-privilege WI/SA
+auth, minus the k8s indirection that doesn't exist on a VM. If the proxy is ever moved
+onto GKE, switch to the ESO SecretStore/ExternalSecret pattern to match octopus exactly.
+
+Vault PKI is not introduced because there is no in-VM mTLS requirement here — transport
+security is provided by the IAP tunnel (see `domain_docs/security.md` #6); adding a Vault
+dependency for one VM would be unjustified scope.
+
 ## Notes / limitations
 
 - **Raw-MR cross references** use explicit `*Ref.name` (the MR `metadata.name`), not
