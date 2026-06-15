@@ -4,6 +4,12 @@ Deploys one shared `free-claude-code` proxy on a GCE VM with **no external IP**,
 reached by every engineer's Claude Code over **GCP IAP TCP forwarding**. Access
 is controlled entirely by IAP + IAM group membership.
 
+> **Infra is now provisioned declaratively via Crossplane** —
+> see [`deploy/crossplane/`](crossplane/README.md). That is the **primary** source of
+> truth (matches the org's `octopus` Crossplane setup). The `provision.sh` script below
+> is kept as a **reference / fallback** for environments without the Crossplane control
+> plane. `startup.sh` and `fcc-connect` are used by **both** paths.
+
 These scripts are the runnable form of the design in:
 
 - [`domain_docs/free-claude-code-gcp-plan.md`](../domain_docs/free-claude-code-gcp-plan.md) — overall plan, architecture, sequence.
@@ -15,8 +21,9 @@ These scripts are the runnable form of the design in:
 
 | File | Role |
 |---|---|
-| `provision.sh` | Provisions all GCP infra (VPC, NAT, firewall, SA, secret, VM, IAP IAM). Idempotent-ish; re-runnable. |
-| `startup.sh` | VM startup script. Installs the proxy under systemd. Provider key is fetched at runtime / via tmpfs — never written to persistent disk. |
+| `crossplane/` | **Primary.** GCP infra as Crossplane Managed Resources + kustomize overlays. See [`crossplane/README.md`](crossplane/README.md). |
+| `provision.sh` | **Reference/fallback.** Imperative `gcloud` provisioning of the same infra (VPC, NAT, firewall, SA, secret, VM, IAP IAM). Re-runnable. |
+| `startup.sh` | VM startup script (used by both paths). Installs the proxy under systemd. Provider key is fetched at runtime / via tmpfs — never written to persistent disk. |
 | `fcc-connect` | Client wrapper engineers run. Opens the IAP tunnel and launches Claude Code. |
 
 ## Architecture

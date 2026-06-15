@@ -1,0 +1,56 @@
+---
+# The proxy VM. Hardening (domain_docs/security.md, networking.md, cloud_infra.md):
+#   - NO accessConfig under networkInterface  => no external IP (private only).
+#   - dedicated fcc-sa (serviceAccountRef)    => least privilege via secret-level IAM.
+#   - tags fcc-proxy/fcc-admin                => matched by the tag-scoped firewalls.
+#   - enable-oslogin: "TRUE"                  => SSH gated by OS Login + IAM, not keys.
+#   - PROVIDER_KEY_SECRET_RESOURCE metadata   => app fetches the key at runtime
+#                                                (key never persisted to disk).
+# metadataStartupScript: paste the contents of deploy/startup.sh here (or host it and
+# use metadataStartupScriptUrl). The overlay or operator injects it — see
+# deploy/crossplane/README.md. startup.sh reads the fcc-* / PROVIDER_KEY_* metadata below.
+apiVersion: compute.gcp.upbound.io/v1beta1
+kind: Instance
+metadata:
+  name: fcc-proxy
+  namespace: crossplane-system
+  labels:
+    service: free-claude-code
+    managed-by: crossplane
+  annotations:
+    crossplane.io/external-name: fcc-proxy
+spec:
+  forProvider:
+    project: "" # patched per-env
+    zone: "" # patched per-env (e.g. southamerica-east1-a)
+    machineType: e2-standard-2
+    # OS Login + the Secret Manager resource the app reads at runtime.
+    metadata:
+      enable-oslogin: "TRUE"
+      # PROVIDER_KEY_SECRET_RESOURCE is patched per-env to the full resource name:
+      #   projects/<project>/secrets/fcc-provider-key/versions/latest
+      PROVIDER_KEY_SECRET_RESOURCE: ""
+      fcc-secret-name: fcc-provider-key
+      fcc-port: "8082"
+    # Paste deploy/startup.sh contents here (kept empty in base; see README).
+    metadataStartupScript: ""
+    bootDisk:
+      - initializeParams:
+          - image: projects/debian-cloud/global/images/family/debian-12
+            size: 20
+    networkInterface:
+      - subnetworkRef:
+          name: fcc-subnetwork
+        # No accessConfig block => the VM gets no external/public IP.
+    serviceAccount:
+      - serviceAccountRef:
+          name: fcc-sa
+        # API scope is broad by convention; effective access is constrained by the
+        # SA's IAM (secret-level accessor + logWriter only). See security.md #2.
+        scopes:
+          - https://www.googleapis.com/auth/cloud-platform
+    tags:
+      - fcc-proxy
+      - fcc-admin
+  providerConfigRef:
+    name: default

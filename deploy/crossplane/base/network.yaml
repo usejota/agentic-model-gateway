@@ -1,0 +1,46 @@
+---
+# VPC network for the free-claude-code (fcc) proxy.
+# Mirrors octopus infra-as-code/platform/compositions/gke-cluster/composition.yaml
+# (Network + Subnetwork specs). Raw Managed Resource style (marble), so cross-resource
+# references use explicit *Ref.name (the Crossplane MR metadata.name), NOT
+# matchControllerRef (which only works inside a Composition).
+apiVersion: compute.gcp.upbound.io/v1beta1
+kind: Network
+metadata:
+  name: fcc-network
+  namespace: crossplane-system
+  labels:
+    service: free-claude-code
+    managed-by: crossplane
+  annotations:
+    crossplane.io/external-name: vpc-fcc
+spec:
+  forProvider:
+    project: "" # patched per-env in overlays
+    autoCreateSubnetworks: false
+  providerConfigRef:
+    name: default
+---
+# Subnetwork with Private Google Access so the VM (no external IP) can reach
+# Google APIs (Secret Manager, Cloud Logging). Explicit CIDR avoids overlap with
+# peered / shared-VPC ranges. See domain_docs/networking.md (BLOCKER #1, #6).
+apiVersion: compute.gcp.upbound.io/v1beta1
+kind: Subnetwork
+metadata:
+  name: fcc-subnetwork
+  namespace: crossplane-system
+  labels:
+    service: free-claude-code
+    managed-by: crossplane
+  annotations:
+    crossplane.io/external-name: sn-fcc
+spec:
+  forProvider:
+    project: "" # patched per-env
+    region: "" # patched per-env
+    ipCidrRange: 10.128.0.0/20
+    privateIpGoogleAccess: true
+    networkRef:
+      name: fcc-network
+  providerConfigRef:
+    name: default

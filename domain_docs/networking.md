@@ -1,5 +1,10 @@
 # Networking Domain Plan for free-claude-code GCP Deployment
 
+> **Implementation note:** the network/router/NAT/firewall described here are now
+> defined as Crossplane Managed Resources in
+> [`deploy/crossplane/`](../deploy/crossplane/README.md) (primary). The `gcloud`
+> commands below are the reference / fallback form (`deploy/provision.sh`).
+
 ## Overview
 Address networking hardening items identified in the networking review from teammates.
 

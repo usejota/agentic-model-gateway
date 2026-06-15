@@ -1,0 +1,59 @@
+---
+# Tag-scoped firewall: allow IAP TCP forwarding to the proxy port only.
+# Source range 35.235.240.0/20 is GCP's IAP forwarding CIDR. Target tag fcc-proxy
+# scopes the rule to the proxy VM only (not all VPC instances).
+# See domain_docs/networking.md (HIGH #3) and security.md (#7 plane separation).
+apiVersion: compute.gcp.upbound.io/v1beta1
+kind: Firewall
+metadata:
+  name: fcc-allow-iap-proxy
+  namespace: crossplane-system
+  labels:
+    service: free-claude-code
+    managed-by: crossplane
+  annotations:
+    crossplane.io/external-name: allow-iap-fcc-proxy
+spec:
+  forProvider:
+    project: "" # patched per-env
+    direction: INGRESS
+    sourceRanges:
+      - 35.235.240.0/20
+    allow:
+      - protocol: tcp
+        ports:
+          - "8082"
+    targetTags:
+      - fcc-proxy
+    networkRef:
+      name: fcc-network
+  providerConfigRef:
+    name: default
+---
+# Tag-scoped firewall: allow IAP SSH (admin plane) to the admin tag only.
+apiVersion: compute.gcp.upbound.io/v1beta1
+kind: Firewall
+metadata:
+  name: fcc-allow-iap-ssh
+  namespace: crossplane-system
+  labels:
+    service: free-claude-code
+    managed-by: crossplane
+  annotations:
+    crossplane.io/external-name: allow-iap-fcc-ssh
+spec:
+  forProvider:
+    project: "" # patched per-env
+    direction: INGRESS
+    sourceRanges:
+      - 35.235.240.0/20
+    allow:
+      - protocol: tcp
+        ports:
+          - "22"
+    targetTags:
+      - fcc-admin
+    networkRef:
+      name: fcc-network
+  providerConfigRef:
+    name: default

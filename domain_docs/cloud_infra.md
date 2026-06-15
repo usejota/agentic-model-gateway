@@ -1,5 +1,10 @@
 # Cloud Infrastructure Domain Plan for free-claude-code GCP Deployment
 
+> **Implementation note:** this infra is now defined declaratively as Crossplane
+> Managed Resources in [`deploy/crossplane/`](../deploy/crossplane/README.md) (primary),
+> mirroring the org's `octopus` setup. The `gcloud` commands below are the reference /
+> fallback form (`deploy/provision.sh`).
+
 ## Overview
 Focus on GCP-specific infrastructure components: VM configuration, disks, images, networking prerequisites (refer to networking domain), and service account management.
 

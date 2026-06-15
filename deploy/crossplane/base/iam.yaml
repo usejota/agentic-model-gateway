@@ -1,0 +1,40 @@
+---
+# Secret-LEVEL IAM binding (least privilege): grant the proxy SA accessor on the
+# single provider-key secret only — NOT a project-wide secretmanager role.
+# This is stricter than octopus marble (which uses ProjectIAMMember). See
+# domain_docs/security.md (#2, #9). secretIdRef points at the Secret MR by name.
+apiVersion: secretmanager.gcp.upbound.io/v1beta1
+kind: SecretIAMMember
+metadata:
+  name: fcc-sa-secret-accessor
+  namespace: crossplane-system
+  labels:
+    service: free-claude-code
+    managed-by: crossplane
+spec:
+  forProvider:
+    project: "" # patched per-env
+    role: roles/secretmanager.secretAccessor
+    member: "" # patched per-env: serviceAccount:fcc-sa@<project>.iam.gserviceaccount.com
+    secretIdRef:
+      name: fcc-provider-key
+  providerConfigRef:
+    name: default
+---
+# Allow the proxy SA to write Cloud Logging entries (loguru -> journald -> Cloud
+# Logging). Project-level is the supported scope for this role.
+apiVersion: cloudplatform.gcp.upbound.io/v1beta1
+kind: ProjectIAMMember
+metadata:
+  name: fcc-sa-log-writer
+  namespace: crossplane-system
+  labels:
+    service: free-claude-code
+    managed-by: crossplane
+spec:
+  forProvider:
+    project: "" # patched per-env
+    role: roles/logging.logWriter
+    member: "" # patched per-env: serviceAccount:fcc-sa@<project>.iam.gserviceaccount.com
+  providerConfigRef:
+    name: default

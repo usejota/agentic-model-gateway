@@ -1,0 +1,43 @@
+---
+# Cloud Router — prerequisite for Cloud NAT. See domain_docs/networking.md (HIGH #4).
+apiVersion: compute.gcp.upbound.io/v1beta1
+kind: Router
+metadata:
+  name: fcc-router
+  namespace: crossplane-system
+  labels:
+    service: free-claude-code
+    managed-by: crossplane
+  annotations:
+    crossplane.io/external-name: rt-fcc
+spec:
+  forProvider:
+    project: "" # patched per-env
+    region: "" # patched per-env
+    networkRef:
+      name: fcc-network
+  providerConfigRef:
+    name: default
+---
+# Cloud NAT — outbound egress for the VM (no external IP) to reach the provider API.
+# Mirrors the gke-cluster composition RouterNAT spec (AUTO_ONLY).
+apiVersion: compute.gcp.upbound.io/v1beta1
+kind: RouterNAT
+metadata:
+  name: fcc-nat
+  namespace: crossplane-system
+  labels:
+    service: free-claude-code
+    managed-by: crossplane
+  annotations:
+    crossplane.io/external-name: nat-fcc
+spec:
+  forProvider:
+    project: "" # patched per-env
+    region: "" # patched per-env
+    natIpAllocateOption: AUTO_ONLY
+    sourceSubnetworkIpRangesToNat: ALL_SUBNETWORKS_ALL_IP_RANGES
+    routerRef:
+      name: fcc-router
+  providerConfigRef:
+    name: default
