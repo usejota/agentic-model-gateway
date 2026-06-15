@@ -302,6 +302,11 @@ class Settings(BaseSettings):
     anthropic_auth_token: str = Field(
         default="", validation_alias="ANTHROPIC_AUTH_TOKEN"
     )
+    # Optional admin UI secret. When empty, the admin UI stays loopback-only.
+    # When set, every /admin route additionally requires a matching token
+    # (`X-Admin-Token` or `Authorization: Bearer ...`). Set via env
+    # `ADMIN_API_TOKEN`; intentionally not editable through the admin UI itself.
+    admin_api_token: str = Field(default="", validation_alias="ADMIN_API_TOKEN")
 
     # Handle empty strings for optional string fields
     @field_validator(
