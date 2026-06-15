@@ -14,7 +14,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from .constants import HTTP_CONNECT_TIMEOUT_DEFAULT
 from .nim import NimSettings
 from .paths import default_claude_workspace_path, managed_env_path
+from .provider_catalog import PROVIDER_CATALOG
 from .provider_ids import SUPPORTED_PROVIDER_IDS
+from .secret_source import SecretManagerError, fetch_secret
 
 
 @dataclass(frozen=True, slots=True)
@@ -303,6 +305,21 @@ class Settings(BaseSettings):
         default="", validation_alias="ANTHROPIC_AUTH_TOKEN"
     )
 
+    # ==================== GCP Secret Manager (optional) ====================
+    # When set, the proxy resolves the provider API key from Secret Manager at
+    # startup and keeps it in memory instead of reading it from a plaintext
+    # ``.env`` file on disk. Requires the optional ``gcp`` extra.
+    # Value: a version resource, e.g.
+    # ``projects/<project>/secrets/<name>/versions/latest``.
+    provider_key_secret_resource: str = Field(
+        default="", validation_alias="PROVIDER_KEY_SECRET_RESOURCE"
+    )
+    # Settings field to populate with the fetched secret. When empty, the active
+    # provider's credential attribute (derived from ``model``) is used.
+    provider_key_secret_target: str = Field(
+        default="", validation_alias="PROVIDER_KEY_SECRET_TARGET"
+    )
+
     # Handle empty strings for optional string fields
     @field_validator(
         "telegram_bot_token",
@@ -433,6 +450,46 @@ class Settings(BaseSettings):
         dotenv_value = _env_file_override(self.model_config, "ANTHROPIC_AUTH_TOKEN")
         if dotenv_value is not None:
             self.anthropic_auth_token = dotenv_value
+        return self
+
+    def _resolve_secret_target_attr(self) -> str:
+        """Return the Settings attribute name to populate from Secret Manager."""
+        if self.provider_key_secret_target:
+            target = self.provider_key_secret_target
+            if not hasattr(self, target):
+                raise ValueError(
+                    f"PROVIDER_KEY_SECRET_TARGET={target!r} is not a known "
+                    f"settings field."
+                )
+            return target
+
+        descriptor = PROVIDER_CATALOG.get(self.provider_type)
+        if descriptor is None or descriptor.credential_attr is None:
+            raise ValueError(
+                f"Cannot resolve provider key target for provider "
+                f"{self.provider_type!r}; set PROVIDER_KEY_SECRET_TARGET "
+                f"explicitly."
+            )
+        return descriptor.credential_attr
+
+    @model_validator(mode="after")
+    def resolve_provider_key_from_secret_manager(self) -> Settings:
+        """Populate a provider key from GCP Secret Manager when configured.
+
+        No-op when ``PROVIDER_KEY_SECRET_RESOURCE`` is unset, preserving the
+        default disk/env-based behavior.
+        """
+        if not self.provider_key_secret_resource.strip():
+            return self
+
+        target = self._resolve_secret_target_attr()
+        secret = fetch_secret(self.provider_key_secret_resource)
+        if not secret.strip():
+            raise SecretManagerError(
+                f"Secret Manager resource "
+                f"{self.provider_key_secret_resource!r} returned an empty value."
+            )
+        setattr(self, target, secret)
         return self
 
     def uses_process_anthropic_auth_token(self) -> bool:
