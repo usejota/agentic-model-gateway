@@ -17,6 +17,7 @@ from config.settings import Settings
 from config.settings import get_settings as get_cached_settings
 from providers.registry import ProviderRegistry
 
+from .admin_auth import require_admin_token
 from .admin_config import (
     FIELD_BY_KEY,
     load_config_response,
@@ -62,7 +63,12 @@ def _origin_is_local(origin: str | None) -> bool:
 
 
 def require_loopback_admin(request: Request) -> None:
-    """Allow admin access only from the local machine."""
+    """Gate admin access by loopback origin and (when set) an admin token.
+
+    The loopback check is defense-in-depth: it is a no-op for tunneled access
+    (e.g. GCP IAP TCP forwarding) where the tunnel terminates on loopback, so a
+    configured ``ADMIN_API_TOKEN`` provides the real authentication layer.
+    """
 
     client_host = request.client.host if request.client else None
     if not _is_loopback_host(client_host):
@@ -71,6 +77,8 @@ def require_loopback_admin(request: Request) -> None:
     origin = request.headers.get("origin")
     if not _origin_is_local(origin):
         raise HTTPException(status_code=403, detail="Admin UI is local-only")
+
+    require_admin_token(request)
 
 
 def _asset_response(filename: str) -> FileResponse:
