@@ -1,383 +1,379 @@
-# Deploying the free-claude-code proxy to **staging** — a guide for non-experts
+# Deploying the free-claude-code proxy to staging
 
-This walks you through putting the proxy's infrastructure into the Jota **staging**
-GCP environment, and explains *what each thing is* as you go. Take it slowly; you can
-stop after any step. Nothing here changes anything real until **Step 7 (apply)** — every
-step before that is "look but don't touch."
+Audience: you're comfortable with the terminal, git, and general infra, but **new to
+Kubernetes and Crossplane**, and you want the **networking explained rather than assumed**.
+This guide front-loads the two concepts you're missing, then runs the deploy. Skip the
+concept sections if they're old news.
 
----
-
-## The 60-second mental model
-
-You are **not** going to click around the Google Cloud console creating servers. Instead:
-
-1. We already wrote **YAML files** that *describe* the infrastructure we want
-   (a virtual machine, a network, a firewall, etc.). Think of them as a **shopping list**.
-2. Jota's staging cluster runs a tool called **Crossplane**. Crossplane is a robot that
-   reads shopping lists and makes Google Cloud match them. If the list says "one VM with
-   no public IP," Crossplane creates exactly that and keeps it that way.
-3. Your job is to: get the tools, **connect** to that robot, hand it our shopping list,
-   and watch it work.
-
-Key vocabulary (you'll see these words a lot):
-
-| Word | Plain meaning |
-|------|---------------|
-| **GCP** | Google Cloud Platform — Google's servers we rent. |
-| **Crossplane** | The robot inside the cluster that turns YAML into real cloud resources. |
-| **Kubernetes / cluster** | The system Crossplane runs inside. We talk to it with a tool called `kubectl`. |
-| **`kubectl`** | Command-line tool to talk to the cluster. ("kube-control".) |
-| **`gcloud`** | Command-line tool to talk to Google Cloud (log in, open tunnels). |
-| **Manifest / YAML** | A text file describing one piece of infrastructure. |
-| **kustomize / overlay** | A way to take the base shopping list and stamp it with environment-specific values (staging vs prod). |
-| **Managed Resource (MR)** | One item Crossplane manages, e.g. our VM or our firewall. |
-| **Apply** | The verb for "hand the shopping list to the robot." |
-
-The staging values are already filled in for you in
-`deploy/crossplane/overlays/stg/kustomization.yaml`:
-project **`stp-core-dev`**, region **`us-west1`**, zone **`us-west1-a`**.
+Target: GCP project `stp-core-dev`, region `us-west1`, zone `us-west1-a`. Values are already
+baked into `deploy/crossplane/overlays/stg/kustomization.yaml`.
 
 ---
 
-## Before you start: things only a human with access can do
+## Concept 1 — Crossplane in 3 minutes (the part you don't know yet)
 
-These cannot be done from this repo and may need a teammate with GCP admin rights. Ask in
-the infra channel if you're unsure:
+**The problem it solves:** instead of running `gcloud` commands to create a VM, a network,
+a firewall — which is imperative and drifts over time — you *declare* the desired infra as
+Kubernetes objects, and a controller continuously makes GCP match. It's Terraform's job, but
+running as an always-on reconciler inside a cluster instead of a CLI you invoke.
 
-- **You need permission** to use the staging project (`stp-core-dev`) and to reach its
-  cluster. If you've never run `kubectl` against staging, you likely need someone to grant
-  you access first. **This is the most common blocker — sort it out before Step 4.**
-- **The staging GKE control plane is private** (no public address). The good news: staging
-  already runs a **Tailscale** subnet router VM (`tailscale-fw-default-stg`) that bridges
-  your laptop's tailnet to the private staging network — the same way you already reach the
-  PKI group. So instead of a bastion you just need to **be on the company tailnet**
-  (the Tailscale app running and logged in). Step 4 uses this.
-- **Two Google Groups** should exist: `eng-claude@jota.ai` (engineers who may use the
-  proxy) and `eng-claude-admins@jota.ai` (who may SSH in). If they don't exist yet, that's
-  fine — see the note in Step 6.
+**The pieces, mapped to things you know:**
 
-> If any of this is intimidating, that's normal. The safe move is to do Steps 1–3 and 5
-> (all harmless, local-only) yourself, then pair with an infra teammate for Steps 4 and 7.
+- **Kubernetes cluster** — here it's just a *control plane*. We are **not** running the proxy
+  as a pod. The cluster's only job in this story is to host Crossplane. Think of it as "the
+  server where the reconciler lives."
+- **Crossplane** — a set of Kubernetes controllers. You install **providers** (plugins) into
+  it; the GCP providers know how to CRUD GCP resources via the Google APIs.
+- **Managed Resource (MR)** — a Kubernetes custom resource that maps 1:1 to a real cloud
+  resource. `kind: Network` ⇒ a GCP VPC. `kind: Instance` ⇒ a GCE VM. `kind: Firewall` ⇒ a
+  firewall rule. You write these as YAML. The full list of kinds = whatever the installed
+  providers support.
+- **The reconcile loop** — after you `apply` an MR, the controller calls the GCP API to make
+  it exist, then **keeps checking forever**. Two status fields tell you where it is:
+  - `SYNCED=True` — Crossplane successfully talked to GCP about this resource (no API/auth
+    error).
+  - `READY=True` — GCP reports the resource actually exists and is usable.
+  Both `True` = done. This polling model is why "apply" returns instantly but the VM takes a
+  few minutes — you're watching an async controller, not a blocking script.
+- **`ProviderConfig`** — tells the GCP provider *which credentials* to use. Here it's named
+  `default` and uses **Workload Identity** (the cluster's own GCP identity), so there are no
+  JSON keys anywhere. You inherit whatever that identity is allowed to do.
+- **How `gcloud` vs `kubectl` split:** `kubectl` talks to the **cluster** (apply MRs, read
+  status). `gcloud` talks to **GCP directly** (log in, connect to the cluster, set a secret
+  value). You use both, for different things.
 
----
+**kustomize / overlays** — our infra is written once in `base/` with project/region left
+blank, and an *overlay* (`overlays/stg/`) patches in the staging values. `kubectl kustomize`
+renders base+overlay into final YAML. It's templating-by-merge; no separate tool to install,
+it's built into `kubectl`.
 
-## Step 1 — Install the two command-line tools
-
-You already have `git` and `kubectl`. You are **missing `gcloud`** (confirmed on your
-machine). Install it.
-
-**On a Mac with Homebrew** (most Jota laptops have `brew`):
-
-```bash
-brew install --cask google-cloud-sdk
-```
-
-If you don't have Homebrew, use Google's installer instead:
-
-```bash
-curl https://sdk.cloud.google.com | bash
-# then restart your terminal
-```
-
-**Check it worked:**
-
-```bash
-gcloud --version
-kubectl version --client
-```
-
-*What just happened:* you installed the two "remote controls" — `gcloud` talks to Google
-Cloud, `kubectl` talks to the cluster. They don't do anything on their own yet.
+So the whole deploy is: **render YAML (kustomize) → hand it to the cluster (`kubectl apply`)
+→ Crossplane reconciles it into real GCP resources → you watch status until ready.**
 
 ---
 
-## Step 2 — Log in to Google Cloud
+## Concept 2 — The networking (your weak spot, so in full)
+
+Four design choices, each with a *why*:
+
+**1. The VM has no external (public) IP.** A public IP is attack surface. The proxy carries
+banking source code, so we don't give it one. Consequence: nothing on the internet can reach
+it, *and* it can't reach the internet on its own — which the next two points fix.
+
+**2. Cloud NAT (+ Cloud Router) for outbound.** The proxy still needs to call the upstream
+model provider's API (outbound HTTPS). With no public IP, that needs **NAT** — a gateway that
+lets private VMs make outbound connections through a shared external IP, while still accepting
+nothing inbound. Cloud NAT is GCP's managed version; it requires a **Cloud Router** to exist
+first (the router is the control-plane piece NAT attaches to). That's why you see both a
+`Router` and a `RouterNAT` MR. This is outbound-only — it does not make the VM reachable.
+
+**3. Two tag-scoped firewall rules.** Firewall rules in GCP attach to VMs by **network tags**
+(labels on the instance), not by IP. Our VM has tags `fcc-proxy` and `fcc-admin`. One rule
+allows tcp:8082 (the proxy) to instances tagged `fcc-proxy`; another allows tcp:22 (SSH) to
+`fcc-admin`. Both only from the IAP source range `35.235.240.0/20` (Google's range for IAP
+tunneling) — so even the "allowed" traffic must come through Google's IAP, not the open
+internet. Tag-scoping matters because a firewall rule with no target applies to *every* VM in
+the VPC; tags pin it to ours.
+
+**4. How you actually reach it — Tailscale.** Two separate "how do I connect to something
+private" problems exist here; don't conflate them:
+
+  - **Reaching the GKE control plane** (to run `kubectl`). The staging cluster's API endpoint
+    is **private** — it has no public address, only an internal VPC IP. From your laptop you
+    can't route to a VPC-internal IP directly. Staging solves this with a **Tailscale subnet
+    router**: a small VM *inside* the VPC (`tailscale-fw-default-stg`) that runs Tailscale and
+    **advertises the VPC's internal CIDR ranges to the tailnet**. When your laptop is on the
+    same tailnet, Tailscale installs routes for those CIDRs pointing at that VM, so traffic to
+    a VPC-internal IP gets tunneled in. Net effect: with Tailscale up, the private cluster IP
+    becomes reachable as if you were inside the VPC. This is the *same mechanism* you already
+    use to reach the PKI group.
+  - **Reaching the proxy VM** (for end users / you, to use the proxy). The proxy VM itself
+    **joins the tailnet on boot** (our `startup.sh` runs `tailscale up`). So it gets its own
+    `100.x` tailnet address + a MagicDNS name (`fcc-proxy.<tailnet>.ts.net`), and anyone on the
+    tailnet whom the ACL allows can hit it directly — no NAT, no firewall dance, no bastion.
+    That's what `deploy/fcc-connect-tailscale` uses.
+
+  **MagicDNS** = Tailscale's built-in DNS that resolves those `*.ts.net` names to tailnet IPs.
+  **Subnet router** = a tailnet node that forwards traffic for non-Tailscale IPs (the VPC
+  ranges) — that's the forwarder. **Tailnet ACL** = Tailscale's allow-list of who can reach
+  what; it's a *second* access-control layer alongside GCP IAM (a known tradeoff — see the
+  governance note at the end).
+
+  > IAP is still wired as a **fallback** (the firewall rules, `fcc-connect`). With Tailscale
+  > working you won't use it, but it's there for environments without a tailnet.
+
+That's the whole network. Now the steps.
+
+---
+
+## What needs a human with access (do this first)
+
+None of this is in the repo; resolve before Step 4:
+
+1. **GCP access to `stp-core-dev`** and rights to talk to the cluster. If you've never run
+   `kubectl` here, someone with cluster admin grants you a role (typically a GKE RBAC binding).
+   This is the usual first-time blocker.
+2. **You're on the company tailnet** (Tailscale app logged in with @jota.ai), **and** the
+   forwarder `tailscale-fw-default-stg` advertises the staging cluster's subnet (its
+   "subnet routes" must be approved in the Tailscale admin console). Verify in Step 4; if the
+   route isn't approved, an admin flips it.
+3. **(Only for the proxy's own access, not for deploying)** Two Google Groups —
+   `eng-claude@jota.ai`, `eng-claude-admins@jota.ai` — and a Tailscale OAuth client +
+   ACL grant. Covered in Step 6 / Step 9; not needed to get the infra up.
+
+---
+
+## Step 1 — Tools
+
+You have `git` and `kubectl`. You're **missing `gcloud`**:
 
 ```bash
-gcloud auth login
+brew install --cask google-cloud-sdk     # or: curl https://sdk.cloud.google.com | bash
+gcloud --version && kubectl version --client
 ```
 
-A browser opens; sign in with your **@jota.ai** account. Then point gcloud at staging:
+`kubectl` you already have because it's the cluster client; `gcloud` is the GCP client. You
+need both (see Concept 1).
+
+---
+
+## Step 2 — Authenticate to GCP
 
 ```bash
+gcloud auth login                         # browser → @jota.ai
 gcloud config set project stp-core-dev
 ```
 
-**Check:**
-
-```bash
-gcloud auth list          # shows your @jota.ai email with a *
-gcloud config get project # shows stp-core-dev
-```
-
-*What just happened:* Google now knows it's you, and that you're working in the staging
-project. Logging in does **not** change any infrastructure — it's like badging into the
-building.
+This authenticates *you* to GCP. It does **not** connect kubectl to the cluster yet (that's
+Step 4) and changes no infra.
 
 ---
 
-## Step 3 — Look at the shopping list (still 100% safe)
-
-From the repo root, render the staging manifests. This just prints YAML to your screen —
-it touches nothing in the cloud.
+## Step 3 — Render the manifests and read them
 
 ```bash
 kubectl kustomize deploy/crossplane/overlays/stg
 ```
 
-You'll see a big block of YAML. Scroll through it. You should spot, among others:
+This runs the base+overlay merge locally and prints final YAML. Nothing leaves your machine.
+You'll see ~15 MRs. Worth actually reading once, now that you know what each kind maps to:
 
-- a `Network` and `Subnetwork` (the private network the VM lives in),
-- a `Router` + `RouterNAT` (lets the VM reach the internet *outbound* without a public IP),
-- two `Firewall` rules (who may reach the VM, and on which ports),
-- a `ServiceAccount` (the VM's identity),
-- a `Secret` (a slot in Google's secret vault for the provider API key),
-- an `Instance` (the VM itself — `e2-standard-2`, no public IP),
-- a few `IAMMember` items (who's allowed to tunnel in / SSH in).
+| Kind | Real GCP thing | Notes |
+|------|----------------|-------|
+| `Network` + `Subnetwork` | VPC + subnet | subnet has `privateIpGoogleAccess: true`, CIDR `10.128.0.0/20` |
+| `Router` + `RouterNAT` | Cloud Router + NAT | outbound egress (Concept 2 #2) |
+| `Firewall` ×2 | firewall rules | tag-scoped, IAP range only (Concept 2 #3) |
+| `ServiceAccount` | the VM's GCP identity | least-privilege |
+| `Secret` ×2 | Secret Manager containers | `fcc-provider-key`, `fcc-tailscale-oauth` — **values added later, out-of-band** |
+| `SecretIAMMember` ×2 + `ProjectIAMMember` | IAM grants | secret-level accessor + log writer |
+| `Instance` | the GCE VM | `e2-standard-2`, no public IP, joins tailnet on boot |
+| `InstanceIAMMember` ×2 | who may IAP-tunnel / OS-Login SSH | fallback access path |
 
-Everywhere you look it should say `project: stp-core-dev` and `us-west1`. That's how you
-know you're aimed at staging, not prod.
-
-*What just happened:* you read the exact description of what will be created. Reading is
-free and reversible. Get comfortable here.
+Confirm every resource says `project: stp-core-dev` / `us-west1` — that's your "aimed at
+staging" check.
 
 ---
 
-## Step 4 — Connect `kubectl` to the staging cluster (via Tailscale)
+## Step 4 — Point kubectl at the staging cluster (over Tailscale)
 
-The cluster is private, but staging has a Tailscale forwarder (`tailscale-fw-default-stg`)
-that lets your laptop reach the private network — no bastion needed.
-
-**First, make sure you're on the tailnet:**
+**Confirm tailnet + that the forwarder routes the cluster subnet:**
 
 ```bash
-tailscale status
+tailscale status                          # you should be 'up'; forwarder listed
+tailscale status --json | grep -A3 -i 'fw-default-stg'   # check it advertises a subnet route
 ```
 
-You should see a list of machines including `tailscale-fw-default-stg`. If `tailscale status`
-says you're logged out, open the Tailscale app (or run `tailscale up`) and sign in with your
-@jota.ai account, then re-run it.
+If you're logged out: open the Tailscale app / `tailscale up`. If the forwarder shows no
+subnet route covering the cluster, that's the admin-approval item from "What needs a human."
 
-**Then fetch the cluster credentials.** The forwarder routes the private endpoint, so the
-`--internal-ip` form works over the tailnet (a teammate will confirm the exact cluster name):
+**Get cluster credentials.** This writes a context into your kubeconfig pointing at the
+cluster's **private** endpoint; it's reachable because Tailscale routes that VPC CIDR:
 
 ```bash
 gcloud container clusters get-credentials core-stg \
   --region=us-west1 --project=stp-core-dev --internal-ip
 ```
 
-**Check you're connected:**
+(`--internal-ip` = use the private endpoint, not a public one. Confirm the cluster name
+`core-stg` with infra; it's from the octopus core/stg overlay.)
+
+**Verify the connection and that Crossplane is healthy:**
 
 ```bash
-kubectl config current-context     # should now name the staging cluster
-kubectl get nodes                  # lists machines — proves you can talk to it
+kubectl config current-context                 # names the staging cluster
+kubectl get nodes                              # returns a node list = you can reach the API
+kubectl get providers.pkg.crossplane.io        # provider-gcp-* rows, INSTALLED=True HEALTHY=True
 ```
 
-If `kubectl get nodes` returns a list, you're in. If it hangs:
-- `tailscale status` — are you connected, and is `tailscale-fw-default-stg` listed?
-- Does the forwarder advertise the staging cluster's subnet? Check in the Tailscale admin
-  console (Machines → the forwarder → Subnet routes), or ask infra. If the route isn't
-  approved, that's the one thing a teammate needs to flip.
-- Still stuck → that's the access conversation from the "Before you start" section.
+`kubectl get nodes` hanging means the network path is the problem: Tailscale down, or the
+forwarder isn't advertising the cluster subnet, or you lack RBAC. The three commands above
+isolate which.
 
-*What just happened:* `kubectl` now points at the staging cluster's Crossplane robot,
-reached privately over Tailscale. You still haven't changed anything.
-
-**Confirm Crossplane is actually there and healthy:**
-
-```bash
-kubectl get providers.pkg.crossplane.io
-```
-
-You want to see rows like `provider-gcp-compute`, `provider-gcp-cloudplatform`,
-`provider-gcp-secretmanager`, each `INSTALLED=True HEALTHY=True`. These are the robot's
-"skills" for creating compute, IAM, and secret resources. They're already installed in
-staging — you're just confirming.
+> Why `get nodes` if we're not using pods? It's just the cheapest "can I reach and am I
+> authorized against the API server" probe. We never schedule a pod.
 
 ---
 
-## Step 5 — Dry-run: ask the robot "would this work?" (safe)
-
-A **server dry-run** sends the shopping list to the cluster, which checks every field
-against what Google Cloud actually accepts — **without creating anything**.
+## Step 5 — Server-side dry-run (validate without creating)
 
 ```bash
 kubectl apply -k deploy/crossplane/overlays/stg --dry-run=server
 ```
 
-- If it prints a list of resources each ending in `(server dry run)` with no errors → great,
-  the list is valid.
-- If it complains about an unknown field (for example on `instanceNameRef`), that's a
-  field-name mismatch we flagged. Tell me the exact error and I'll fix the manifest. To
-  see the correct field names yourself:
-  ```bash
-  kubectl explain instanceiammember.spec.forProvider
-  ```
+`--dry-run=server` sends the objects to the cluster's API server, which validates them
+against the **actual installed CRDs** (the provider schemas) — catching wrong field names or
+types — then discards them. This is stronger than client-side validation and is the real test
+that our manifests match the installed provider versions.
 
-*What just happened:* the cluster validated the plan and threw it away. Still nothing
-created. This is your last checkpoint before real changes.
+If you see an error on a field like `instanceNameRef` or `secretIdRef`, that's a
+provider-schema mismatch I flagged as unverified (I couldn't reach a live control plane). Show
+me the error; to inspect the true schema yourself:
+
+```bash
+kubectl explain instanceiammember.spec.forProvider
+kubectl explain instance.spec.forProvider.networkInterface
+```
 
 ---
 
-## Step 6 — Sanity-check the access groups (safe, optional)
+## Step 6 — Access groups (only affects the 2 access-control MRs)
 
-Our manifests grant proxy access to `group:eng-claude@jota.ai` and SSH to
-`group:eng-claude-admins@jota.ai`. If those Google Groups don't exist, the two
-`InstanceIAMMember` resources will fail to reconcile later (everything else still works).
-
-If you're not sure they exist and don't want to block on it, you can temporarily point them
-at just yourself. Edit `deploy/crossplane/overlays/stg/kustomization.yaml`, find the two
-blocks near the bottom (`fcc-iap-tunnel-users` and `fcc-oslogin-admins`), and change:
+The `InstanceIAMMember` MRs grant `group:eng-claude@jota.ai` (proxy/tunnel users) and
+`group:eng-claude-admins@jota.ai` (SSH). If those groups don't exist yet, those two MRs will
+sit `READY=False` — **the rest of the stack still comes up fine.** To unblock without waiting
+on group creation, point them at yourself in `overlays/stg/kustomization.yaml`:
 
 ```yaml
-        value: group:eng-claude@jota.ai
-```
-to
-```yaml
-        value: user:paulo@jota.ai
+        value: group:eng-claude@jota.ai      →   value: user:paulo@jota.ai
 ```
 
-(Do the same for the admins one.) You can switch back to the groups later by editing and
-re-applying.
+(both the `fcc-iap-tunnel-users` and `fcc-oslogin-admins` patches). Re-apply later to switch
+back. Note: with Tailscale as the real access path, these IAP/OS-Login grants are the
+*fallback* plane — getting them perfect isn't blocking for a staging trial.
 
 ---
 
-## Step 7 — Apply for real (this creates infrastructure)
-
-This is the first step that changes the cloud. It hands the shopping list to Crossplane,
-which starts creating the network, VM, firewall, etc. in `stp-core-dev`.
+## Step 7 — Apply (first step that creates real infra)
 
 ```bash
 kubectl apply -k deploy/crossplane/overlays/stg
 ```
 
-You'll see one line per resource saying `created`. That doesn't mean they're *ready* yet —
-just that the robot accepted the order.
-
-*What just happened:* Crossplane is now building real resources in staging. This **does
-cost a little money** (a small VM + networking, roughly tens of dollars/month) and is
-reversible (Step 9 explains teardown).
+Each line printed = an MR accepted into the cluster (`created`/`configured`). The reconcile
+loop now starts calling GCP. Cost is small (one `e2-standard-2` + NAT, ~tens of $/mo) and
+fully reversible (Step 10).
 
 ---
 
-## Step 8 — Watch it come up
-
-```bash
-kubectl get managed -l service=free-claude-code
-```
-
-Each row has two columns that matter: **READY** and **SYNCED**. You're waiting for every
-row to show `True True`. It can take a few minutes (the VM and NAT take the longest). Re-run
-the command, or add `-w` to watch live:
+## Step 8 — Watch reconciliation
 
 ```bash
 kubectl get managed -l service=free-claude-code -w
 ```
 
-If a row is stuck on `False`, ask it why:
+Wait for every row `READY=True SYNCED=True`. Order of readiness roughly follows dependencies
+(network → router/NAT/firewall → SA/secret → IAM → instance). The VM and NAT are slowest.
+
+When something stalls, the resource tells you why:
 
 ```bash
-kubectl describe <KIND> <NAME> -n crossplane-system
-# example: kubectl describe instance fcc-proxy -n crossplane-system
+kubectl describe <kind> <name> -n crossplane-system
+# e.g. kubectl describe instance fcc-proxy -n crossplane-system
 ```
 
-Scroll to the **Events** / **Conditions** at the bottom — it states the problem in plain
-English (e.g. "API not enabled," "permission denied," "group not found"). Common fixes:
-enable an API, get an IAM role, or the group issue from Step 6. Paste the message to me and
-I'll tell you the fix.
+Read the **Conditions** and **Events** at the bottom — Crossplane surfaces the raw GCP API
+error there ("API not enabled", "permission denied", "field X invalid", "group not found").
+That message *is* the diagnosis. Common causes: a needed GCP API not enabled on the project,
+the cluster's Workload Identity lacking a role in `stp-core-dev`, or the Step-6 group issue.
+Paste it to me and I'll give the fix.
+
+> Mental model for debugging: `SYNCED=False` → Crossplane↔GCP API problem (auth/quota/field).
+> `SYNCED=True, READY=False` → GCP accepted the request but the resource isn't usable yet
+> (still creating, or a dependency missing).
 
 ---
 
-## Step 9 — After the infrastructure is up (the remaining wiring)
+## Step 9 — Post-create wiring (secret values + startup script)
 
-Crossplane created the **empty secret slot** but not its contents (we never put the real API
-key in git, on purpose). Put the provider key in:
+Crossplane created **empty** Secret Manager containers (we never commit secret values). Add
+them out-of-band:
 
 ```bash
-echo -n "PASTE-THE-PROVIDER-API-KEY-HERE" | \
-  gcloud secrets versions add fcc-provider-key \
+# upstream model-provider API key (the proxy reads this at runtime, never on disk)
+echo -n "PROVIDER-API-KEY" | gcloud secrets versions add fcc-provider-key \
+  --project=stp-core-dev --data-file=-
+
+# Tailscale OAuth client secret (the VM uses this to join the tailnet on boot)
+echo -n "TAILSCALE-OAUTH-CLIENT-SECRET" | gcloud secrets versions add fcc-tailscale-oauth \
   --project=stp-core-dev --data-file=-
 ```
 
-The proxy VM joins the **tailnet** on boot (matching how you reach the PKI group), so it
-also needs a Tailscale credential. Put the **Tailscale OAuth client secret** in its slot:
+The Tailscale OAuth client is created once in the Tailscale admin console (Settings → OAuth
+clients, scope `devices:write`, tag `tag:fcc-proxy`) plus an ACL grant letting the eng group
+reach `tag:fcc-proxy:8082`. Exact steps in `deploy/crossplane/README.md`.
 
-```bash
-echo -n "PASTE-THE-TAILSCALE-OAUTH-CLIENT-SECRET" | \
-  gcloud secrets versions add fcc-tailscale-oauth \
-  --project=stp-core-dev --data-file=-
-```
+**Still TODO before the VM is functional — the startup script.** The `Instance` MR has an
+empty `metadataStartupScript`; the VM needs `deploy/startup.sh` attached so it installs the
+proxy, wires the runtime secret fetch, and runs `tailscale up` on boot. This is one kustomize
+patch that embeds the script — easy to mangle by hand. **Tell me when you reach this point and
+I'll wire it in.**
 
-You get that secret by creating an OAuth client once in the Tailscale admin console
-(Settings → OAuth clients, scope `devices:write`, tag `tag:fcc-proxy`) — see
-`deploy/crossplane/README.md` for the exact steps and the ACL grant that lets engineers
-reach the proxy.
-
-Then two more items that aren't code:
-
-- **The VM startup script** — the VM needs the install script (`deploy/startup.sh`) attached
-  so it installs/runs the proxy and joins the tailnet on boot. This is one extra patch; tell
-  me when you reach this point and I'll wire it in (it's quick, but easy to get wrong by hand).
-- **IAP tunnel quota** — only relevant if you fall back to the IAP path. With Tailscale as
-  the access method you can ignore it.
-
-**Final check that the proxy actually works:** an engineer runs
-`deploy/fcc-connect-tailscale`, sends a prompt in Claude Code, and gets a streamed reply.
-(`deploy/fcc-connect` is the IAP fallback.) Full instructions in
-`deploy/crossplane/README.md`.
+**Smoke test once it's up:** `deploy/fcc-connect-tailscale` → it resolves the proxy's MagicDNS
+name, points Claude Code at it, you send a prompt and get a streamed reply.
 
 ---
 
-## Step 10 — How to undo everything (don't be afraid to experiment)
-
-If you want to tear the staging stack back down:
+## Step 10 — Teardown
 
 ```bash
 kubectl delete -k deploy/crossplane/overlays/stg
 ```
 
-Note: we set `deletionPolicy: Orphan` on resources, which means some items (like the secret)
-are intentionally **left in place** in Google Cloud even after you delete the manifest, so
-you don't lose data by accident. To fully remove those, delete them in the Cloud console or
-ask infra. The VM and networking will go away.
+Caveat: MRs use `deletionPolicy: Orphan`, so deleting the manifest **leaves the underlying GCP
+resource in place** (deliberate — you don't lose a secret or a VM by accidentally deleting a
+YAML). The VM/network/etc. that you want gone must be deleted in GCP directly (console or
+`gcloud`), or flip the policy. For a staging experiment you can also just leave it running.
 
 ---
 
-## Quick reference — the whole flow in one screen
+## One-screen reference
 
 ```bash
-# one-time setup
+# tools + auth
 brew install --cask google-cloud-sdk
-gcloud auth login
-gcloud config set project stp-core-dev
+gcloud auth login && gcloud config set project stp-core-dev
 
-# connect to the staging cluster (need tunnel + access — ask infra first time)
+# connect kubectl to the private cluster (Tailscale must be up)
+tailscale status
 gcloud container clusters get-credentials core-stg --region=us-west1 --project=stp-core-dev --internal-ip
-kubectl get nodes                         # proves connection
-kubectl get providers.pkg.crossplane.io   # proves Crossplane is healthy
+kubectl get nodes
+kubectl get providers.pkg.crossplane.io
 
-# look, validate, then apply
-kubectl kustomize deploy/crossplane/overlays/stg                      # read the plan
-kubectl apply -k deploy/crossplane/overlays/stg --dry-run=server      # validate, no changes
-kubectl apply -k deploy/crossplane/overlays/stg                       # CREATE (real)
-kubectl get managed -l service=free-claude-code -w                    # watch until READY+SYNCED
+# render → validate → apply → watch
+kubectl kustomize deploy/crossplane/overlays/stg
+kubectl apply   -k deploy/crossplane/overlays/stg --dry-run=server
+kubectl apply   -k deploy/crossplane/overlays/stg
+kubectl get managed -l service=free-claude-code -w
 
-# put the secret value in
-echo -n "PROVIDER-API-KEY" | gcloud secrets versions add fcc-provider-key --project=stp-core-dev --data-file=-
+# secret values (post-create)
+echo -n "PROVIDER-API-KEY"            | gcloud secrets versions add fcc-provider-key   --project=stp-core-dev --data-file=-
+echo -n "TAILSCALE-OAUTH-CLIENT-SECRET" | gcloud secrets versions add fcc-tailscale-oauth --project=stp-core-dev --data-file=-
 
-# undo
+# teardown (Orphan policy leaves GCP resources — delete them in GCP if you want them gone)
 kubectl delete -k deploy/crossplane/overlays/stg
 ```
 
 ---
 
-## When to stop and ask for help (not a failure — the right move)
+## Where to stop and ask
 
-- You don't have access to the staging project or the cluster (Step 4 hangs).
-- `--dry-run=server` reports an error you don't understand → paste it to me.
-- A resource is stuck `READY=False` and the `describe` message mentions permissions, APIs,
-  or "not found" → paste it to me.
-- You're about to do Step 7 (apply) for the first time → consider pairing with infra.
+- `kubectl get nodes` hangs → network/access (Tailscale route or RBAC), not a manifest issue.
+- `--dry-run=server` field errors → provider-schema mismatch; paste to me.
+- A resource stuck `READY=False` → read its `describe` Conditions/Events; paste to me.
+- Reaching the startup-script step → ping me to wire the patch.
 
-There is no dumb question here. Reading (Steps 1–6) is always safe; only Step 7 onward
-changes anything, and Step 10 reverses it.
+## Governance note (one honest flag)
+Tailscale access means the proxy is gated by the **tailnet ACL**, a second access-control
+plane alongside GCP IAM. For a regulated bank that's normally a concern — but staging already
+uses exactly this pattern for the PKI group, so we're following the established convention,
+not introducing a new one. Worth a conscious decision before the same approach goes to prod.
