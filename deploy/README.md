@@ -23,8 +23,9 @@ These scripts are the runnable form of the design in:
 |---|---|
 | `crossplane/` | **Primary.** GCP infra as Crossplane Managed Resources + kustomize overlays. See [`crossplane/README.md`](crossplane/README.md). |
 | `provision.sh` | **Reference/fallback.** Imperative `gcloud` provisioning of the same infra (VPC, NAT, firewall, SA, secret, VM, IAP IAM). Re-runnable. |
-| `startup.sh` | VM startup script (used by both paths). Installs the proxy under systemd. Provider key is fetched at runtime / via tmpfs — never written to persistent disk. |
-| `fcc-connect` | Client wrapper engineers run. Opens the IAP tunnel and launches Claude Code. |
+| `startup.sh` | VM startup script (used by both paths). Installs the proxy under systemd, joins the Tailscale tailnet on boot. Provider key is fetched at runtime / via tmpfs — never written to persistent disk. |
+| `fcc-connect-tailscale` | **Primary client wrapper.** Reaches the proxy by its tailnet MagicDNS name (matches the staging Tailscale access pattern). No gcloud needed. |
+| `fcc-connect` | **Fallback** client wrapper. Opens an IAP tunnel and launches Claude Code (for environments without Tailscale). |
 
 ## Architecture
 

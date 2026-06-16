@@ -16,9 +16,30 @@ Workload Identity (`InjectedIdentity`), raw Managed Resources + kustomize overla
 | `base/router-nat.yaml` | `Router` + `RouterNAT` | egress for no-external-IP VM (AUTO_ONLY) |
 | `base/firewall.yaml` | 2× `Firewall` | tag-scoped: `fcc-proxy` tcp:8082, `fcc-admin` tcp:22, from IAP CIDR `35.235.240.0/20` |
 | `base/service-account.yaml` | `ServiceAccount` `fcc-sa` | dedicated, least privilege |
-| `base/secret.yaml` | `Secret` `fcc-provider-key` | container only — **value set out-of-band** |
-| `base/iam.yaml` | `SecretIAMMember` + `ProjectIAMMember` | secret-LEVEL accessor + `logging.logWriter` |
-| `base/instance.yaml` | `Instance` `fcc-proxy` | no external IP, OS Login, tags, runtime secret fetch |
+| `base/secret.yaml` | `Secret` `fcc-provider-key` + `fcc-tailscale-oauth` | containers only — **values set out-of-band** |
+| `base/iam.yaml` | `SecretIAMMember` ×2 + `ProjectIAMMember` + `InstanceIAMMember` ×2 | secret-LEVEL accessors + `logging.logWriter` + access-control |
+| `base/instance.yaml` | `Instance` `fcc-proxy` | no external IP, OS Login, tags, runtime secret fetch, **joins tailnet on boot** |
+
+## Access model: Tailscale (primary in staging)
+
+Staging already runs a Tailscale subnet router (`tailscale-fw-default-stg`) and uses
+Tailscale to reach private VMs (e.g. the Vault/PKI group). The proxy follows that
+convention: on boot the VM **joins the tailnet** (startup.sh §3b) using a Tailscale
+**OAuth client** secret from Secret Manager, tagged `tag:fcc-proxy`. Engineers reach it by
+MagicDNS name with [`deploy/fcc-connect-tailscale`](../fcc-connect-tailscale) — no gcloud,
+no IAP tunnel. Who may reach the node is governed by the **tailnet ACL** (allow your
+user/group → `tag:fcc-proxy` on tcp:8082).
+
+The IAP path (firewall on `35.235.240.0/20`, `fcc-iap-tunnel-users` IAM, `deploy/fcc-connect`)
+is **kept as a fallback** for environments without Tailscale, and IAP SSH remains available
+for admins via OS Login.
+
+**One-time Tailscale admin setup (not in this repo):**
+1. Create an OAuth client (Tailscale admin → Settings → OAuth clients) with scope
+   `devices:write` and the tag `tag:fcc-proxy`. Copy the client secret.
+2. Define `tag:fcc-proxy` as owned by that OAuth client in the tailnet policy file.
+3. Add an ACL grant: the eng users/group → `tag:fcc-proxy:8082`.
+4. Store the client secret: `echo -n "<secret>" | gcloud secrets versions add fcc-tailscale-oauth --project=<PROJECT> --data-file=-`
 
 ## Prerequisites
 

@@ -91,10 +91,17 @@ patches:
         path: /spec/forProvider/project
         value: <PROJECT>
 
-  # --- Secret container ---
+  # --- Secret containers ---
   - target:
       kind: Secret
       name: fcc-provider-key
+    patch: |-
+      - op: replace
+        path: /spec/forProvider/project
+        value: <PROJECT>
+  - target:
+      kind: Secret
+      name: fcc-tailscale-oauth
     patch: |-
       - op: replace
         path: /spec/forProvider/project
@@ -104,6 +111,16 @@ patches:
   - target:
       kind: SecretIAMMember
       name: fcc-sa-secret-accessor
+    patch: |-
+      - op: replace
+        path: /spec/forProvider/project
+        value: <PROJECT>
+      - op: replace
+        path: /spec/forProvider/member
+        value: serviceAccount:fcc-sa@<PROJECT>.iam.gserviceaccount.com
+  - target:
+      kind: SecretIAMMember
+      name: fcc-sa-tailscale-accessor
     patch: |-
       - op: replace
         path: /spec/forProvider/project

@@ -22,6 +22,27 @@ spec:
     name: default
   deletionPolicy: Orphan
 ---
+# Secret-level accessor for the Tailscale OAuth client secret (VM reads it at boot
+# to join the tailnet). Same least-privilege pattern as the provider key.
+apiVersion: secretmanager.gcp.upbound.io/v1beta1
+kind: SecretIAMMember
+metadata:
+  name: fcc-sa-tailscale-accessor
+  namespace: crossplane-system
+  labels:
+    service: free-claude-code
+    managed-by: crossplane
+spec:
+  forProvider:
+    project: "" # patched per-env
+    role: roles/secretmanager.secretAccessor
+    member: "" # patched per-env: serviceAccount:fcc-sa@<project>.iam.gserviceaccount.com
+    secretIdRef:
+      name: fcc-tailscale-oauth
+  providerConfigRef:
+    name: default
+  deletionPolicy: Orphan
+---
 # Allow the proxy SA to write Cloud Logging entries (loguru -> journald -> Cloud
 # Logging). Project-level is the supported scope for this role.
 apiVersion: cloudplatform.gcp.upbound.io/v1beta1

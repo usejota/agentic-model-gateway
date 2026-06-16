@@ -33,6 +33,15 @@ SECRET_NAME="$(md fcc-secret-name)"
 PORT="$(md fcc-port)"; PORT="${PORT:-8082}"
 USE_TMPFS_ENV="$(md fcc-use-tmpfs-env)"   # "TRUE" enables the tmpfs fallback
 
+# Tailscale: when fcc-tailscale-enabled=TRUE the VM joins the tailnet on boot so
+# engineers reach it at its MagicDNS name (matches the staging tailscale-fw /
+# PKI access pattern). Auth uses a Tailscale OAuth client whose secret lives in
+# Secret Manager; the node is tagged so the tailnet ACL governs who may reach it.
+TS_ENABLED="$(md fcc-tailscale-enabled)"            # "TRUE" to join the tailnet
+TS_OAUTH_SECRET_NAME="$(md fcc-tailscale-oauth-secret)"  # Secret Manager secret holding the OAuth client secret
+TS_TAGS="$(md fcc-tailscale-tags)"; TS_TAGS="${TS_TAGS:-tag:fcc-proxy}"
+TS_HOSTNAME="$(md fcc-tailscale-hostname)"; TS_HOSTNAME="${TS_HOSTNAME:-fcc-proxy}"
+
 FCC_USER="fcc"
 FCC_HOME="/home/${FCC_USER}"
 APP_DIR="${FCC_HOME}/free-claude-code"
@@ -108,6 +117,36 @@ else
   # at startup. The key never touches disk. Rotation = restart, no rebuild.
   log "Runtime-fetch path: app will read PROVIDER_KEY_SECRET_RESOURCE at startup."
   SYSTEMD_ENV_LINES+=("Environment=PROVIDER_KEY_SECRET_RESOURCE=${SECRET_RESOURCE}")
+fi
+
+# ---------------------------------------------------------------------------
+# 3b. Tailscale — join the tailnet so engineers reach the VM by MagicDNS name.
+#     Auth via a Tailscale OAuth client (secret in Secret Manager) + ACL tag.
+#     OAuth-client auth mints a fresh node key per boot and never expires the
+#     way a static auth key does — better for a long-lived unattended VM.
+# ---------------------------------------------------------------------------
+if [ "${TS_ENABLED}" = "TRUE" ]; then
+  log "Tailscale enabled — installing and joining the tailnet as '${TS_HOSTNAME}' (${TS_TAGS})."
+  if ! command -v tailscale >/dev/null 2>&1; then
+    curl -fsSL https://tailscale.com/install.sh | sh
+  fi
+  systemctl enable --now tailscaled
+
+  if [ -z "${TS_OAUTH_SECRET_NAME}" ]; then
+    log "ERROR: fcc-tailscale-oauth-secret metadata is empty; cannot authenticate to Tailscale."
+    exit 1
+  fi
+  # The OAuth *client secret* is the auth credential. Tailscale accepts it as the
+  # --authkey when tags are supplied; it is exchanged for an ephemeral node key.
+  TS_OAUTH_SECRET="$(gcloud secrets versions access latest --secret="${TS_OAUTH_SECRET_NAME}")"
+  tailscale up \
+    --authkey="${TS_OAUTH_SECRET}" \
+    --advertise-tags="${TS_TAGS}" \
+    --hostname="${TS_HOSTNAME}" \
+    --ssh \
+    --accept-dns=true
+  unset TS_OAUTH_SECRET
+  log "Tailscale up. Node should appear as ${TS_HOSTNAME} on the tailnet."
 fi
 
 # ---------------------------------------------------------------------------

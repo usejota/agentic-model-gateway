@@ -47,9 +47,11 @@ the infra channel if you're unsure:
 - **You need permission** to use the staging project (`stp-core-dev`) and to reach its
   cluster. If you've never run `kubectl` against staging, you likely need someone to grant
   you access first. **This is the most common blocker — sort it out before Step 4.**
-- **The staging GKE control plane is private.** It has no public address; you reach it
-  through a secure tunnel (a "bastion" or "IAP"). A teammate can tell you the one command
-  to open that tunnel, or run it with you the first time.
+- **The staging GKE control plane is private** (no public address). The good news: staging
+  already runs a **Tailscale** subnet router VM (`tailscale-fw-default-stg`) that bridges
+  your laptop's tailnet to the private staging network — the same way you already reach the
+  PKI group. So instead of a bastion you just need to **be on the company tailnet**
+  (the Tailscale app running and logged in). Step 4 uses this.
 - **Two Google Groups** should exist: `eng-claude@jota.ai` (engineers who may use the
   proxy) and `eng-claude-admins@jota.ai` (who may SSH in). If they don't exist yet, that's
   fine — see the note in Step 6.
@@ -141,21 +143,28 @@ free and reversible. Get comfortable here.
 
 ---
 
-## Step 4 — Connect `kubectl` to the staging cluster
+## Step 4 — Connect `kubectl` to the staging cluster (via Tailscale)
 
-This is the step most likely to need a teammate, because the cluster is **private**.
+The cluster is private, but staging has a Tailscale forwarder (`tailscale-fw-default-stg`)
+that lets your laptop reach the private network — no bastion needed.
 
-The general shape of the command (a teammate will confirm the exact cluster name/region):
+**First, make sure you're on the tailnet:**
+
+```bash
+tailscale status
+```
+
+You should see a list of machines including `tailscale-fw-default-stg`. If `tailscale status`
+says you're logged out, open the Tailscale app (or run `tailscale up`) and sign in with your
+@jota.ai account, then re-run it.
+
+**Then fetch the cluster credentials.** The forwarder routes the private endpoint, so the
+`--internal-ip` form works over the tailnet (a teammate will confirm the exact cluster name):
 
 ```bash
 gcloud container clusters get-credentials core-stg \
   --region=us-west1 --project=stp-core-dev --internal-ip
 ```
-
-Because the control plane is private, that command only works **from inside the VPC** —
-which usually means you first open a tunnel through a bastion host. Your infra teammate has
-that one command (it looks like `gcloud compute ssh ... --tunnel-through-iap ...`). Ask for
-it; run it in a second terminal and leave it open.
 
 **Check you're connected:**
 
@@ -164,12 +173,15 @@ kubectl config current-context     # should now name the staging cluster
 kubectl get nodes                  # lists machines — proves you can talk to it
 ```
 
-If `kubectl get nodes` returns a list, you're in. If it hangs or says "unable to connect,"
-the tunnel isn't up or you don't have access yet — that's the access conversation from the
-"Before you start" section.
+If `kubectl get nodes` returns a list, you're in. If it hangs:
+- `tailscale status` — are you connected, and is `tailscale-fw-default-stg` listed?
+- Does the forwarder advertise the staging cluster's subnet? Check in the Tailscale admin
+  console (Machines → the forwarder → Subnet routes), or ask infra. If the route isn't
+  approved, that's the one thing a teammate needs to flip.
+- Still stuck → that's the access conversation from the "Before you start" section.
 
-*What just happened:* `kubectl` now points at the staging cluster's Crossplane robot.
-You still haven't changed anything.
+*What just happened:* `kubectl` now points at the staging cluster's Crossplane robot,
+reached privately over Tailscale. You still haven't changed anything.
 
 **Confirm Crossplane is actually there and healthy:**
 
@@ -287,18 +299,32 @@ echo -n "PASTE-THE-PROVIDER-API-KEY-HERE" | \
   --project=stp-core-dev --data-file=-
 ```
 
-Then there are two human/ops items that aren't code:
+The proxy VM joins the **tailnet** on boot (matching how you reach the PKI group), so it
+also needs a Tailscale credential. Put the **Tailscale OAuth client secret** in its slot:
 
-- **IAP tunnel quota** — the default limit (25 simultaneous tunnels) is fine for a staging
-  trial but too low for ~50 people. For staging you can ignore it; for a wider rollout,
-  request an increase in the Cloud console (it takes a day or two).
+```bash
+echo -n "PASTE-THE-TAILSCALE-OAUTH-CLIENT-SECRET" | \
+  gcloud secrets versions add fcc-tailscale-oauth \
+  --project=stp-core-dev --data-file=-
+```
+
+You get that secret by creating an OAuth client once in the Tailscale admin console
+(Settings → OAuth clients, scope `devices:write`, tag `tag:fcc-proxy`) — see
+`deploy/crossplane/README.md` for the exact steps and the ACL grant that lets engineers
+reach the proxy.
+
+Then two more items that aren't code:
+
 - **The VM startup script** — the VM needs the install script (`deploy/startup.sh`) attached
-  so it actually installs and runs the proxy on boot. This is one extra patch; tell me when
-  you reach this point and I'll wire it in (it's quick, but easy to get wrong by hand).
+  so it installs/runs the proxy and joins the tailnet on boot. This is one extra patch; tell
+  me when you reach this point and I'll wire it in (it's quick, but easy to get wrong by hand).
+- **IAP tunnel quota** — only relevant if you fall back to the IAP path. With Tailscale as
+  the access method you can ignore it.
 
-**Final check that the proxy actually works** (full instructions in
-`deploy/crossplane/README.md`): an engineer runs `deploy/fcc-connect`, sends a prompt in
-Claude Code, and gets a streamed reply.
+**Final check that the proxy actually works:** an engineer runs
+`deploy/fcc-connect-tailscale`, sends a prompt in Claude Code, and gets a streamed reply.
+(`deploy/fcc-connect` is the IAP fallback.) Full instructions in
+`deploy/crossplane/README.md`.
 
 ---
 
