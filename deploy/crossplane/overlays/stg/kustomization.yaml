@@ -1,0 +1,167 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Staging overlay for the free-claude-code proxy infra.
+# Values pre-filled for the Jota staging environment (see octopus core/marble stg
+# overlays): project stp-core-dev, region us-west1, zone us-west1-a.
+#
+# Before applying, double-check:
+#   - project       stp-core-dev          (the staging GCP project)
+#   - region        us-west1
+#   - zone          us-west1-a
+#   - tunnel group  group:eng-claude@jota.ai          (must exist in Workspace)
+#   - admin group   group:eng-claude-admins@jota.ai   (must exist in Workspace)
+# If a group does not exist yet, either create it or temporarily set member to a
+# single user, e.g. user:paulo@jota.ai.
+
+resources:
+  - ../../base
+
+# Octopus convention: tag every resource with its environment.
+labels:
+  - pairs:
+      environment: stg
+    includeSelectors: false
+
+patches:
+  # --- Network ---
+  - target:
+      kind: Network
+      name: fcc-network
+    patch: |-
+      - op: replace
+        path: /spec/forProvider/project
+        value: stp-core-dev
+
+  - target:
+      kind: Subnetwork
+      name: fcc-subnetwork
+    patch: |-
+      - op: replace
+        path: /spec/forProvider/project
+        value: stp-core-dev
+      - op: replace
+        path: /spec/forProvider/region
+        value: us-west1
+
+  # --- Router + NAT ---
+  - target:
+      kind: Router
+      name: fcc-router
+    patch: |-
+      - op: replace
+        path: /spec/forProvider/project
+        value: stp-core-dev
+      - op: replace
+        path: /spec/forProvider/region
+        value: us-west1
+
+  - target:
+      kind: RouterNAT
+      name: fcc-nat
+    patch: |-
+      - op: replace
+        path: /spec/forProvider/project
+        value: stp-core-dev
+      - op: replace
+        path: /spec/forProvider/region
+        value: us-west1
+
+  # --- Firewalls ---
+  - target:
+      kind: Firewall
+      name: fcc-allow-iap-proxy
+    patch: |-
+      - op: replace
+        path: /spec/forProvider/project
+        value: stp-core-dev
+  - target:
+      kind: Firewall
+      name: fcc-allow-iap-ssh
+    patch: |-
+      - op: replace
+        path: /spec/forProvider/project
+        value: stp-core-dev
+
+  # --- Service Account ---
+  - target:
+      kind: ServiceAccount
+      name: fcc-sa
+    patch: |-
+      - op: replace
+        path: /spec/forProvider/project
+        value: stp-core-dev
+
+  # --- Secret container ---
+  - target:
+      kind: Secret
+      name: fcc-provider-key
+    patch: |-
+      - op: replace
+        path: /spec/forProvider/project
+        value: stp-core-dev
+
+  # --- IAM ---
+  - target:
+      kind: SecretIAMMember
+      name: fcc-sa-secret-accessor
+    patch: |-
+      - op: replace
+        path: /spec/forProvider/project
+        value: stp-core-dev
+      - op: replace
+        path: /spec/forProvider/member
+        value: serviceAccount:fcc-sa@stp-core-dev.iam.gserviceaccount.com
+  - target:
+      kind: ProjectIAMMember
+      name: fcc-sa-log-writer
+    patch: |-
+      - op: replace
+        path: /spec/forProvider/project
+        value: stp-core-dev
+      - op: replace
+        path: /spec/forProvider/member
+        value: serviceAccount:fcc-sa@stp-core-dev.iam.gserviceaccount.com
+
+  # --- Instance ---
+  - target:
+      kind: Instance
+      name: fcc-proxy
+    patch: |-
+      - op: replace
+        path: /spec/forProvider/project
+        value: stp-core-dev
+      - op: replace
+        path: /spec/forProvider/zone
+        value: us-west1-a
+      - op: replace
+        path: /spec/forProvider/metadata/PROVIDER_KEY_SECRET_RESOURCE
+        value: projects/stp-core-dev/secrets/fcc-provider-key/versions/latest
+
+  # --- Access-control IAM (instance-level) ---
+  - target:
+      kind: InstanceIAMMember
+      name: fcc-iap-tunnel-users
+    patch: |-
+      - op: replace
+        path: /spec/forProvider/project
+        value: stp-core-dev
+      - op: replace
+        path: /spec/forProvider/zone
+        value: us-west1-a
+      - op: replace
+        path: /spec/forProvider/member
+        value: group:eng-claude@jota.ai
+  - target:
+      kind: InstanceIAMMember
+      name: fcc-oslogin-admins
+    patch: |-
+      - op: replace
+        path: /spec/forProvider/project
+        value: stp-core-dev
+      - op: replace
+        path: /spec/forProvider/zone
+        value: us-west1-a
+      - op: replace
+        path: /spec/forProvider/member
+        value: group:eng-claude-admins@jota.ai
