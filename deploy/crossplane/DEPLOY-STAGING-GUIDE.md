@@ -75,28 +75,42 @@ tunneling) — so even the "allowed" traffic must come through Google's IAP, not
 internet. Tag-scoping matters because a firewall rule with no target applies to *every* VM in
 the VPC; tags pin it to ours.
 
-**4. How you actually reach it — Tailscale.** Two separate "how do I connect to something
-private" problems exist here; don't conflate them:
+**4. How you actually reach things — two different paths for two different jobs.** Don't
+conflate them:
 
-  - **Reaching the GKE control plane** (to run `kubectl`). The staging cluster's API endpoint
-    is **private** — it has no public address, only an internal VPC IP. From your laptop you
-    can't route to a VPC-internal IP directly. Staging solves this with a **Tailscale subnet
-    router**: a small VM *inside* the VPC (`tailscale-fw-default-stg`) that runs Tailscale and
-    **advertises the VPC's internal CIDR ranges to the tailnet**. When your laptop is on the
-    same tailnet, Tailscale installs routes for those CIDRs pointing at that VM, so traffic to
-    a VPC-internal IP gets tunneled in. Net effect: with Tailscale up, the private cluster IP
-    becomes reachable as if you were inside the VPC. This is the *same mechanism* you already
-    use to reach the PKI group.
-  - **Reaching the proxy VM** (for end users / you, to use the proxy). The proxy VM itself
-    **joins the tailnet on boot** (our `startup.sh` runs `tailscale up`). So it gets its own
-    `100.x` tailnet address + a MagicDNS name (`fcc-proxy.<tailnet>.ts.net`), and anyone on the
-    tailnet whom the ACL allows can hit it directly — no NAT, no firewall dance, no bastion.
-    That's what `deploy/fcc-connect-tailscale` uses.
+  - **Reaching the Crossplane GKE control plane (to run `kubectl` and deploy).** This is what
+    *you* do to deploy. The control plane is the private cluster `gke-crossplane-stg` (master
+    `172.31.255.2`) in the **`jota-infra`** project. The supported way in is a purpose-built
+    **bastion**: `vm-crossplane-bastion-stg` (`jota-infra`, us-west1-a). You SSH to it through
+    Google **IAP** and run `kubectl` from there. The bastion sits inside the VPC, so it can
+    reach the private master; you don't need Tailscale for this. (There is also a
+    `jota-infra-tailscale-fw-us-west1` forwarder in that project, but the bastion is the
+    named, intended deploy path — use it.)
+  - **Reaching the proxy VM (for engineers, to USE the proxy once deployed).** Separate job.
+    The proxy VM **joins the tailnet on boot** (our `startup.sh` runs `tailscale up`), gets its
+    own `100.x` address + MagicDNS name `fcc-proxy.<tailnet>.ts.net`, and anyone on the tailnet
+    the ACL allows hits it directly — `deploy/fcc-connect-tailscale`.
 
-  **MagicDNS** = Tailscale's built-in DNS that resolves those `*.ts.net` names to tailnet IPs.
-  **Subnet router** = a tailnet node that forwards traffic for non-Tailscale IPs (the VPC
-  ranges) — that's the forwarder. **Tailnet ACL** = Tailscale's allow-list of who can reach
-  what; it's a *second* access-control layer alongside GCP IAM (a known tradeoff — see the
+  **The project topology (worth fixing in your head):**
+
+  | Thing | Project | Notes |
+  |-------|---------|-------|
+  | Crossplane control plane `gke-crossplane-stg` | **`jota-infra`** | where you `kubectl apply` |
+  | Bastion `vm-crossplane-bastion-stg` | **`jota-infra`** | your SSH-in deploy box (IAP) |
+  | The fcc infra we create (VM, network, …) | **`stp-core-dev`** | our overlay sets `project: stp-core-dev` on every resource |
+  | App/staging cluster `gke-core-stg-dzrw2` | `stp-core-dev` | unrelated to our deploy |
+  | PKI forwarder `tailscale-fw-default-stg` (`10.138.0.0/20`) | `stp-core-dev` | reaches the PKI group + the fcc VM's subnet; a fallback path |
+
+  So: **you deploy *from* `jota-infra` (via the bastion), Crossplane creates resources *in*
+  `stp-core-dev`** (because that's what our YAML says). This works only if the Crossplane
+  control plane's identity is allowed to create resources in `stp-core-dev` — confirmed at
+  dry-run; if not, you'll see "permission denied" and need a cross-project IAM grant.
+
+  **MagicDNS** = Tailscale DNS resolving `*.ts.net` names to tailnet IPs.
+  **Subnet router / forwarder** = a tailnet node that forwards traffic for VPC IP ranges.
+  **Bastion** = a hardened jump host inside the VPC you SSH through to reach private resources.
+  **Tailnet ACL** = Tailscale's allow-list of who reaches what; a *second* access-control layer
+  alongside GCP IAM (a known tradeoff — see the
   governance note at the end).
 
   > IAP is still wired as a **fallback** (the firewall rules, `fcc-connect`). With Tailscale
@@ -110,16 +124,19 @@ That's the whole network. Now the steps.
 
 None of this is in the repo; resolve before Step 4:
 
-1. **GCP access to `stp-core-dev`** and rights to talk to the cluster. If you've never run
-   `kubectl` here, someone with cluster admin grants you a role (typically a GKE RBAC binding).
-   This is the usual first-time blocker.
-2. **You're on the company tailnet** (Tailscale app logged in with @jota.ai), **and** the
-   forwarder `tailscale-fw-default-stg` advertises the staging cluster's subnet (its
-   "subnet routes" must be approved in the Tailscale admin console). Verify in Step 4; if the
-   route isn't approved, an admin flips it.
-3. **(Only for the proxy's own access, not for deploying)** Two Google Groups —
-   `eng-claude@jota.ai`, `eng-claude-admins@jota.ai` — and a Tailscale OAuth client +
-   ACL grant. Covered in Step 6 / Step 9; not needed to get the infra up.
+1. **IAP SSH access to the bastion** `vm-crossplane-bastion-stg` in `jota-infra`
+   (`roles/iap.tunnelResourceAccessor` + OS Login on that VM/project), and **kubectl/RBAC
+   access** to `gke-crossplane-stg`. If you've never deployed to the Crossplane cluster, this
+   is the usual first-time blocker — ask whoever owns `jota-infra` (the cluster is shared infra).
+2. **(For the proxy's own access, not for deploying)** the Tailscale **OAuth client** +
+   tailnet **ACL** for `tag:fcc-proxy`, and the two Google Groups
+   `eng-claude@jota.ai` / `eng-claude-admins@jota.ai`. Covered in Step 6 / Step 9; not needed
+   to get the infra up.
+
+> Note on Tailscale: you do **not** need it to *deploy* — deploying goes through the bastion.
+> Tailscale only matters later, for engineers to *use* the proxy (model A: the fcc VM joins the
+> tailnet). The `tailscale-fw-default-stg` forwarder you may have fixed is for the PKI group and
+> as a fallback route to the fcc subnet — not part of the deploy path.
 
 ---
 
@@ -140,12 +157,20 @@ need both (see Concept 1).
 ## Step 2 — Authenticate to GCP
 
 ```bash
-gcloud auth login                         # browser → @jota.ai
-gcloud config set project stp-core-dev
+gcloud auth login                         # browser → your @jota.ai (you're adm-paulo@)
+gcloud config set project jota-infra      # where the bastion + Crossplane cluster live
 ```
 
-This authenticates *you* to GCP. It does **not** connect kubectl to the cluster yet (that's
-Step 4) and changes no infra.
+This authenticates *you* to GCP. It does **not** connect kubectl to anything yet and changes
+no infra. Note the project is **`jota-infra`** (the control-plane/bastion project) — the fcc
+resources land in `stp-core-dev` later, but that's Crossplane's doing, not yours.
+
+**Sanity check you can see the pieces:**
+
+```bash
+gcloud compute instances list --project=jota-infra --filter="name~bastion OR name~crossplane"
+gcloud container clusters list --project=jota-infra      # gke-crossplane-stg, master 172.31.255.2
+```
 
 ---
 
@@ -174,50 +199,67 @@ staging" check.
 
 ---
 
-## Step 4 — Point kubectl at the staging cluster (over Tailscale)
+## Step 4 — Get onto the bastion and reach the Crossplane cluster
 
-**Confirm tailnet + that the forwarder routes the cluster subnet:**
+The Crossplane control plane (`gke-crossplane-stg`, master `172.31.255.2`) is private. The
+intended way in is the **bastion** `vm-crossplane-bastion-stg` — a jump host inside the
+`jota-infra` VPC. You SSH to it through Google IAP (no public IP needed):
 
 ```bash
-tailscale status                          # you should be 'up'; forwarder listed
-tailscale status --json | grep -A3 -i 'fw-default-stg'   # check it advertises a subnet route
+gcloud compute ssh vm-crossplane-bastion-stg \
+  --zone=us-west1-a --project=jota-infra --tunnel-through-iap
 ```
 
-If you're logged out: open the Tailscale app / `tailscale up`. If the forwarder shows no
-subnet route covering the cluster, that's the admin-approval item from "What needs a human."
+First run may prompt to enable the IAP API / create an SSH key — say yes. If it errors on
+permissions, you need `roles/iap.tunnelResourceAccessor` + OS Login on the bastion (the
+"human with access" item).
 
-**Get cluster credentials.** This writes a context into your kubeconfig pointing at the
-cluster's **private** endpoint; it's reachable because Tailscale routes that VPC CIDR:
-
-```bash
-gcloud container clusters get-credentials core-stg \
-  --region=us-west1 --project=stp-core-dev --internal-ip
-```
-
-(`--internal-ip` = use the private endpoint, not a public one. Confirm the cluster name
-`core-stg` with infra; it's from the octopus core/stg overlay.)
-
-**Verify the connection and that Crossplane is healthy:**
+**On the bastion, connect to the cluster and confirm Crossplane is healthy:**
 
 ```bash
-kubectl config current-context                 # names the staging cluster
-kubectl get nodes                              # returns a node list = you can reach the API
+# the bastion can reach the private master; get-credentials wires kubectl to it
+gcloud container clusters get-credentials gke-crossplane-stg \
+  --region=us-west1 --project=jota-infra --internal-ip
+
+kubectl get nodes                              # node list = you can reach the API server
 kubectl get providers.pkg.crossplane.io        # provider-gcp-* rows, INSTALLED=True HEALTHY=True
 ```
 
-`kubectl get nodes` hanging means the network path is the problem: Tailscale down, or the
-forwarder isn't advertising the cluster subnet, or you lack RBAC. The three commands above
-isolate which.
+If `kubectl get nodes` returns nodes and the providers are healthy, **the bastion is your
+deploy box** — you run the rest of the steps *from here*, not your laptop.
 
 > Why `get nodes` if we're not using pods? It's just the cheapest "can I reach and am I
 > authorized against the API server" probe. We never schedule a pod.
+
+**Get the repo onto the bastion** (so you can `kubectl apply -k` from it). Either clone it
+there, or render locally and copy just the YAML up. Simplest if the bastion has git + access:
+
+```bash
+# on the bastion
+git clone <this-repo-url> && cd <repo>/   # or scp the rendered file up (see Step 5)
+```
+
+If the bastion can't clone (no repo access), render on your laptop and copy the result:
+
+```bash
+# on your LAPTOP
+kubectl kustomize deploy/crossplane/overlays/stg > /tmp/fcc-stg.yaml
+gcloud compute scp /tmp/fcc-stg.yaml vm-crossplane-bastion-stg:~/fcc-stg.yaml \
+  --zone=us-west1-a --project=jota-infra --tunnel-through-iap
+# then on the bastion you 'kubectl apply -f fcc-stg.yaml' instead of '-k ...'
+```
 
 ---
 
 ## Step 5 — Server-side dry-run (validate without creating)
 
+Run this **on the bastion** (where kubectl points at the cluster). If you cloned the repo
+there use `-k`; if you scp'd the rendered file use `-f fcc-stg.yaml`:
+
 ```bash
-kubectl apply -k deploy/crossplane/overlays/stg --dry-run=server
+kubectl apply -k deploy/crossplane/overlays/stg --dry-run=server   # cloned repo
+# or:
+kubectl apply -f fcc-stg.yaml --dry-run=server                     # scp'd render
 ```
 
 `--dry-run=server` sends the objects to the cluster's API server, which validates them
@@ -255,13 +297,15 @@ back. Note: with Tailscale as the real access path, these IAP/OS-Login grants ar
 
 ## Step 7 — Apply (first step that creates real infra)
 
+On the bastion (same `-k` vs `-f` choice as Step 5):
+
 ```bash
-kubectl apply -k deploy/crossplane/overlays/stg
+kubectl apply -k deploy/crossplane/overlays/stg     # or: kubectl apply -f fcc-stg.yaml
 ```
 
 Each line printed = an MR accepted into the cluster (`created`/`configured`). The reconcile
-loop now starts calling GCP. Cost is small (one `e2-standard-2` + NAT, ~tens of $/mo) and
-fully reversible (Step 10).
+loop now starts calling GCP — creating the resources **in `stp-core-dev`** (per the overlay).
+Cost is small (one `e2-standard-2` + NAT, ~tens of $/mo) and fully reversible (Step 10).
 
 ---
 
@@ -339,35 +383,42 @@ YAML). The VM/network/etc. that you want gone must be deleted in GCP directly (c
 ## One-screen reference
 
 ```bash
-# tools + auth
+# --- on your LAPTOP ---
 brew install --cask google-cloud-sdk
-gcloud auth login && gcloud config set project stp-core-dev
+gcloud auth login && gcloud config set project jota-infra
 
-# connect kubectl to the private cluster (Tailscale must be up)
-tailscale status
-gcloud container clusters get-credentials core-stg --region=us-west1 --project=stp-core-dev --internal-ip
+# render the manifests, copy to the bastion (or git clone on the bastion instead)
+kubectl kustomize deploy/crossplane/overlays/stg > /tmp/fcc-stg.yaml
+gcloud compute scp /tmp/fcc-stg.yaml vm-crossplane-bastion-stg:~/fcc-stg.yaml \
+  --zone=us-west1-a --project=jota-infra --tunnel-through-iap
+
+# SSH into the bastion (deploy box inside the VPC)
+gcloud compute ssh vm-crossplane-bastion-stg --zone=us-west1-a --project=jota-infra --tunnel-through-iap
+
+# --- on the BASTION ---
+gcloud container clusters get-credentials gke-crossplane-stg --region=us-west1 --project=jota-infra --internal-ip
 kubectl get nodes
 kubectl get providers.pkg.crossplane.io
 
-# render → validate → apply → watch
-kubectl kustomize deploy/crossplane/overlays/stg
-kubectl apply   -k deploy/crossplane/overlays/stg --dry-run=server
-kubectl apply   -k deploy/crossplane/overlays/stg
-kubectl get managed -l service=free-claude-code -w
+kubectl apply -f fcc-stg.yaml --dry-run=server     # validate
+kubectl apply -f fcc-stg.yaml                      # CREATE (resources land in stp-core-dev)
+kubectl get managed -l service=free-claude-code -w # watch until READY+SYNCED
 
-# secret values (post-create)
-echo -n "PROVIDER-API-KEY"            | gcloud secrets versions add fcc-provider-key   --project=stp-core-dev --data-file=-
+# secret values (post-create; from laptop or bastion, project = stp-core-dev where the secret lives)
+echo -n "PROVIDER-API-KEY"              | gcloud secrets versions add fcc-provider-key   --project=stp-core-dev --data-file=-
 echo -n "TAILSCALE-OAUTH-CLIENT-SECRET" | gcloud secrets versions add fcc-tailscale-oauth --project=stp-core-dev --data-file=-
 
 # teardown (Orphan policy leaves GCP resources — delete them in GCP if you want them gone)
-kubectl delete -k deploy/crossplane/overlays/stg
+kubectl delete -f fcc-stg.yaml
 ```
 
 ---
 
 ## Where to stop and ask
 
-- `kubectl get nodes` hangs → network/access (Tailscale route or RBAC), not a manifest issue.
+- Can't SSH the bastion → IAP permission (`roles/iap.tunnelResourceAccessor` + OS Login on
+  `vm-crossplane-bastion-stg`, project `jota-infra`).
+- `kubectl get nodes` hangs on the bastion → cluster RBAC, not a manifest issue.
 - `--dry-run=server` field errors → provider-schema mismatch; paste to me.
 - A resource stuck `READY=False` → read its `describe` Conditions/Events; paste to me.
 - Reaching the startup-script step → ping me to wire the patch.
