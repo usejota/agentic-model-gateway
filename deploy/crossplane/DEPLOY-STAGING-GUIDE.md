@@ -199,67 +199,69 @@ staging" check.
 
 ---
 
-## Step 4 — Get onto the bastion and reach the Crossplane cluster
+## Step 4 — Open a tunnel to the Crossplane cluster (the octopus pattern)
 
-The Crossplane control plane (`gke-crossplane-stg`, master `172.31.255.2`) is private. The
-intended way in is the **bastion** `vm-crossplane-bastion-stg` — a jump host inside the
-`jota-infra` VPC. You SSH to it through Google IAP (no public IP needed):
+This is the part everyone gets wrong at first (I did too). **You do NOT shell into the bastion
+and run kubectl there.** The bastion's own service account can't touch the cluster, and that's
+fine — the bastion is just a **dumb TCP tunnel**. You run kubectl on **your laptop**, as
+**yourself**, with traffic forwarded through the bastion to the cluster's private API. This is
+exactly how octopus deploys Marble (`mise run crossplane-tunnel-stg` + `infra-marble-stg`).
 
-```bash
-gcloud compute ssh vm-crossplane-bastion-stg \
-  --zone=us-west1-a --project=jota-infra --tunnel-through-iap
-```
+Helon's words: *"eu não acesso o cluster do crossplane, só envio o yaml"* — you don't log into
+the cluster, you just send YAML through a forwarded port.
 
-First run may prompt to enable the IAP API / create an SSH key — say yes. If it errors on
-permissions, you need `roles/iap.tunnelResourceAccessor` + OS Login on the bastion (the
-"human with access" item).
-
-**On the bastion, connect to the cluster and confirm Crossplane is healthy:**
+**Get the cluster's private endpoint** (you'll plug it into the tunnel):
 
 ```bash
-# the bastion can reach the private master; get-credentials wires kubectl to it
-gcloud container clusters get-credentials gke-crossplane-stg \
-  --region=us-west1 --project=jota-infra --internal-ip
-
-kubectl get nodes                              # node list = you can reach the API server
-kubectl get providers.pkg.crossplane.io        # provider-gcp-* rows, INSTALLED=True HEALTHY=True
+gcloud container clusters describe gke-crossplane-stg \
+  --region=us-west1 --project=jota-infra \
+  --format='value(privateClusterConfig.privateEndpoint)'
+# e.g. 172.31.255.2
 ```
 
-If `kubectl get nodes` returns nodes and the providers are healthy, **the bastion is your
-deploy box** — you run the rest of the steps *from here*, not your laptop.
-
-> Why `get nodes` if we're not using pods? It's just the cheapest "can I reach and am I
-> authorized against the API server" probe. We never schedule a pod.
-
-**Get the repo onto the bastion** (so you can `kubectl apply -k` from it). Either clone it
-there, or render locally and copy just the YAML up. Simplest if the bastion has git + access:
+**Terminal 1 — open the tunnel and LEAVE IT RUNNING.** `-L 8443:<ENDPOINT>:443 -N` means
+"forward my laptop's localhost:8443 → through the bastion → to the cluster API on :443, and
+run no remote command (`-N`)":
 
 ```bash
-# on the bastion
-git clone <this-repo-url> && cd <repo>/   # or scp the rendered file up (see Step 5)
+gcloud compute ssh vm-crossplane-bastion-stg --project=jota-infra --zone=us-west1-a \
+  --tunnel-through-iap -- -L 8443:172.31.255.2:443 -N
 ```
 
-If the bastion can't clone (no repo access), render on your laptop and copy the result:
+(If SSH fails on permissions, you need `roles/iap.tunnelResourceAccessor` + OS Login on the
+bastion — the "human with access" item.)
+
+**Terminal 2 — verify the tunnel, then point kubectl at it.** The magic is the `$CP` override:
+`--server=https://localhost:8443 --insecure-skip-tls-verify` tells kubectl to talk to the local
+tunnel instead of the real endpoint (the cert won't match localhost, hence skip-tls-verify):
 
 ```bash
-# on your LAPTOP
-kubectl kustomize deploy/crossplane/overlays/stg > /tmp/fcc-stg.yaml
-gcloud compute scp /tmp/fcc-stg.yaml vm-crossplane-bastion-stg:~/fcc-stg.yaml \
-  --zone=us-west1-a --project=jota-infra --tunnel-through-iap
-# then on the bastion you 'kubectl apply -f fcc-stg.yaml' instead of '-k ...'
+curl -sk https://localhost:8443/healthz && echo "  <- tunnel OK"
+
+# write a kubeconfig entry (the --server override below replaces its endpoint)
+gcloud container clusters get-credentials gke-crossplane-stg --region=us-west1 --project=jota-infra
+
+CP="--server=https://localhost:8443 --insecure-skip-tls-verify"
+
+# sanity: Crossplane providers healthy?
+kubectl get providers.pkg.crossplane.io $CP    # provider-gcp-* INSTALLED=True HEALTHY=True
 ```
+
+If `get providers` lists healthy `provider-gcp-*` rows, you're connected. You run every later
+`kubectl` from **this laptop terminal**, always appending `$CP`.
+
+> Why this beats shelling into the bastion: kubectl authenticates as **your** GCP user
+> (`adm-paulo@`, which has cluster RBAC), not the bastion VM's service account (which doesn't).
+> The 403 you hit earlier was from running kubectl *on* the bastion as its SA.
 
 ---
 
 ## Step 5 — Server-side dry-run (validate without creating)
 
-Run this **on the bastion** (where kubectl points at the cluster). If you cloned the repo
-there use `-k`; if you scp'd the rendered file use `-f fcc-stg.yaml`:
+From your **laptop** (Terminal 2, tunnel still up in Terminal 1), with `$CP` appended:
 
 ```bash
-kubectl apply -k deploy/crossplane/overlays/stg --dry-run=server   # cloned repo
-# or:
-kubectl apply -f fcc-stg.yaml --dry-run=server                     # scp'd render
+kubectl apply -k deploy/crossplane/overlays/stg $CP --dry-run=server
 ```
 
 `--dry-run=server` sends the objects to the cluster's API server, which validates them
@@ -297,10 +299,10 @@ back. Note: with Tailscale as the real access path, these IAP/OS-Login grants ar
 
 ## Step 7 — Apply (first step that creates real infra)
 
-On the bastion (same `-k` vs `-f` choice as Step 5):
+From your laptop, tunnel up, `$CP` appended:
 
 ```bash
-kubectl apply -k deploy/crossplane/overlays/stg     # or: kubectl apply -f fcc-stg.yaml
+kubectl apply -k deploy/crossplane/overlays/stg $CP
 ```
 
 Each line printed = an MR accepted into the cluster (`created`/`configured`). The reconcile
@@ -312,7 +314,7 @@ Cost is small (one `e2-standard-2` + NAT, ~tens of $/mo) and fully reversible (S
 ## Step 8 — Watch reconciliation
 
 ```bash
-kubectl get managed -l service=free-claude-code -w
+kubectl get managed -l service=free-claude-code $CP -w
 ```
 
 Wait for every row `READY=True SYNCED=True`. Order of readiness roughly follows dependencies
@@ -321,8 +323,8 @@ Wait for every row `READY=True SYNCED=True`. Order of readiness roughly follows 
 When something stalls, the resource tells you why:
 
 ```bash
-kubectl describe <kind> <name> -n crossplane-system
-# e.g. kubectl describe instance fcc-proxy -n crossplane-system
+kubectl describe <kind> <name> -n crossplane-system $CP
+# e.g. kubectl describe instance fcc-proxy -n crossplane-system $CP
 ```
 
 Read the **Conditions** and **Events** at the bottom — Crossplane surfaces the raw GCP API
@@ -370,7 +372,7 @@ name, points Claude Code at it, you send a prompt and get a streamed reply.
 ## Step 10 — Teardown
 
 ```bash
-kubectl delete -k deploy/crossplane/overlays/stg
+kubectl delete -k deploy/crossplane/overlays/stg $CP
 ```
 
 Caveat: MRs use `deletionPolicy: Orphan`, so deleting the manifest **leaves the underlying GCP
@@ -383,42 +385,44 @@ YAML). The VM/network/etc. that you want gone must be deleted in GCP directly (c
 ## One-screen reference
 
 ```bash
-# --- on your LAPTOP ---
+# --- one-time ---
 brew install --cask google-cloud-sdk
 gcloud auth login && gcloud config set project jota-infra
+ENDPOINT=$(gcloud container clusters describe gke-crossplane-stg --region=us-west1 \
+  --project=jota-infra --format='value(privateClusterConfig.privateEndpoint)')
 
-# render the manifests, copy to the bastion (or git clone on the bastion instead)
-kubectl kustomize deploy/crossplane/overlays/stg > /tmp/fcc-stg.yaml
-gcloud compute scp /tmp/fcc-stg.yaml vm-crossplane-bastion-stg:~/fcc-stg.yaml \
-  --zone=us-west1-a --project=jota-infra --tunnel-through-iap
+# --- TERMINAL 1: open the tunnel, leave running ---
+gcloud compute ssh vm-crossplane-bastion-stg --project=jota-infra --zone=us-west1-a \
+  --tunnel-through-iap -- -L 8443:$ENDPOINT:443 -N
 
-# SSH into the bastion (deploy box inside the VPC)
-gcloud compute ssh vm-crossplane-bastion-stg --zone=us-west1-a --project=jota-infra --tunnel-through-iap
+# --- TERMINAL 2: deploy from your laptop, through the tunnel ---
+curl -sk https://localhost:8443/healthz && echo " tunnel OK"
+gcloud container clusters get-credentials gke-crossplane-stg --region=us-west1 --project=jota-infra
+CP="--server=https://localhost:8443 --insecure-skip-tls-verify"
 
-# --- on the BASTION ---
-gcloud container clusters get-credentials gke-crossplane-stg --region=us-west1 --project=jota-infra --internal-ip
-kubectl get nodes
-kubectl get providers.pkg.crossplane.io
+kubectl get providers.pkg.crossplane.io $CP                          # sanity
+kubectl apply -k deploy/crossplane/overlays/stg $CP --dry-run=server # validate
+kubectl apply -k deploy/crossplane/overlays/stg $CP                  # CREATE (lands in stp-core-dev)
+kubectl get managed -l service=free-claude-code $CP -w               # watch until READY+SYNCED
 
-kubectl apply -f fcc-stg.yaml --dry-run=server     # validate
-kubectl apply -f fcc-stg.yaml                      # CREATE (resources land in stp-core-dev)
-kubectl get managed -l service=free-claude-code -w # watch until READY+SYNCED
-
-# secret values (post-create; from laptop or bastion, project = stp-core-dev where the secret lives)
+# secret values (post-create; the secrets live in stp-core-dev)
 echo -n "PROVIDER-API-KEY"              | gcloud secrets versions add fcc-provider-key   --project=stp-core-dev --data-file=-
 echo -n "TAILSCALE-OAUTH-CLIENT-SECRET" | gcloud secrets versions add fcc-tailscale-oauth --project=stp-core-dev --data-file=-
 
 # teardown (Orphan policy leaves GCP resources — delete them in GCP if you want them gone)
-kubectl delete -f fcc-stg.yaml
+kubectl delete -k deploy/crossplane/overlays/stg $CP
 ```
 
 ---
 
 ## Where to stop and ask
 
-- Can't SSH the bastion → IAP permission (`roles/iap.tunnelResourceAccessor` + OS Login on
-  `vm-crossplane-bastion-stg`, project `jota-infra`).
-- `kubectl get nodes` hangs on the bastion → cluster RBAC, not a manifest issue.
+- Tunnel SSH (Terminal 1) fails → IAP permission (`roles/iap.tunnelResourceAccessor` + OS
+  Login on `vm-crossplane-bastion-stg`, project `jota-infra`).
+- `curl https://localhost:8443/healthz` fails → tunnel (Terminal 1) isn't up / wrong endpoint.
+- `kubectl ... $CP` returns 403 → your GCP user lacks cluster RBAC on `gke-crossplane-stg`
+  (NOT a tunnel issue). Note: run kubectl on your LAPTOP with `$CP`, never on the bastion —
+  on the bastion it auths as the VM's SA and 403s.
 - `--dry-run=server` field errors → provider-schema mismatch; paste to me.
 - A resource stuck `READY=False` → read its `describe` Conditions/Events; paste to me.
 - Reaching the startup-script step → ping me to wire the patch.
