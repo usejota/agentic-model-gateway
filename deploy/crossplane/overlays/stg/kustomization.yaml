@@ -151,9 +151,9 @@ patches:
       - op: replace
         path: /spec/forProvider/zone
         value: us-west1-a
-      - op: replace
-        path: /spec/forProvider/metadata/PROVIDER_KEY_SECRET_RESOURCE
-        value: projects/stp-core-dev/secrets/fcc-provider-key/versions/latest
+      # Option A (Admin UI sets provider keys): leave PROVIDER_KEY_SECRET_RESOURCE
+      # empty. Setting it activates the runtime-fetch path, which needs the gcp
+      # extra (google-cloud-secret-manager) installed — not used in this trial.
       # fcc-repo-branch defaults to main in base — staging tracks main now that
       # the hardening is merged. (Override here if a staging-only branch is needed.)
 

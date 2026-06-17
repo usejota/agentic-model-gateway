@@ -67,7 +67,15 @@ id -u "${FCC_USER}" >/dev/null 2>&1 || useradd -m -s /bin/bash "${FCC_USER}"
 # 2. Install uv + Python + the proxy as the fcc user.
 # ---------------------------------------------------------------------------
 log "Installing uv, Python and the proxy as '${FCC_USER}'..."
-sudo -u "${FCC_USER}" REPO_URL="${REPO_URL}" REPO_BRANCH="${REPO_BRANCH}" bash -lc '
+# Install the gcp extra (google-cloud-secret-manager) only when the runtime
+# Secret Manager fetch is actually configured — otherwise base deps are enough.
+# Without this, setting PROVIDER_KEY_SECRET_RESOURCE crashes the proxy on a
+# missing-import (the validator needs the extra). See Option A vs runtime-fetch.
+SYNC_EXTRAS=""
+if [ -n "${SECRET_RESOURCE}" ]; then
+  SYNC_EXTRAS="--extra gcp"
+fi
+sudo -u "${FCC_USER}" REPO_URL="${REPO_URL}" REPO_BRANCH="${REPO_BRANCH}" SYNC_EXTRAS="${SYNC_EXTRAS}" bash -lc '
   set -euo pipefail
   if [ ! -x "$HOME/.local/bin/uv" ]; then
     curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -82,7 +90,7 @@ sudo -u "${FCC_USER}" REPO_URL="${REPO_URL}" REPO_BRANCH="${REPO_BRANCH}" bash -
   fi
   cd "$HOME/free-claude-code"
   uv python install 3.14.0
-  uv sync
+  uv sync ${SYNC_EXTRAS}
 '
 
 # ---------------------------------------------------------------------------
