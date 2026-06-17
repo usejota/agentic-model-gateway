@@ -89,7 +89,7 @@ else
   deadline=$(( $(date +%s) + WAIT_SECS ))
   until port_in_use "${LOCAL_PORT}"; do
     if ! kill -0 "${TUNNEL_PID}" 2>/dev/null; then
-      die "Tunnel process exited before it became ready. Check IAP access (are you in the eng-claude group?) and 'gcloud auth login'."
+      die "Tunnel process exited before it became ready. Check IAP access (are you in the ai-gateway group?) and 'gcloud auth login'."
     fi
     if [ "$(date +%s)" -ge "${deadline}" ]; then
       kill "${TUNNEL_PID}" 2>/dev/null || true

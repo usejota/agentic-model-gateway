@@ -49,7 +49,7 @@ engineer laptop                         GCP (no external IP)
 1. **gcloud** installed and authenticated (`gcloud auth login`) with rights to create infra in the target project.
 2. **Project** exists (default `jota-fcc-proxy`) and billing is enabled.
 3. **IAM groups** decided:
-   - tunnel users — get `roles/iap.tunnelResourceAccessor` (default `eng-claude@jota.ai`).
+   - tunnel users — get `roles/iap.tunnelResourceAccessor` (default `ai-gateway@jota.ai`).
    - VM admins — get `roles/compute.osLogin` for SSH to the Admin UI.
 4. **OS Login** is enabled on the VM (set by `provision.sh` via `enable-oslogin=TRUE`).
 5. **IAP TCP forwarding quota.** Default is **25 tunnels/project** — too low for 50 users (proxy + SSH tunnel each ≈ 100). Request an increase **before** rollout: Console → IAM & Admin → Quotas → filter "IAP TCP forwarding". Verify with `gcloud compute project-info describe --project <PROJECT> | grep -A5 -i iap`.
@@ -62,8 +62,8 @@ engineer laptop                         GCP (no external IP)
 export PROJECT=jota-fcc-proxy
 export REGION=southamerica-east1
 export ZONE=southamerica-east1-a
-export IAP_USER_GROUP='group:eng-claude@jota.ai'
-export ADMIN_GROUP='group:eng-admins@jota.ai'
+export IAP_USER_GROUP='group:ai-gateway@jota.ai'
+export ADMIN_GROUP='group:ai-gateway-admins@jota.ai'
 
 # 2. Provision everything. Re-runnable; create steps tolerate "already exists".
 cd deploy

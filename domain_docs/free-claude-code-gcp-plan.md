@@ -137,11 +137,11 @@ Notes:
 
 ## 4. IAM — who is allowed through IAP
 
-Grant the IAP tunnel role to a **Google Group** (e.g. `eng-claude@jota.ai`), not individuals, so onboarding/offboarding is just group membership:
+Grant the IAP tunnel role to a **Google Group** (e.g. `ai-gateway@jota.ai`), not individuals, so onboarding/offboarding is just group membership:
 
 ```bash
 gcloud compute instances add-iam-policy-binding fcc-proxy --zone=<ZONE> \
-  --member='group:eng-claude@jota.ai' \
+  --member='group:ai-gateway@jota.ai' \
   --role='roles/iap.tunnelResourceAccessor'
 ```
 

@@ -172,7 +172,7 @@ gcloud compute instances create fcc-proxy \
 
 **Solution:**
 - Enable OS Login on project (if not already)
-- Grant IAP group (e.g., `eng-claude@jota.ai`) role `roles/compute.osLogin` on instance
+- Grant IAP group (e.g., `ai-gateway@jota.ai`) role `roles/compute.osLogin` on instance
 - Document that SSH access requires OS Login and appropriate IAM role
 
 ## Summary of Security Improvements

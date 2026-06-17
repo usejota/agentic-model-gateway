@@ -58,8 +58,8 @@ PROXY_PORT="${PROXY_PORT:-8082}"
 IAP_CIDR="35.235.240.0/20"
 
 # IAM groups (least privilege: tunnel users vs VM admins). Override per org.
-IAP_USER_GROUP="${IAP_USER_GROUP:-group:eng-claude@jota.ai}"   # gets iap.tunnelResourceAccessor
-ADMIN_GROUP="${ADMIN_GROUP:-group:eng-claude@jota.ai}"          # gets osLogin for SSH admin
+IAP_USER_GROUP="${IAP_USER_GROUP:-group:ai-gateway@jota.ai}"   # gets iap.tunnelResourceAccessor
+ADMIN_GROUP="${ADMIN_GROUP:-group:ai-gateway-admins@jota.ai}"          # gets osLogin for SSH admin
 
 # Path to the startup script (defaults to alongside this script).
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
