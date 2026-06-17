@@ -156,6 +156,30 @@ if [ "${TS_ENABLED}" = "TRUE" ]; then
     --accept-dns=true
   unset TS_OAUTH_SECRET
   log "Tailscale up. Node should appear as ${TS_HOSTNAME} on the tailnet."
+
+  # Deregister from the tailnet on shutdown so a deleted/stopped VM doesn't leave a
+  # stale node behind (which would force the next VM to register as fcc-proxy-N).
+  # We log out on EVERY shutdown (reboot too) and simply re-up on the next boot —
+  # the auth key is reusable, so re-registration is free and the node always comes
+  # back as a clean '${TS_HOSTNAME}'. Avoids the fragile reboot-vs-poweroff
+  # distinction. GCE delete sends an ACPI shutdown (grace period), so a normal
+  # delete triggers this; a hard reset may skip it, but the next boot self-heals.
+  cat > /etc/systemd/system/fcc-tailscale-logout.service <<'EOF'
+[Unit]
+Description=Deregister this node from Tailscale on shutdown
+After=network-online.target tailscaled.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=true
+ExecStart=/bin/true
+ExecStop=/usr/bin/tailscale logout
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  systemctl daemon-reload
+  systemctl enable --now fcc-tailscale-logout.service
 fi
 
 # ---------------------------------------------------------------------------

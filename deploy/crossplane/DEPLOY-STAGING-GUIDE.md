@@ -389,6 +389,26 @@ name, points Claude Code at it, you send a prompt and get a streamed reply.
 
 ## Step 10 — Teardown
 
+**Tear down just the VM (and its tailnet node) cleanly:**
+
+```bash
+deploy/crossplane/teardown.sh stg $CP
+```
+
+This deletes the `Instance` MR, then gracefully deletes the GCP VM — the on-VM
+`fcc-tailscale-logout.service` runs `tailscale logout` on shutdown, so the tailnet node
+deregisters and the next deploy comes back as a clean `fcc-proxy` (no `fcc-proxy-N` pileup).
+Optionally pass `TS_API_TOKEN=tskey-api-... TS_TAILNET=jota.ai` to also delete the node via
+the Tailscale API as a belt-and-suspenders (in case the VM died without a graceful shutdown).
+
+**Why nodes used to pile up:** Tailscale identifies a node by the key in
+`/var/lib/tailscale/tailscaled.state` (on the boot disk). A `reset`/reboot reuses the same
+disk → same node. A *delete + recreate* gets a fresh disk → new node, and the old one lingers
+as `fcc-proxy`, forcing the new VM to `fcc-proxy-1`, `-2`, … The shutdown-logout hook fixes
+this by deregistering on the way down.
+
+**Full teardown (everything):**
+
 ```bash
 kubectl delete -k deploy/crossplane/overlays/stg $CP
 ```
