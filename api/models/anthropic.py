@@ -195,7 +195,13 @@ class MessagesRequest(BaseModel):
     messages: list[Message]
     system: str | list[SystemContent] | None = None
     stop_sequences: list[str] | None = None
-    stream: bool | None = True
+    # Default None (omitted) — matches the Anthropic Messages spec where `stream`
+    # defaults to non-streaming. The service treats only an explicit `stream: true`
+    # as streaming; omitted/null/false aggregate to a single JSON response. (A True
+    # default would make the SDK's non-streaming create() — which omits the field —
+    # wrongly stream, breaking clients that read usage off one JSON body, e.g. Claude
+    # Code's auto-mode classifier.)
+    stream: bool | None = None
     temperature: float | None = None
     top_p: float | None = None
     top_k: int | None = None

@@ -29,6 +29,7 @@ def test_create_message_skips_full_payload_debug_log_by_default():
         model="claude-3-haiku-20240307",
         max_tokens=10,
         messages=[Message(role="user", content="secret-user-text")],
+        stream=True,
     )
 
     with patch.object(services_mod.logger, "debug") as mock_debug:
@@ -56,6 +57,7 @@ def test_create_message_logs_full_payload_when_opt_in():
         model="claude-3-haiku-20240307",
         max_tokens=10,
         messages=[Message(role="user", content="visible")],
+        stream=True,
     )
 
     with patch.object(services_mod.logger, "debug") as mock_debug:

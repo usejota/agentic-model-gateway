@@ -183,12 +183,17 @@ class ClaudeProxyService:
                     primary, fallbacks, input_tokens, request_id
                 )
 
-                # Honor stream:false — clients like Claude Code's auto-mode safety
-                # classifier and session-title side-queries send a non-streaming
-                # request and read usage.input_tokens off a single JSON body. The
-                # gateway is streaming-first, so aggregate our own SSE back into a
-                # Messages JSON response. Returns an awaitable the route awaits.
-                if request_data.stream is False:
+                # Non-streaming unless the client EXPLICITLY asked to stream.
+                # Per the Anthropic Messages spec, `stream` defaults to false: an
+                # omitted `stream` means a single JSON response. The Anthropic SDK's
+                # non-streaming `create()` omits the field entirely (it does not send
+                # `stream:false`) — e.g. Claude Code's auto-mode safety classifier and
+                # session-title side-queries, which then read `usage.input_tokens` off
+                # one JSON body. Treating omitted as streaming returns SSE to them and
+                # breaks the read ("undefined is not an object 'p.usage.input_tokens'"),
+                # which makes auto mode fail-closed. So only explicit `stream: true`
+                # streams; omitted / null / false aggregate to a Messages JSON body.
+                if request_data.stream is not True:
                     return self._aggregate_response(streamed, routed.request.model)
                 return anthropic_sse_streaming_response(streamed)
 

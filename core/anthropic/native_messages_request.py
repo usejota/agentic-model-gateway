@@ -241,6 +241,13 @@ def build_base_native_anthropic_request_body(
             thinking_enabled=thinking_enabled,
         )
 
+    # Always stream FROM the backend, regardless of the client's `stream` value.
+    # The gateway consumes the upstream SSE and either re-emits it (client asked to
+    # stream) or aggregates it into one JSON body (client wanted non-streaming). The
+    # client-facing `stream` field must not leak into the upstream request — set it
+    # explicitly here so it doesn't depend on the incoming default.
+    body["stream"] = True
+
     return body
 
 

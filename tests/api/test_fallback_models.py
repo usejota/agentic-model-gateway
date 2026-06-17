@@ -35,10 +35,13 @@ def _settings(fallback_models: str | None = None) -> Settings:
 
 
 def _request(model: str = "claude-sonnet-4") -> MessagesRequest:
+    # Explicit stream=True: the fallback tests exercise the streaming path. (Omitted
+    # stream now defaults to non-streaming, per the Anthropic spec.)
     return MessagesRequest(
         model=model,
         messages=[Message(role="user", content="hi")],
         max_tokens=16,
+        stream=True,
     )
 
 
@@ -201,6 +204,32 @@ class _SSEProvider:
             },
         )
         yield evt("message_stop", {"type": "message_stop"})
+
+
+@pytest.mark.asyncio
+async def test_omitted_stream_is_non_streaming() -> None:
+    # The Anthropic SDK's non-streaming create() OMITS `stream` (does not send
+    # stream:false). That must aggregate to JSON+usage, not stream — otherwise the
+    # auto-mode classifier reading usage.input_tokens off one body breaks.
+    import json as _json
+
+    provider = cast(BaseProvider, _SSEProvider())
+    svc = ClaudeProxyService(_settings(), provider_getter=lambda _pid: provider)
+    request = MessagesRequest(
+        model="claude-haiku-4",
+        messages=[Message(role="user", content="hi")],
+        max_tokens=16,
+        # stream omitted entirely
+    )
+    assert request.stream is None
+    result = svc.create_message(request)
+    import inspect
+
+    assert inspect.isawaitable(result)
+    response = await result
+    assert isinstance(response, JSONResponse)
+    body = _json.loads(bytes(response.body))
+    assert body["usage"]["input_tokens"] == 11
 
 
 @pytest.mark.asyncio
