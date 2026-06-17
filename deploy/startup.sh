@@ -47,7 +47,8 @@ FCC_HOME="/home/${FCC_USER}"
 APP_DIR="${FCC_HOME}/free-claude-code"
 ENV_DIR="${FCC_HOME}/.fcc"               # tmpfs-mounted when fallback is used
 ENV_FILE="${ENV_DIR}/env"
-REPO_URL="https://github.com/Alishahryar1/free-claude-code.git"
+REPO_URL="$(md fcc-repo-url)"; REPO_URL="${REPO_URL:-https://github.com/usejota/agentic-model-gateway.git}"
+REPO_BRANCH="$(md fcc-repo-branch)"; REPO_BRANCH="${REPO_BRANCH:-main}"
 
 log() { echo "[startup] $*"; }
 
@@ -66,16 +67,18 @@ id -u "${FCC_USER}" >/dev/null 2>&1 || useradd -m -s /bin/bash "${FCC_USER}"
 # 2. Install uv + Python + the proxy as the fcc user.
 # ---------------------------------------------------------------------------
 log "Installing uv, Python and the proxy as '${FCC_USER}'..."
-sudo -u "${FCC_USER}" bash -lc '
+sudo -u "${FCC_USER}" REPO_URL="${REPO_URL}" REPO_BRANCH="${REPO_BRANCH}" bash -lc '
   set -euo pipefail
   if [ ! -x "$HOME/.local/bin/uv" ]; then
     curl -LsSf https://astral.sh/uv/install.sh | sh
   fi
   export PATH="$HOME/.local/bin:$PATH"
   if [ ! -d "$HOME/free-claude-code/.git" ]; then
-    git clone '"${REPO_URL}"' "$HOME/free-claude-code"
+    git clone --branch "$REPO_BRANCH" "$REPO_URL" "$HOME/free-claude-code"
   else
-    git -C "$HOME/free-claude-code" pull --ff-only
+    git -C "$HOME/free-claude-code" fetch origin "$REPO_BRANCH"
+    git -C "$HOME/free-claude-code" checkout "$REPO_BRANCH"
+    git -C "$HOME/free-claude-code" pull --ff-only origin "$REPO_BRANCH"
   fi
   cd "$HOME/free-claude-code"
   uv python install 3.14.0

@@ -154,6 +154,10 @@ patches:
       - op: replace
         path: /spec/forProvider/metadata/PROVIDER_KEY_SECRET_RESOURCE
         value: projects/stp-core-dev/secrets/fcc-provider-key/versions/latest
+      # Staging runs the hardening branch until it merges to main.
+      - op: replace
+        path: /spec/forProvider/metadata/fcc-repo-branch
+        value: feat/gcp-hardening
 
   # --- Access-control IAM (instance-level) ---
   - target:

@@ -32,6 +32,10 @@ spec:
       PROVIDER_KEY_SECRET_RESOURCE: ""
       fcc-secret-name: fcc-provider-key
       fcc-port: "8082"
+      # Which repo/branch the VM clones + runs. Defaults in startup.sh point at the
+      # usejota fork main; overlays pin a branch (e.g. the hardening branch in stg).
+      fcc-repo-url: https://github.com/usejota/agentic-model-gateway.git
+      fcc-repo-branch: main
       # Tailscale: join the tailnet on boot so engineers reach the VM by MagicDNS
       # name (matches the staging tailscale-fw / PKI access pattern). The OAuth
       # client secret lives in the fcc-tailscale-oauth Secret Manager secret.
