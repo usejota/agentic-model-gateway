@@ -151,6 +151,46 @@ def test_admin_validate_rejects_bad_model_shape(monkeypatch, tmp_path):
     assert any("provider type" in error for error in body["errors"])
 
 
+def test_admin_exposes_fallback_models_field(monkeypatch, tmp_path):
+    _set_home(monkeypatch, tmp_path)
+    _clear_process_config(monkeypatch)
+    app = create_app(lifespan_enabled=False)
+
+    response = _local_client(app).get("/admin/api/config")
+
+    assert response.status_code == 200
+    body = response.json()
+    field = next(f for f in body["fields"] if f["key"] == "FALLBACK_MODELS")
+    # Lives on the Model Routing screen alongside MODEL/MODEL_*.
+    assert field["section"] == "models"
+    assert field["secret"] is False
+
+
+def test_admin_apply_round_trips_fallback_models(monkeypatch, tmp_path):
+    _set_home(monkeypatch, tmp_path)
+    _clear_process_config(monkeypatch)
+    app = create_app(lifespan_enabled=False)
+
+    response = _local_client(app).post(
+        "/admin/api/config/apply",
+        json={
+            "values": {
+                "MODEL": "open_router/test-model",
+                "FALLBACK_MODELS": "groq/llama-3.3-70b,open_router/deepseek/deepseek-chat",
+            }
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["applied"] is True
+    text = (tmp_path / ".fcc" / ".env").read_text("utf-8")
+    assert (
+        "FALLBACK_MODELS=groq/llama-3.3-70b,open_router/deepseek/deepseek-chat" in text
+        or 'FALLBACK_MODELS="groq/llama-3.3-70b,open_router/deepseek/deepseek-chat"'
+        in text
+    )
+
+
 def test_admin_apply_writes_complete_managed_env_and_masks_preview(
     monkeypatch, tmp_path
 ):

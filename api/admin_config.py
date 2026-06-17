@@ -437,6 +437,19 @@ FIELDS: tuple[ConfigFieldSpec, ...] = (
         description="Optional provider/model route for Haiku requests.",
     ),
     ConfigFieldSpec(
+        "FALLBACK_MODELS",
+        "Fallback Models",
+        "models",
+        settings_attr="fallback_models",
+        description=(
+            "Comma-separated provider/model routes tried in order when a request's "
+            "backend is overloaded/unavailable before any output (e.g. "
+            "open_router/deepseek/deepseek-chat,groq/llama-3.3-70b). Empty disables "
+            "fallback. Makes auto-mode's safety classifier resilient to a single "
+            "backend being briefly down."
+        ),
+    ),
+    ConfigFieldSpec(
         "ENABLE_MODEL_THINKING",
         "Enable Thinking",
         "thinking",

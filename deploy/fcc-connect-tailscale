@@ -71,7 +71,11 @@ log "Proxy reachable at ${FQDN}:${REMOTE_PORT}."
 export ANTHROPIC_BASE_URL="http://${FQDN}:${REMOTE_PORT}"
 export ANTHROPIC_AUTH_TOKEN="${AUTH_TOKEN}"
 export CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1   # enables the /model picker
-export CLAUDE_CODE_AUTO_COMPACT_WINDOW=190000
+# Auto-compact trigger (when Claude Code summarizes to free context space) — NOT a
+# hard cap. Set to match the BACKEND model's context window; the gateway routes to
+# third-party models whose context may be smaller than Anthropic's 200k. Too high vs
+# the backend => overflow/truncation; too low => compacts early. Override via env.
+export CLAUDE_CODE_AUTO_COMPACT_WINDOW="${CLAUDE_CODE_AUTO_COMPACT_WINDOW:-190000}"
 
 log "ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL} — launching claude."
 exec claude "$@"

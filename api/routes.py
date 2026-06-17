@@ -1,5 +1,7 @@
 """FastAPI route handlers."""
 
+import inspect
+
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from loguru import logger
 
@@ -169,8 +171,12 @@ async def create_message(
     service: ClaudeProxyService = Depends(get_proxy_service),
     _auth=Depends(require_api_key),
 ):
-    """Create a message (always streaming)."""
-    return service.create_message(request_data)
+    """Create a message. Streams by default; honors ``stream: false`` with an
+    aggregated non-streaming Messages JSON response (awaitable in that case)."""
+    result = service.create_message(request_data)
+    if inspect.isawaitable(result):
+        return await result
+    return result
 
 
 @router.api_route("/v1/messages", methods=["HEAD", "OPTIONS"])

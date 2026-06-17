@@ -160,6 +160,17 @@ class Settings(BaseSettings):
     model_sonnet: str | None = Field(default=None, validation_alias="MODEL_SONNET")
     model_haiku: str | None = Field(default=None, validation_alias="MODEL_HAIKU")
 
+    # Optional cross-model fallback chain. When a request's backend fails with an
+    # overload/5xx error *before any response has streamed*, the proxy retries the
+    # request on each of these models in order. Format: comma-separated
+    # ``provider/model`` refs (same form as MODEL), e.g.
+    # ``open_router/deepseek/deepseek-chat,groq/llama-3.3-70b``. Empty = disabled
+    # (no fallback; behavior unchanged). This makes auto-mode's safety classifier
+    # and all requests resilient to a single backend being briefly unavailable.
+    fallback_models: Annotated[list[str], NoDecode] = Field(
+        default_factory=list, validation_alias="FALLBACK_MODELS"
+    )
+
     # ==================== Per-Provider Proxy ====================
     nvidia_nim_proxy: str = Field(default="", validation_alias="NVIDIA_NIM_PROXY")
     open_router_proxy: str = Field(default="", validation_alias="OPENROUTER_PROXY")
@@ -411,6 +422,24 @@ class Settings(BaseSettings):
                 )
             result[name] = token
         return result
+
+    @field_validator("fallback_models", mode="before")
+    @classmethod
+    def parse_fallback_models(cls, v: Any) -> Any:
+        """Parse the fallback model chain from a comma-separated string.
+
+        Accepts a comma-separated list of ``provider/model`` refs
+        (``open_router/deepseek/deepseek-chat,groq/llama-3.3-70b``) or a list.
+        Blank entries and surrounding whitespace are ignored. An empty/blank
+        value yields an empty list (fallback disabled).
+        """
+        if v is None or v == "":
+            return []
+        if isinstance(v, (list, tuple)):
+            return [str(item).strip() for item in v if str(item).strip()]
+        if not isinstance(v, str):
+            return v
+        return [entry.strip() for entry in v.split(",") if entry.strip()]
 
     @property
     def claude_workspace(self) -> str:
