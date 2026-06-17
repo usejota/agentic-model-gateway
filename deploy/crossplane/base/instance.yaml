@@ -50,7 +50,10 @@ spec:
           name: fcc-subnetwork
         # No accessConfig block => the VM gets no external/public IP.
     serviceAccount:
-      - serviceAccountRef:
+      # Upbound provider-gcp v2.x: the attached SA is referenced by EMAIL
+      # (field `email`/`emailRef`/`emailSelector`), not `serviceAccountRef`.
+      # emailRef pulls the email from the fcc-sa ServiceAccount MR.
+      - emailRef:
           name: fcc-sa
         # API scope is broad by convention; effective access is constrained by the
         # SA's IAM (secret-level accessor + logWriter only). See security.md #2.

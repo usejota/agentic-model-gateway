@@ -231,28 +231,46 @@ gcloud compute ssh vm-crossplane-bastion-stg --project=jota-infra --zone=us-west
 (If SSH fails on permissions, you need `roles/iap.tunnelResourceAccessor` + OS Login on the
 bastion — the "human with access" item.)
 
-**Terminal 2 — verify the tunnel, then point kubectl at it.** The magic is the `$CP` override:
-`--server=https://localhost:8443 --insecure-skip-tls-verify` tells kubectl to talk to the local
+**Terminal 2 — verify the tunnel, then point kubectl at it.** The override flags
+`--server=https://localhost:8443 --insecure-skip-tls-verify` tell kubectl to talk to the local
 tunnel instead of the real endpoint (the cert won't match localhost, hence skip-tls-verify):
 
 ```bash
 curl -sk https://localhost:8443/healthz && echo "  <- tunnel OK"
 
+# kubectl needs the GKE auth plugin — install once if it complains:
+gcloud components install gke-gcloud-auth-plugin
+
 # write a kubeconfig entry (the --server override below replaces its endpoint)
 gcloud container clusters get-credentials gke-crossplane-stg --region=us-west1 --project=jota-infra
 
-CP="--server=https://localhost:8443 --insecure-skip-tls-verify"
-
-# sanity: Crossplane providers healthy?
-kubectl get providers.pkg.crossplane.io $CP    # provider-gcp-* INSTALLED=True HEALTHY=True
+# sanity: Crossplane providers healthy? (flags typed inline — see the zsh note below)
+kubectl get providers.pkg.crossplane.io \
+  --server=https://localhost:8443 --insecure-skip-tls-verify
 ```
 
-If `get providers` lists healthy `provider-gcp-*` rows, you're connected. You run every later
-`kubectl` from **this laptop terminal**, always appending `$CP`.
+If that lists healthy `provider-gcp-*` rows, you're connected. Run every later `kubectl` from
+**this laptop terminal** with those two flags appended.
+
+> **zsh gotcha — don't use `CP="--server=... --insecure-skip-tls-verify"`.** A plain string
+> var holding multiple flags is passed to kubectl as **one argument**, giving:
+> `error: host must be a URL or a host:port pair: "https://localhost:8443 --insecure-skip-tls-verify"`.
+> Two safe options:
+>   1. **Type the flags inline** every time (what the commands here do).
+>   2. **Use a zsh array** so it word-splits correctly:
+>      ```bash
+>      CP=(--server=https://localhost:8443 --insecure-skip-tls-verify)
+>      kubectl get providers.pkg.crossplane.io $CP    # array expands to 2 separate args ✓
+>      ```
+> (In bash, an unquoted string `$CP` happens to word-split and works; in zsh it does not by
+> default — hence the array. The array form is portable across both.)
 
 > Why this beats shelling into the bastion: kubectl authenticates as **your** GCP user
 > (`adm-paulo@`, which has cluster RBAC), not the bastion VM's service account (which doesn't).
 > The 403 you hit earlier was from running kubectl *on* the bastion as its SA.
+>
+> You may also see `CRITICAL: ACTION REQUIRED: gke-gcloud-auth-plugin ... not found` — that's
+> the plugin install above; run it and re-run get-credentials.
 
 ---
 
@@ -397,8 +415,9 @@ gcloud compute ssh vm-crossplane-bastion-stg --project=jota-infra --zone=us-west
 
 # --- TERMINAL 2: deploy from your laptop, through the tunnel ---
 curl -sk https://localhost:8443/healthz && echo " tunnel OK"
+gcloud components install gke-gcloud-auth-plugin    # once, if kubectl complains
 gcloud container clusters get-credentials gke-crossplane-stg --region=us-west1 --project=jota-infra
-CP="--server=https://localhost:8443 --insecure-skip-tls-verify"
+CP=(--server=https://localhost:8443 --insecure-skip-tls-verify)   # zsh ARRAY (not a string)
 
 kubectl get providers.pkg.crossplane.io $CP                          # sanity
 kubectl apply -k deploy/crossplane/overlays/stg $CP --dry-run=server # validate
