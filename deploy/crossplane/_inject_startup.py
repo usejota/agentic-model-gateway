@@ -13,14 +13,13 @@ import sys
 
 def main() -> int:
     docs = sys.stdin.read()
-    script = open(os.environ["STARTUP_PATH"]).read()
+    with open(os.environ["STARTUP_PATH"]) as f:
+        script = f.read()
 
     # Indent each script line for a YAML literal block. The field is at 4-space
     # indent; literal block content goes one level deeper (6 spaces).
     indent = "      "
-    block = "\n".join(
-        (indent + line) if line else "" for line in script.splitlines()
-    )
+    block = "\n".join((indent + line) if line else "" for line in script.splitlines())
 
     needle = '    metadataStartupScript: ""'
     replacement = "    metadataStartupScript: |\n" + block
