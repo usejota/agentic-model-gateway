@@ -86,6 +86,11 @@ sudo -u "${FCC_USER}" REPO_URL="${REPO_URL}" REPO_BRANCH="${REPO_BRANCH}" bash -
   cd "$HOME/free-claude-code"
   uv python install 3.14.0
   uv sync --extra gcp
+  # Warm the tiktoken encoding cache now, while normal DNS still works (before
+  # Tailscale starts). The proxy loads cl100k_base at import; if it had to fetch it
+  # from the internet at boot and DNS/egress were unavailable, it would crash-loop.
+  # Caching it on disk makes startup self-contained.
+  uv run python -c "import tiktoken; tiktoken.get_encoding(\"cl100k_base\")" || true
 '
 
 # ---------------------------------------------------------------------------
@@ -148,12 +153,19 @@ if [ "${TS_ENABLED}" = "TRUE" ]; then
   # owner is in group:infra, which owns the tag). Non-ephemeral: the node persists
   # across reboots rather than vanishing when offline.
   TS_OAUTH_SECRET="$(gcloud secrets versions access latest --secret="${TS_OAUTH_SECRET_NAME}")"
+  # --accept-dns=false: do NOT let Tailscale MagicDNS take over /etc/resolv.conf.
+  # This is a server that must resolve PUBLIC hosts (provider APIs, tiktoken's
+  # encoding download, package mirrors) via normal DNS. Accepting MagicDNS points
+  # resolv.conf at 100.100.100.100, which doesn't forward public queries unless a
+  # global nameserver is configured in the tailnet — breaking startup (tiktoken
+  # download fails -> proxy crash-loops). Engineers still reach the node by its
+  # MagicDNS name from THEIR side; the server itself doesn't need MagicDNS.
   tailscale up \
     --authkey="${TS_OAUTH_SECRET}" \
     --advertise-tags="${TS_TAGS}" \
     --hostname="${TS_HOSTNAME}" \
     --ssh \
-    --accept-dns=true
+    --accept-dns=false
   unset TS_OAUTH_SECRET
   log "Tailscale up. Node should appear as ${TS_HOSTNAME} on the tailnet."
 
