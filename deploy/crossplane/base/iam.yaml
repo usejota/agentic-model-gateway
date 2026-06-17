@@ -81,7 +81,7 @@ spec:
     instanceNameRef:
       name: fcc-proxy
     role: roles/iap.tunnelResourceAccessor
-    member: "" # patched per-env: group:eng-claude@jota.ai
+    member: "" # patched per-env: group:ai-gateway@jota.ai
   providerConfigRef:
     name: default
   deletionPolicy: Orphan
@@ -103,7 +103,7 @@ spec:
     instanceNameRef:
       name: fcc-proxy
     role: roles/compute.osLogin
-    member: "" # patched per-env: group:eng-claude-admins@jota.ai
+    member: "" # patched per-env: group:ai-gateway-admins@jota.ai
   providerConfigRef:
     name: default
   deletionPolicy: Orphan

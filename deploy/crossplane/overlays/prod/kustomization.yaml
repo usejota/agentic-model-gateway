@@ -167,7 +167,7 @@ patches:
         value: <ZONE>
       - op: replace
         path: /spec/forProvider/member
-        value: group:eng-claude@jota.ai
+        value: group:ai-gateway@jota.ai
   - target:
       kind: InstanceIAMMember
       name: fcc-oslogin-admins
@@ -180,4 +180,4 @@ patches:
         value: <ZONE>
       - op: replace
         path: /spec/forProvider/member
-        value: group:eng-claude-admins@jota.ai
+        value: group:ai-gateway-admins@jota.ai

@@ -110,10 +110,10 @@ Grant to a Google Group so onboarding is group membership:
 ```bash
 # Tunnel users (the whole eng group)
 gcloud compute instances add-iam-policy-binding fcc-proxy --zone=<ZONE> \
-  --member='group:eng-claude@jota.ai' --role='roles/iap.tunnelResourceAccessor'
+  --member='group:ai-gateway@jota.ai' --role='roles/iap.tunnelResourceAccessor'
 # SSH admins (smaller group) — OS Login
 gcloud compute instances add-iam-policy-binding fcc-proxy --zone=<ZONE> \
-  --member='group:eng-claude-admins@jota.ai' --role='roles/compute.osLogin'
+  --member='group:ai-gateway-admins@jota.ai' --role='roles/compute.osLogin'
 ```
 These can be promoted to `ProjectIAMMember` / instance-level IAM MRs in a follow-up if
 fully-declarative access control is wanted.

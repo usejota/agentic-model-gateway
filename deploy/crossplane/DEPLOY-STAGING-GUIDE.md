@@ -130,7 +130,7 @@ None of this is in the repo; resolve before Step 4:
    is the usual first-time blocker — ask whoever owns `jota-infra` (the cluster is shared infra).
 2. **(For the proxy's own access, not for deploying)** the Tailscale **OAuth client** +
    tailnet **ACL** for `tag:fcc-proxy`, and the two Google Groups
-   `eng-claude@jota.ai` / `eng-claude-admins@jota.ai`. Covered in Step 6 / Step 9; not needed
+   `ai-gateway@jota.ai` / `ai-gateway-admins@jota.ai`. Covered in Step 6 / Step 9; not needed
    to get the infra up.
 
 > Note on Tailscale: you do **not** need it to *deploy* — deploying goes through the bastion.
@@ -300,13 +300,13 @@ kubectl explain instance.spec.forProvider.networkInterface
 
 ## Step 6 — Access groups (only affects the 2 access-control MRs)
 
-The `InstanceIAMMember` MRs grant `group:eng-claude@jota.ai` (proxy/tunnel users) and
-`group:eng-claude-admins@jota.ai` (SSH). If those groups don't exist yet, those two MRs will
+The `InstanceIAMMember` MRs grant `group:ai-gateway@jota.ai` (proxy/tunnel users) and
+`group:ai-gateway-admins@jota.ai` (SSH). If those groups don't exist yet, those two MRs will
 sit `READY=False` — **the rest of the stack still comes up fine.** To unblock without waiting
 on group creation, point them at yourself in `overlays/stg/kustomization.yaml`:
 
 ```yaml
-        value: group:eng-claude@jota.ai      →   value: user:paulo@jota.ai
+        value: group:ai-gateway@jota.ai      →   value: user:paulo@jota.ai
 ```
 
 (both the `fcc-iap-tunnel-users` and `fcc-oslogin-admins` patches). Re-apply later to switch
