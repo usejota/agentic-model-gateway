@@ -1,0 +1,14 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# free-claude-code proxy GCP infra as Crossplane Managed Resources.
+# Apply via an overlay (e.g. overlays/prod), never the base directly — the base
+# leaves project/region/zone/member blank for per-env patching.
+resources:
+  - network.yaml
+  - router-nat.yaml
+  - firewall.yaml
+  - service-account.yaml
+  - secret.yaml
+  - iam.yaml
+  - instance.yaml

@@ -93,12 +93,20 @@ def require_api_key(
 ) -> None:
     """Require a server API key (Anthropic-style).
 
-    Checks `x-api-key` header or `Authorization: Bearer ...` against
-    `Settings.anthropic_auth_token`. If `ANTHROPIC_AUTH_TOKEN` is empty, this is a no-op.
+    Checks `x-api-key` header or `Authorization: Bearer ...` against the shared
+    `Settings.anthropic_auth_token` and any configured per-user tokens
+    (`Settings.proxy_user_tokens`). If no token of either kind is configured,
+    this is a no-op.
+
+    On success, the resolved identity is attached to ``request.state.proxy_user``
+    ("shared" for the shared token, or the per-user name) and logged at INFO so
+    downstream middleware/logging can attribute the request to an individual.
     """
-    anthropic_auth_token = settings.anthropic_auth_token.strip()
-    if not anthropic_auth_token:
+    shared_token = settings.anthropic_auth_token.strip()
+    user_tokens = settings.proxy_user_tokens
+    if not shared_token and not user_tokens:
         # No API key configured -> allow
+        request.state.proxy_user = "anonymous"
         return
 
     header = (
@@ -118,12 +126,27 @@ def require_api_key(
     if token and ":" in token:
         token = token.split(":", 1)[0].strip()
 
-    # Constant-time comparison to avoid leaking the configured token via
-    # response-time differences on a per-byte mismatch (CWE-208).
-    if not secrets.compare_digest(
-        token.encode("utf-8"), anthropic_auth_token.encode("utf-8")
-    ):
+    token_bytes = token.encode("utf-8")
+
+    # Compare against every configured candidate without early exit so the
+    # number of comparisons (and thus response time) does not depend on which
+    # candidate matched or on a per-byte mismatch (CWE-208).
+    matched_user: str | None = None
+    shared_matched = False
+    if shared_token:
+        shared_matched = secrets.compare_digest(
+            token_bytes, shared_token.encode("utf-8")
+        )
+    for name, candidate in user_tokens.items():
+        if secrets.compare_digest(token_bytes, candidate.encode("utf-8")):
+            matched_user = name
+
+    if matched_user is None and not shared_matched:
         raise HTTPException(status_code=401, detail="Invalid API key")
+
+    identity = matched_user if matched_user is not None else "shared"
+    request.state.proxy_user = identity
+    logger.info("Authenticated proxy request as user: {}", identity)
 
 
 def get_provider() -> BaseProvider:

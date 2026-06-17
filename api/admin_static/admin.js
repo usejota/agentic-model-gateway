@@ -110,6 +110,28 @@ async function load() {
   await refreshLocalStatus();
   updateDirtyState();
   showMessage("");
+  // Fire-and-forget: populate model suggestions without blocking page load.
+  loadModelOptions();
+}
+
+async function loadModelOptions() {
+  try {
+    const result = await api("/admin/api/models/refresh", {
+      method: "POST",
+      body: "{}",
+    });
+    const cached = result.cached_models || {};
+    const models = Object.entries(cached).flatMap(([providerId, ids]) =>
+      ids.map((model) => `${providerId}/${model}`),
+    );
+    state.modelOptions = Array.from(
+      new Set([...state.modelOptions, ...models]),
+    ).sort();
+    populateModelSelects();
+  } catch (error) {
+    // Non-fatal: suggestions stay empty until a provider is tested manually.
+    console.warn("Model options refresh failed", error);
+  }
 }
 
 function renderNav() {
@@ -324,6 +346,13 @@ function inputForField(field) {
     return select;
   }
 
+  if (field.key.startsWith("MODEL")) {
+    const select = document.createElement("select");
+    select.dataset.modelSelect = "true";
+    fillModelSelect(select, field.value || "");
+    return select;
+  }
+
   if (field.type === "textarea") {
     const textarea = document.createElement("textarea");
     textarea.value = field.value || "";
@@ -341,9 +370,6 @@ function inputForField(field) {
     input.autocomplete = "off";
   } else {
     input.value = field.value || "";
-  }
-  if (field.key.startsWith("MODEL")) {
-    input.setAttribute("list", "model-options");
   }
   return input;
 }
@@ -462,7 +488,7 @@ async function testProvider(providerId, button) {
           ...result.models.map((model) => `${providerId}/${model}`),
         ]),
       ).sort();
-      syncModelDatalist();
+      populateModelSelects();
     } else {
       updateProviderCard(providerId, "offline", result.error_type, result.error_type);
     }
@@ -472,15 +498,22 @@ async function testProvider(providerId, button) {
   }
 }
 
-function syncModelDatalist() {
-  let datalist = byId("model-options");
-  if (!datalist) {
-    datalist = document.createElement("datalist");
-    datalist.id = "model-options";
-    document.body.appendChild(datalist);
+function fillModelSelect(select, currentValue) {
+  const previous = currentValue != null ? currentValue : select.value;
+  select.innerHTML = "";
+  select.appendChild(option("", "— use default —"));
+  const values = [...state.modelOptions];
+  if (previous && !values.includes(previous)) {
+    values.unshift(previous);
   }
-  datalist.innerHTML = "";
-  state.modelOptions.forEach((model) => datalist.appendChild(option(model, model)));
+  values.forEach((model) => select.appendChild(option(model, model)));
+  select.value = previous || "";
+}
+
+function populateModelSelects() {
+  document
+    .querySelectorAll('select[data-model-select="true"]')
+    .forEach((select) => fillModelSelect(select, select.value));
 }
 
 function showMessage(message, kind = "") {

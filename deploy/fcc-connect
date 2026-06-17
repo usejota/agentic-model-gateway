@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+#
+# fcc-connect — engineer wrapper that opens an IAP TCP tunnel to the
+# free-claude-code proxy and launches Claude Code against it.
+#
+# What it does (see domain_docs/networking.md §5 and free-claude-code-gcp-plan.md §6):
+#   1. Picks a FREE local port (does NOT hardcode 8082, which silently fails on
+#      conflict). Honors FCC_LOCAL_PORT if you want a fixed one.
+#   2. Reuses an existing healthy tunnel if one is already listening on that port.
+#   3. Starts the IAP tunnel in the background with the connection timeout
+#      disabled so long coding sessions don't drop after idle.
+#   4. Waits up to 60s for the tunnel, with a hard failure gate (no silent
+#      "claude can't connect" surprises).
+#   5. Exports the Claude Code env vars and execs claude.
+#
+# RECOVERY: if the tunnel is wedged or claude can't connect, kill stale tunnels
+# and rerun:
+#     pkill -f 'compute start-iap-tunnel'      # portable
+#     killall gcloud 2>/dev/null               # blunt fallback
+#     fcc-connect
+#
+set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# CONFIG — override via env vars.
+# ---------------------------------------------------------------------------
+PROJECT="${FCC_PROJECT:-jota-fcc-proxy}"
+ZONE="${FCC_ZONE:-southamerica-east1-a}"
+VM_NAME="${FCC_VM:-fcc-proxy}"
+REMOTE_PORT="${FCC_REMOTE_PORT:-8082}"      # the proxy's listen port on the VM
+AUTH_TOKEN="${FCC_AUTH_TOKEN:-freecc}"      # static shared token (see security.md #1)
+WAIT_SECS="${FCC_WAIT_SECS:-60}"
+
+log() { echo "[fcc-connect] $*" >&2; }
+die() { echo "[fcc-connect] ERROR: $*" >&2; exit 1; }
+
+command -v gcloud >/dev/null 2>&1 || die "gcloud not found in PATH. Install the Cloud SDK."
+
+# ---------------------------------------------------------------------------
+# Port helpers — pick a port that is actually free on the loopback.
+# ---------------------------------------------------------------------------
+port_in_use() {
+  # Returns 0 if something is already listening on localhost:$1.
+  local p="$1"
+  if command -v nc >/dev/null 2>&1; then
+    nc -z localhost "${p}" >/dev/null 2>&1
+  else
+    # Fallback: bash /dev/tcp probe.
+    (exec 3<>"/dev/tcp/localhost/${p}") >/dev/null 2>&1
+  fi
+}
+
+pick_free_port() {
+  # If the caller pinned a port, use it as-is (and let the wait gate catch a
+  # genuine conflict). Otherwise scan a small range for the first free port.
+  if [ -n "${FCC_LOCAL_PORT:-}" ]; then
+    echo "${FCC_LOCAL_PORT}"
+    return 0
+  fi
+  local base=8082 p
+  for offset in $(seq 0 49); do
+    p=$((base + offset))
+    if ! port_in_use "${p}"; then
+      echo "${p}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# ---------------------------------------------------------------------------
+# Establish (or reuse) the tunnel.
+# ---------------------------------------------------------------------------
+LOCAL_PORT="$(pick_free_port)" || die "Could not find a free local port in 8082-8131."
+
+if port_in_use "${LOCAL_PORT}"; then
+  # A pinned port that is already listening — assume it's our tunnel and reuse.
+  log "Port ${LOCAL_PORT} already listening — reusing existing tunnel."
+else
+  log "Starting IAP tunnel: ${VM_NAME}:${REMOTE_PORT} -> localhost:${LOCAL_PORT} (project=${PROJECT}, zone=${ZONE})"
+  gcloud compute start-iap-tunnel "${VM_NAME}" "${REMOTE_PORT}" \
+    --local-host-port="localhost:${LOCAL_PORT}" \
+    --zone="${ZONE}" \
+    --project="${PROJECT}" \
+    --iap-tunnel-disable-connection-timeout &
+  TUNNEL_PID=$!
+
+  # Wait up to WAIT_SECS for the tunnel to start listening; fail hard otherwise.
+  deadline=$(( $(date +%s) + WAIT_SECS ))
+  until port_in_use "${LOCAL_PORT}"; do
+    if ! kill -0 "${TUNNEL_PID}" 2>/dev/null; then
+      die "Tunnel process exited before it became ready. Check IAP access (are you in the ai-gateway group?) and 'gcloud auth login'."
+    fi
+    if [ "$(date +%s)" -ge "${deadline}" ]; then
+      kill "${TUNNEL_PID}" 2>/dev/null || true
+      die "Tunnel did not become ready within ${WAIT_SECS}s. Recovery: pkill -f 'compute start-iap-tunnel' && fcc-connect"
+    fi
+    sleep 0.5
+  done
+  log "Tunnel is up on localhost:${LOCAL_PORT}."
+fi
+
+# ---------------------------------------------------------------------------
+# Launch Claude Code against the local tunnel endpoint.
+# ---------------------------------------------------------------------------
+export ANTHROPIC_BASE_URL="http://localhost:${LOCAL_PORT}"
+export ANTHROPIC_AUTH_TOKEN="${AUTH_TOKEN}"
+export CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1   # enables the /model picker
+export CLAUDE_CODE_AUTO_COMPACT_WINDOW=190000
+
+log "ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL} — launching claude."
+exec claude "$@"

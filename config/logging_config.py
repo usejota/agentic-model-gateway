@@ -4,17 +4,37 @@ Structured logs are written as JSON lines to a configurable path (default
 ``logs/server.log``). Stdlib logging is intercepted and funneled to loguru.
 Context vars (request_id, node_id, chat_id) from contextualize() are
 included at top level for easy grep/filter.
+
+Set ``FCC_JSON_LOGS=1`` (or ``true``/``yes``/``on``) to additionally emit the
+same JSON lines to stdout, which journald forwards to Cloud Logging as
+structured records. Unset/false leaves the human-readable file-only behavior
+unchanged.
 """
 
 import json
 import logging
+import os
 import re
+import sys
 import threading
 from pathlib import Path
 
 from loguru import logger
 
 _configured = False
+
+# Opt-in toggle: when truthy, an additional stdout sink emits one JSON object
+# per line (same schema as the file sink). Intended for the GCP VM where
+# journald -> Cloud Logging benefits from structured fields. Unset/false keeps
+# the default behavior (file sink only, no stdout) for dev/tests.
+_JSON_LOGS_ENV = "FCC_JSON_LOGS"
+_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def _json_logs_enabled() -> bool:
+    """Return True when structured JSON stdout logging is opted in via env."""
+    return os.getenv(_JSON_LOGS_ENV, "").strip().lower() in _TRUTHY
+
 
 # Loguru ``logger.bind()`` key used by structured TRACE payloads; ``core/trace.py``
 # uses the identical string constant ``TRACE_PAYLOAD_BINDING``.
@@ -139,6 +159,20 @@ def configure_logging(
         rotation="50 MB",
         enqueue=True,
     )
+
+    # Opt-in (FCC_JSON_LOGS truthy): also emit one JSON object per line to
+    # stdout so journald -> Cloud Logging captures structured fields. The
+    # formatter is shared with the file sink, so the schema is identical
+    # (time, level, message, module + any bound context vars). When the env
+    # is unset/false this sink is omitted and behavior matches the file-only
+    # default that dev and tests rely on.
+    if _json_logs_enabled():
+        logger.add(
+            sys.stdout,
+            level="DEBUG",
+            format=_serialize_with_context,
+            enqueue=True,
+        )
 
     # Intercept stdlib logging: route all root logger output to loguru
     intercept = InterceptHandler()

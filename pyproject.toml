@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "free-claude-code"
-version = "1.2.41"
+version = "1.4.0"
 description = "Middleware between Claude Code CLI (Anthropic API) and NVIDIA NIM"
 readme = "README.md"
 requires-python = ">=3.14.0"
@@ -42,6 +42,9 @@ voice_local = [
     "transformers>=5.10.2",
     "accelerate>=1.13.0",
     "librosa>=0.10.0",
+]
+gcp = [
+    "google-cloud-secret-manager>=2.20.0",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -126,4 +129,12 @@ python-version = "3.14"
 [tool.ty.analysis]
 # Optional voice_local extra: torch, transformers, librosa for local whisper transcription
 # Optional voice extra: nvidia-riva-client for nvidia_nim transcription provider
-allowed-unresolved-imports = ["torch", "transformers", "librosa", "riva.client"]
+# Optional gcp extra: google-cloud-secret-manager for runtime provider-key fetch
+allowed-unresolved-imports = [
+    "torch",
+    "transformers",
+    "librosa",
+    "riva.client",
+    "google.cloud",
+    "google.cloud.secretmanager",
+]

@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+#
+# fcc-connect-tailscale — engineer wrapper for the free-claude-code proxy when the
+# proxy VM is on the Tailscale tailnet (matches the staging tailscale-fw-default-stg
+# / PKI access pattern). No gcloud, no IAP tunnel — the VM is reachable directly at
+# its MagicDNS name over the tailnet.
+#
+# Prerequisites:
+#   1. You are logged in to the company tailnet (`tailscale status` shows you up).
+#   2. The proxy VM has joined the tailnet (startup.sh does this via an OAuth client
+#      + tag:fcc-proxy). Its MagicDNS name is fcc-proxy.<tailnet>.ts.net.
+#   3. The tailnet ACL allows your user/group to reach tag:fcc-proxy on tcp:8082.
+#
+# This is the PRIMARY client path in staging. The IAP variant (./fcc-connect) is
+# kept as a fallback for environments without Tailscale.
+#
+set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# CONFIG — override via env vars.
+# ---------------------------------------------------------------------------
+# MagicDNS name of the proxy node on the tailnet. Override FCC_TS_HOST if your
+# node is named differently. Example tailnet shown; yours is tail576af6.ts.net.
+TS_HOST="${FCC_TS_HOST:-fcc-proxy}"
+TS_TAILNET="${FCC_TS_TAILNET:-tail576af6.ts.net}"
+REMOTE_PORT="${FCC_REMOTE_PORT:-8082}"
+AUTH_TOKEN="${FCC_AUTH_TOKEN:-freecc}"      # proxy token (see security.md #1 for per-user)
+WAIT_SECS="${FCC_WAIT_SECS:-30}"
+
+# Full host: prefer the short MagicDNS name; fall back to the FQDN.
+FQDN="${TS_HOST}.${TS_TAILNET}"
+
+log() { echo "[fcc-connect-tailscale] $*" >&2; }
+die() { echo "[fcc-connect-tailscale] ERROR: $*" >&2; exit 1; }
+
+command -v tailscale >/dev/null 2>&1 || die "tailscale CLI not found. Install Tailscale and log in to the company tailnet."
+
+# ---------------------------------------------------------------------------
+# Confirm we're connected to the tailnet.
+# ---------------------------------------------------------------------------
+if ! tailscale status >/dev/null 2>&1; then
+  die "Not connected to the tailnet. Run 'tailscale up' (or open the Tailscale app) and try again."
+fi
+
+# ---------------------------------------------------------------------------
+# Wait until the proxy node is reachable on the tailnet (it may still be booting).
+# ---------------------------------------------------------------------------
+reachable() {
+  # Prefer a TCP probe to the proxy port; fall back to a tailscale ping.
+  if command -v nc >/dev/null 2>&1; then
+    nc -z "${FQDN}" "${REMOTE_PORT}" >/dev/null 2>&1
+  else
+    tailscale ping --c 1 "${TS_HOST}" >/dev/null 2>&1
+  fi
+}
+
+deadline=$(( $(date +%s) + WAIT_SECS ))
+until reachable; do
+  if [ "$(date +%s)" -ge "${deadline}" ]; then
+    die "Proxy ${FQDN}:${REMOTE_PORT} not reachable within ${WAIT_SECS}s.
+  Check: 'tailscale status' lists ${TS_HOST}; the tailnet ACL allows you to reach tag:fcc-proxy on tcp:${REMOTE_PORT};
+  the proxy service is running on the VM ('systemctl status fcc' over tailscale ssh)."
+  fi
+  sleep 1
+done
+log "Proxy reachable at ${FQDN}:${REMOTE_PORT}."
+
+# ---------------------------------------------------------------------------
+# Launch Claude Code straight at the tailnet address.
+# ---------------------------------------------------------------------------
+export ANTHROPIC_BASE_URL="http://${FQDN}:${REMOTE_PORT}"
+export ANTHROPIC_AUTH_TOKEN="${AUTH_TOKEN}"
+export CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1   # enables the /model picker
+export CLAUDE_CODE_AUTO_COMPACT_WINDOW=190000
+
+log "ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL} — launching claude."
+exec claude "$@"
