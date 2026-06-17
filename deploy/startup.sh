@@ -139,8 +139,11 @@ if [ "${TS_ENABLED}" = "TRUE" ]; then
     log "ERROR: fcc-tailscale-oauth-secret metadata is empty; cannot authenticate to Tailscale."
     exit 1
   fi
-  # The OAuth *client secret* is the auth credential. Tailscale accepts it as the
-  # --authkey when tags are supplied; it is exchanged for an ephemeral node key.
+  # The credential in the secret is a Tailscale auth key (tskey-auth-...) OR an
+  # OAuth client secret — both are accepted as --authkey. We advertise the tag so
+  # the node is tagged tag:fcc-proxy even when the key itself is untagged (the key
+  # owner is in group:infra, which owns the tag). Non-ephemeral: the node persists
+  # across reboots rather than vanishing when offline.
   TS_OAUTH_SECRET="$(gcloud secrets versions access latest --secret="${TS_OAUTH_SECRET_NAME}")"
   tailscale up \
     --authkey="${TS_OAUTH_SECRET}" \
