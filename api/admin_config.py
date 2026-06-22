@@ -450,6 +450,19 @@ FIELDS: tuple[ConfigFieldSpec, ...] = (
         ),
     ),
     ConfigFieldSpec(
+        "IMAGE_ROUTE",
+        "Image Route",
+        "models",
+        settings_attr="image_route",
+        description=(
+            "Optional provider/model route used when the request carries image "
+            "content (top-level or nested in a tool_result). Set this to a "
+            "vision-capable model to keep a cheap text-only primary while still "
+            "handling pasted screenshots (e.g. open_router/minimax/minimax-m3). "
+            "Empty disables the reroute."
+        ),
+    ),
+    ConfigFieldSpec(
         "ENABLE_MODEL_THINKING",
         "Enable Thinking",
         "thinking",

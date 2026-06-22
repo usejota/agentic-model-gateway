@@ -14,6 +14,7 @@ from loguru import logger
 from config.settings import Settings
 from core.anthropic import get_token_count, get_user_facing_error_message
 from core.anthropic.aggregate import aggregate_sse_to_message
+from core.anthropic.image_detection import has_images
 from core.anthropic.sse import ANTHROPIC_SSE_RESPONSE_HEADERS
 from core.trace import api_messages_request_snapshot, trace_event, traced_async_stream
 from providers.base import BaseProvider
@@ -106,6 +107,7 @@ class ClaudeProxyService:
             _require_non_empty_messages(request_data.messages)
 
             routed = self._model_router.resolve_messages_request(request_data)
+            routed = self._maybe_reroute_for_images(routed)
             if routed.resolved.provider_id in _OPENAI_CHAT_UPSTREAM_IDS:
                 tool_err = openai_chat_upstream_server_tool_error(
                     routed.request,
@@ -229,14 +231,86 @@ class ClaudeProxyService:
 
         Each fallback ref is resolved through the same router as the primary, so a
         fallback can target any provider/model. Returns ``[]`` when unset (no-op).
+
+        When the request carries image content, ``IMAGE_ROUTE`` is the dedicated
+        vision target — fallbacks that would silently 400 upstream on an image
+        are dropped from the chain so we don't waste preflight cycles on them.
         """
         candidates: list[RoutedMessagesRequest] = []
+        image_route_target = self._settings.image_route_parts
         for ref in self._settings.fallback_models:
             resolved = self._model_router.resolve(ref)
             routed = request_data.model_copy(deep=True)
             routed.model = resolved.provider_model
+            # Skip text-only fallback candidates when the request has images.
+            # The IMAGE_ROUTE (if set) is the dedicated vision path; a fallback
+            # that doesn't accept images would 400 upstream, so don't waste a
+            # preflight cycle on it.
+            if (
+                has_images(routed.messages)
+                and image_route_target is not None
+                and resolved.provider_id != image_route_target[0]
+            ):
+                continue
             candidates.append(RoutedMessagesRequest(request=routed, resolved=resolved))
         return candidates
+
+    def _maybe_reroute_for_images(
+        self, routed: RoutedMessagesRequest
+    ) -> RoutedMessagesRequest:
+        """Swap the primary provider to ``IMAGE_ROUTE`` when the request has images.
+
+        No-op when ``IMAGE_ROUTE`` is unset (current behavior preserved) or the
+        request carries no image content. When triggered, the request body is
+        deep-copied and re-pointed to the IMAGE_ROUTE provider/model so the rest
+        of the pipeline (preflight, dispatch, fallback) sees the new target.
+        Messages pass through verbatim — the multimodal provider sees the real
+        base64 source, no stripping.
+
+        The contract is intentionally simple: ``IMAGE_ROUTE`` set + image in
+        request → reroute. The user opts in by setting the var; if they want a
+        vision-capable primary (e.g. Claude) to handle images themselves, they
+        leave ``IMAGE_ROUTE`` unset and rely on whatever the primary picks. We
+        don't introspect provider/model capabilities because the transport
+        (``native_anthropic`` vs ``openai_chat``) doesn't predict whether the
+        *model* accepts images — DeepSeek on the Anthropic-format transport is
+        text-only, while OpenRouter routes to all kinds of models.
+        """
+        image_route = self._settings.image_route_parts
+        if image_route is None:
+            return routed
+        if not has_images(routed.request.messages):
+            return routed
+
+        target_provider_id, target_model = image_route
+        if (
+            routed.resolved.provider_id == target_provider_id
+            and routed.resolved.provider_model == target_model
+        ):
+            # Already targeting the exact image_route provider+model.
+            return routed
+
+        resolved = self._model_router.resolve(f"{target_provider_id}/{target_model}")
+        new_request = routed.request.model_copy(deep=True)
+        new_request.model = resolved.provider_model
+        logger.info(
+            "Image reroute: provider={} model={} (from provider={} model={})",
+            resolved.provider_id,
+            resolved.provider_model,
+            routed.resolved.provider_id,
+            routed.resolved.provider_model,
+        )
+        trace_event(
+            stage="routing",
+            event="api.route.image_reroute",
+            source="api",
+            provider_id=resolved.provider_id,
+            provider_model=resolved.provider_model,
+            original_provider_id=routed.resolved.provider_id,
+            original_provider_model=routed.resolved.provider_model,
+            gateway_model=routed.request.model,
+        )
+        return RoutedMessagesRequest(request=new_request, resolved=resolved)
 
     def _open_stream(
         self,

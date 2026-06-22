@@ -171,6 +171,16 @@ class Settings(BaseSettings):
         default_factory=list, validation_alias="FALLBACK_MODELS"
     )
 
+    # Optional image reroute. When a request has image content (top-level user
+    # message or nested in a tool_result) AND the resolved primary model
+    # doesn't accept images, this provider+model handles just that turn.
+    # Format: a single ``provider/model`` ref, same form as MODEL,
+    # e.g. ``open_router/minimax/minimax-m3``. Empty = no reroute (the request
+    # is sent upstream as-is). When unset, a text-only primary provider will
+    # 400 on image content; setting IMAGE_ROUTE lets users keep a cheap
+    # text-only default while still being able to paste screenshots.
+    image_route: str | None = Field(default=None, validation_alias="IMAGE_ROUTE")
+
     # ==================== Per-Provider Proxy ====================
     nvidia_nim_proxy: str = Field(default="", validation_alias="NVIDIA_NIM_PROXY")
     open_router_proxy: str = Field(default="", validation_alias="OPENROUTER_PROXY")
@@ -441,6 +451,33 @@ class Settings(BaseSettings):
             return v
         return [entry.strip() for entry in v.split(",") if entry.strip()]
 
+    @field_validator("image_route", mode="before")
+    @classmethod
+    def parse_image_route(cls, v: Any) -> Any:
+        """Parse ``IMAGE_ROUTE`` as a single ``provider/model`` ref.
+
+        Empty/blank → ``None`` (reroute disabled). Otherwise validated for
+        shape (must contain a ``/`` and the provider must be a known one).
+        """
+        if v is None:
+            return None
+        if not isinstance(v, str):
+            return v
+        text = v.strip()
+        if not text:
+            return None
+        if "/" not in text:
+            raise ValueError(
+                f"IMAGE_ROUTE must be a single 'provider/model' ref, got {v!r}"
+            )
+        provider = text.split("/", 1)[0]
+        if provider not in SUPPORTED_PROVIDER_IDS:
+            supported = ", ".join(f"'{p}'" for p in SUPPORTED_PROVIDER_IDS)
+            raise ValueError(
+                f"Invalid IMAGE_ROUTE provider: '{provider}'. Supported: {supported}"
+            )
+        return text
+
     @property
     def claude_workspace(self) -> str:
         """Return the fixed Claude data workspace path."""
@@ -669,6 +706,16 @@ class Settings(BaseSettings):
     def parse_model_name(model_string: str) -> str:
         """Extract model name from any 'provider/model' string."""
         return model_string.split("/", 1)[1]
+
+    @property
+    def image_route_parts(self) -> tuple[str, str] | None:
+        """Return ``(provider_id, model_name)`` for ``IMAGE_ROUTE``, or None."""
+        if not self.image_route:
+            return None
+        return (
+            Settings.parse_provider_type(self.image_route),
+            Settings.parse_model_name(self.image_route),
+        )
 
     model_config = SettingsConfigDict(
         env_file=_env_files(),

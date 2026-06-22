@@ -310,6 +310,19 @@ Each model tier can use a different provider by setting `MODEL_OPUS`, `MODEL_SON
 
 For example, you can route Opus to `nvidia_nim/moonshotai/kimi-k2.6`, Sonnet to `open_router/openrouter/free`, Haiku to `lmstudio/qwen3.5-coder`, and keep the fallback `MODEL` on `zai/glm-5.1`.
 
+### 19. Image Routing (Paste Screenshots With A Text-Only Primary)
+
+When you paste an image into Claude Code, the request body carries an `image` content block. Text-only providers (DeepSeek, etc.) reject this with a 400 — forcing you to keep a vision-capable model as your primary even for turns where you don't paste screenshots.
+
+Set `IMAGE_ROUTE` to a vision-capable `provider/model` and the gateway will reroute just that turn to it whenever the request contains image content. Your cheap text-only default stays default for everything else.
+
+```bash
+# .env: reroute image turns to OpenRouter's MiniMax M3
+IMAGE_ROUTE="open_router/minimax/minimax-m3"
+```
+
+When the request has no image content, the primary `MODEL` is used as normal — so the reroute is invisible until you paste a screenshot.
+
 ## Connect Claude Code
 
 ### 1. Claude Code CLI

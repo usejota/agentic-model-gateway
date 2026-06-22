@@ -166,6 +166,63 @@ def test_admin_exposes_fallback_models_field(monkeypatch, tmp_path):
     assert field["secret"] is False
 
 
+def test_admin_exposes_image_route_field(monkeypatch, tmp_path):
+    _set_home(monkeypatch, tmp_path)
+    _clear_process_config(monkeypatch)
+    app = create_app(lifespan_enabled=False)
+
+    response = _local_client(app).get("/admin/api/config")
+
+    assert response.status_code == 200
+    body = response.json()
+    field = next(f for f in body["fields"] if f["key"] == "IMAGE_ROUTE")
+    # Lives on the Model Routing screen alongside FALLBACK_MODELS.
+    assert field["section"] == "models"
+    assert field["secret"] is False
+
+
+def test_admin_apply_round_trips_image_route(monkeypatch, tmp_path):
+    _set_home(monkeypatch, tmp_path)
+    _clear_process_config(monkeypatch)
+    app = create_app(lifespan_enabled=False)
+
+    response = _local_client(app).post(
+        "/admin/api/config/apply",
+        json={
+            "values": {
+                "MODEL": "open_router/test-model",
+                "IMAGE_ROUTE": "open_router/minimax/minimax-m3",
+            }
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["applied"] is True
+    text = (tmp_path / ".fcc" / ".env").read_text("utf-8")
+    assert (
+        "IMAGE_ROUTE=open_router/minimax/minimax-m3" in text
+        or 'IMAGE_ROUTE="open_router/minimax/minimax-m3"' in text
+    )
+
+
+def test_admin_rejects_malformed_image_route(monkeypatch, tmp_path):
+    _set_home(monkeypatch, tmp_path)
+    _clear_process_config(monkeypatch)
+    app = create_app(lifespan_enabled=False)
+
+    response = _local_client(app).post(
+        "/admin/api/config/validate",
+        json={"values": {"MODEL": "open_router/test-model", "IMAGE_ROUTE": "no-slash"}},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["valid"] is False
+    assert any(
+        "IMAGE_ROUTE" in error or "provider/model" in error for error in body["errors"]
+    )
+
+
 def test_admin_apply_round_trips_fallback_models(monkeypatch, tmp_path):
     _set_home(monkeypatch, tmp_path)
     _clear_process_config(monkeypatch)
