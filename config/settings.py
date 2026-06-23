@@ -3,7 +3,6 @@
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
-from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -315,6 +314,14 @@ class Settings(BaseSettings):
     allowed_dir: str = ""
     max_message_log_entries_per_chat: int | None = Field(
         default=None, validation_alias="MAX_MESSAGE_LOG_ENTRIES_PER_CHAT"
+    )
+
+    # Auto-compaction window for Claude Code subprocess (default: 190k tokens).
+    claude_code_auto_compact_window: int = Field(
+        default=190000,
+        validation_alias="CLAUDE_CODE_AUTO_COMPACT_WINDOW",
+        ge=10000,
+        le=1_000_000,
     )
 
     # ==================== Server ====================
@@ -724,7 +731,38 @@ class Settings(BaseSettings):
     )
 
 
-@lru_cache
+_settings_cache: Settings | None = None
+_settings_env_mtimes: dict[str, float] = {}
+
+
+def _any_env_file_changed() -> bool:
+    """Check if any tracked env file has been modified since last check."""
+    for path in _env_files():
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            continue
+        key = str(path)
+        prev = _settings_env_mtimes.get(key)
+        if prev is None or prev != mtime:
+            _settings_env_mtimes[key] = mtime
+            return True
+    return False
+
+
+def clear_settings_cache() -> None:
+    """Force re-creation of the Settings instance on next get_settings() call.
+
+    Used by tests and admin routes that modify env files in-process and need
+    the next call to re-read without waiting for a file-mtime change.
+    """
+    global _settings_cache
+    _settings_cache = None
+
+
 def get_settings() -> Settings:
-    """Get cached settings instance."""
-    return Settings()
+    """Get settings instance, hot-reloaded when any env file changes."""
+    global _settings_cache
+    if _settings_cache is None or _any_env_file_changed():
+        _settings_cache = Settings()
+    return _settings_cache

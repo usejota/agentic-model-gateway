@@ -7,15 +7,15 @@ from fastapi import Request
 from fastapi.testclient import TestClient
 
 from api.app import create_app
-from config.settings import get_settings
+from config.settings import clear_settings_cache
 
 
 @pytest.fixture(autouse=True)
 def _reset_settings_cache():
     """Keep the lru-cached Settings from leaking the admin token across tests."""
-    get_settings.cache_clear()
+    clear_settings_cache()
     yield
-    get_settings.cache_clear()
+    clear_settings_cache()
 
 
 def _make_request(headers: dict[str, str]) -> Request:
@@ -54,7 +54,7 @@ def _build_app(monkeypatch, tmp_path: Path, *, admin_token: str | None = None):
     _clear_process_config(monkeypatch)
     if admin_token is not None:
         monkeypatch.setenv("ADMIN_API_TOKEN", admin_token)
-    get_settings.cache_clear()
+    clear_settings_cache()
     return create_app(lifespan_enabled=False)
 
 
@@ -125,7 +125,7 @@ def test_admin_token_check_uses_constant_time_comparison(monkeypatch, tmp_path):
     _set_home(monkeypatch, tmp_path)
     _clear_process_config(monkeypatch)
     monkeypatch.setenv("ADMIN_API_TOKEN", "s3cret-admin")
-    get_settings.cache_clear()
+    clear_settings_cache()
 
     calls: list[tuple[bytes, bytes]] = []
     real_compare = admin_auth.secrets.compare_digest

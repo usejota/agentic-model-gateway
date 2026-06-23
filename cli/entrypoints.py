@@ -25,7 +25,7 @@ from cli.process_registry import (
     unregister_pid,
 )
 from config.paths import config_dir_path, legacy_env_paths, managed_env_path
-from config.settings import Settings, get_settings
+from config.settings import Settings, clear_settings_cache, get_settings
 
 PROXY_PREFLIGHT_PATH = "/health"
 PROXY_PREFLIGHT_TIMEOUT_SECONDS = 1.5
@@ -60,7 +60,7 @@ def serve() -> None:
                 ):
                     return
                 opened_admin_browser = True
-                get_settings.cache_clear()
+                clear_settings_cache()
         except KeyboardInterrupt:
             return
     finally:
@@ -182,7 +182,9 @@ def _claude_child_env(
     env.pop("ANTHROPIC_API_KEY", None)
     env["ANTHROPIC_BASE_URL"] = local_proxy_root_url(settings)
     env["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] = "1"
-    env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = "190000"
+    env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = str(
+        settings.claude_code_auto_compact_window
+    )
     if token := settings.anthropic_auth_token.strip():
         env["ANTHROPIC_AUTH_TOKEN"] = token
     return env

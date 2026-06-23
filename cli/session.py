@@ -9,6 +9,7 @@ from typing import Any
 
 from loguru import logger
 
+from config.settings import get_settings
 from core.trace import trace_event
 
 from .process_registry import kill_pid_tree_best_effort, register_pid, unregister_pid
@@ -119,7 +120,9 @@ class CLISession:
             else:
                 env["ANTHROPIC_BASE_URL"] = self.api_url
             env["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] = "1"
-            env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = "190000"
+            env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = str(
+                get_settings().claude_code_auto_compact_window
+            )
             env.pop("ANTHROPIC_API_KEY", None)
             if token := self.auth_token.strip():
                 env["ANTHROPIC_AUTH_TOKEN"] = token

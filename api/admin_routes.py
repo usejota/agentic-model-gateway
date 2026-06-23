@@ -13,8 +13,13 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
-from config.settings import Settings
-from config.settings import get_settings as get_cached_settings
+from config.settings import (
+    Settings,
+    clear_settings_cache,
+)
+from config.settings import (
+    get_settings as get_cached_settings,
+)
 from providers.registry import ProviderRegistry
 
 from .admin_auth import require_admin_token
@@ -125,7 +130,7 @@ async def apply_admin_config(
     if not result["applied"]:
         return result
 
-    get_cached_settings.cache_clear()
+    clear_settings_cache()
     restart = _restart_metadata(result["pending_fields"], request)
     result["restart"] = restart
     if restart["required"] and restart["automatic"]:
