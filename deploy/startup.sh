@@ -46,7 +46,7 @@ FCC_USER="fcc"
 FCC_HOME="/home/${FCC_USER}"
 APP_DIR="${FCC_HOME}/free-claude-code"
 ENV_DIR="${FCC_HOME}/.fcc"               # tmpfs-mounted when fallback is used
-ENV_FILE="${ENV_DIR}/env"
+ENV_FILE="${ENV_DIR}/.env"
 REPO_URL="$(md fcc-repo-url)"; REPO_URL="${REPO_URL:-https://github.com/usejota/agentic-model-gateway.git}"
 REPO_BRANCH="$(md fcc-repo-branch)"; REPO_BRANCH="${REPO_BRANCH:-main}"
 
@@ -129,6 +129,10 @@ else
   log "Runtime-fetch path: app will read PROVIDER_KEY_SECRET_RESOURCE at startup."
   SYSTEMD_ENV_LINES+=("Environment=PROVIDER_KEY_SECRET_RESOURCE=${SECRET_RESOURCE}")
 fi
+# Unconditional EnvironmentFile for runtime-created env vars (Admin UI writes
+# MODEL_SONNET, IMAGE_ROUTE, etc. to this file after first deploy). Systemd
+# silently ignores a missing file, so it's a no-op until Admin UI creates it.
+SYSTEMD_ENV_LINES+=("EnvironmentFile=${ENV_FILE}")
 
 # ---------------------------------------------------------------------------
 # 3b. Tailscale — join the tailnet so engineers reach the VM by MagicDNS name.
