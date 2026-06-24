@@ -718,6 +718,20 @@ FIELDS: tuple[ConfigFieldSpec, ...] = (
         advanced=True,
     ),
     ConfigFieldSpec(
+        "CLAUDE_CODE_AUTO_COMPACT_WINDOW",
+        "Auto-Compact Window",
+        "runtime",
+        "number",
+        settings_attr="claude_code_auto_compact_window",
+        default="190000",
+        description=(
+            "Context window threshold in tokens that triggers Claude Code automatic "
+            "compaction (10000-1000000). Higher values keep more history before "
+            "compacting, at the cost of more tokens per request. Takes effect on "
+            "next spawned Claude session."
+        ),
+    ),
+    ConfigFieldSpec(
         "ENABLE_FILEPATH_EXTRACTION_MOCK",
         "Filepath Extraction Mock",
         "runtime",
