@@ -121,7 +121,6 @@ if [ "${USE_TMPFS_ENV}" = "TRUE" ]; then
   unset KEY
   chown "${FCC_USER}:${FCC_USER}" "${ENV_FILE}"
   chmod 600 "${ENV_FILE}"
-  SYSTEMD_ENV_LINES+=("EnvironmentFile=${ENV_FILE}")
 else
   # ---- (a) RUNTIME FETCH (preferred) -------------------------------------
   # Hand the app the Secret Manager resource name; it reads the key into memory
@@ -129,10 +128,12 @@ else
   log "Runtime-fetch path: app will read PROVIDER_KEY_SECRET_RESOURCE at startup."
   SYSTEMD_ENV_LINES+=("Environment=PROVIDER_KEY_SECRET_RESOURCE=${SECRET_RESOURCE}")
 fi
-# Unconditional EnvironmentFile for runtime-created env vars (Admin UI writes
-# MODEL_SONNET, IMAGE_ROUTE, etc. to this file after first deploy). Systemd
-# silently ignores a missing file, so it's a no-op until Admin UI creates it.
-SYSTEMD_ENV_LINES+=("EnvironmentFile=${ENV_FILE}")
+# NOTE: do NOT add EnvironmentFile=${ENV_FILE} here. The app reads the managed
+# env file (~/.fcc/.env) directly via Pydantic Settings (_env_files()) and
+# hot-reloads it on mtime change, and the Claude subprocess env is built
+# explicitly from get_settings(). Injecting the file via systemd would surface
+# every managed key as process-env "locked" in the Admin UI, making the fields
+# read-only (process env overrides the managed file in admin_config).
 
 # ---------------------------------------------------------------------------
 # 3b. Tailscale — join the tailnet so engineers reach the VM by MagicDNS name.
