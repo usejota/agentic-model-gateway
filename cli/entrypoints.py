@@ -172,7 +172,11 @@ def _migrate_legacy_env_if_missing() -> Path | None:
 def _claude_child_env(
     settings: Settings, base_env: Mapping[str, str]
 ) -> dict[str, str]:
-    """Return a Claude Code environment that targets this proxy."""
+    """Return a Claude Code environment that targets this proxy.
+
+    Caller's shell ``CLAUDE_CODE_AUTO_COMPACT_WINDOW`` wins over the gateway
+    settings — the user is on the client machine and can override per-machine.
+    """
 
     env = {
         key: value
@@ -182,9 +186,10 @@ def _claude_child_env(
     env.pop("ANTHROPIC_API_KEY", None)
     env["ANTHROPIC_BASE_URL"] = local_proxy_root_url(settings)
     env["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] = "1"
-    env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = str(
-        settings.claude_code_auto_compact_window
-    )
+    if not env.get("CLAUDE_CODE_AUTO_COMPACT_WINDOW"):
+        env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = str(
+            settings.claude_code_auto_compact_window
+        )
     if token := settings.anthropic_auth_token.strip():
         env["ANTHROPIC_AUTH_TOKEN"] = token
     return env

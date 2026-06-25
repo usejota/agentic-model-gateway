@@ -312,6 +312,30 @@ def test_claude_child_env_targets_current_proxy_config() -> None:
     assert "ANTHROPIC_API_KEY" not in env
 
 
+def test_claude_child_env_honors_caller_shell_compact_window() -> None:
+    """Caller's shell CLAUDE_CODE_AUTO_COMPACT_WINDOW overrides gateway settings."""
+    from cli.entrypoints import _claude_child_env
+
+    env = _claude_child_env(
+        _launcher_settings(port=9090),
+        {"CLAUDE_CODE_AUTO_COMPACT_WINDOW": "800000"},
+    )
+
+    assert env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] == "800000"
+
+
+def test_claude_child_env_falls_back_to_settings_when_shell_blank() -> None:
+    """Empty shell var falls back to gateway settings (not treated as override)."""
+    from cli.entrypoints import _claude_child_env
+
+    env = _claude_child_env(
+        _launcher_settings(port=9090),
+        {"CLAUDE_CODE_AUTO_COMPACT_WINDOW": ""},
+    )
+
+    assert env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] == "190000"
+
+
 def test_claude_child_env_removes_blank_configured_auth_token() -> None:
     from cli.entrypoints import _claude_child_env
 
