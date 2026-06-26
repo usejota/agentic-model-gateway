@@ -157,8 +157,9 @@ async def test_images_with_route_text_only_primary_reroutes() -> None:
     await _drain(result)
     # The provider receives the IMAGE_ROUTE model, not the primary. OpenRouter
     # model ids include a nested slash (vendor/model), so the full provider
-    # model is ``minimax/minimax-m3``.
-    assert provider.streamed_models == ["minimax/minimax-m3"]
+    # model is ``minimax/minimax-m3``. That model is 1M-capable per the catalog,
+    # so the router appends the ``[1m]`` suffix before forwarding upstream.
+    assert provider.streamed_models == ["minimax/minimax-m3[1m]"]
 
 
 @pytest.mark.asyncio
@@ -206,8 +207,9 @@ async def test_images_reroute_overrides_native_anthropic_primary() -> None:
     await _drain(result)
     # Primary is vision-capable Claude but IMAGE_ROUTE was set → rerouted.
     # OpenRouter model ids include a nested slash (vendor/model), so the full
-    # provider model is ``minimax/minimax-m3``.
-    assert provider.streamed_models == ["minimax/minimax-m3"]
+    # provider model is ``minimax/minimax-m3``. That model is 1M-capable per
+    # the catalog, so the router appends the ``[1m]`` suffix upstream.
+    assert provider.streamed_models == ["minimax/minimax-m3[1m]"]
 
 
 # --------------------------------------------------------------------------
@@ -378,8 +380,9 @@ async def test_image_route_matches_primary_no_double_reroute() -> None:
     result = svc.create_message(_text_request(with_image=True))
     await _drain(result)
     # OpenRouter model ids include a nested slash, so the provider receives
-    # the full ``minimax/minimax-m3`` model name.
-    assert provider.streamed_models == ["minimax/minimax-m3"]
+    # the full ``minimax/minimax-m3`` model name. That model is 1M-capable per
+    # the catalog, so the router appends the ``[1m]`` suffix upstream.
+    assert provider.streamed_models == ["minimax/minimax-m3[1m]"]
 
 
 # --------------------------------------------------------------------------

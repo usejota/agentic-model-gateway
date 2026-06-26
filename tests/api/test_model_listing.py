@@ -167,3 +167,29 @@ def test_models_list_works_without_provider_registry():
         "claude-3-freecc-no-thinking/open_router/anthropic/claude-opus",
     ]
     assert "claude-sonnet-4-20250514" in ids
+
+
+def test_models_list_advertises_1m_variant_for_catalog_model():
+    app = create_app(lifespan_enabled=False)
+    settings = _settings(model="open_router/minimax/minimax-m3", model_opus=None)
+    registry = ProviderRegistry()
+    registry.cache_model_ids("open_router", {"minimax/minimax-m3", "meta/llama-3.3"})
+    app.state.provider_registry = registry
+    app.dependency_overrides[get_settings] = lambda: settings
+
+    try:
+        response = TestClient(app).get("/v1/models")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    data = response.json()
+    ids = [item["id"] for item in data["data"]]
+    display_names = {item["id"]: item["display_name"] for item in data["data"]}
+
+    assert "claude-3-freecc-1m/open_router/minimax/minimax-m3" in ids
+    assert (
+        display_names["claude-3-freecc-1m/open_router/minimax/minimax-m3"]
+        == "open_router/minimax/minimax-m3 (1M context)"
+    )
+    assert "claude-3-freecc-1m/open_router/meta/llama-3.3" not in ids

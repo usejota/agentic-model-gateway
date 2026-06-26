@@ -54,6 +54,41 @@ class ProviderDescriptor:
     proxy_attr: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class ModelContextSpec:
+    """Per-model context window metadata used to surface 1M-context to Claude Code.
+
+    Claude Code caps effective context at 200K for any model whose name does not
+    pass its ``has1mContext()`` check (gated to first-party Anthropic endpoint;
+    see github.com/anthropics/claude-code issue #46416). When this proxy is the
+    upstream endpoint (which it always is for clients pointing
+    ``ANTHROPIC_BASE_URL`` here), every routed model would otherwise get the
+    200K floor regardless of real capacity.
+
+    Setting ``supports_1m=True`` causes the proxy to advertise a 1M-context
+    variant in ``/v1/models`` and to append the ``[1m]`` suffix that Claude
+    Code's ``has1mContext()`` recognizes on requests it sends to us.
+    """
+
+    context_window: int
+    supports_1m: bool = False
+
+
+# Per-(provider, model) override of context-window size. Catalog miss = 200K,
+# no [1m] suffix → backward-compatible default. Seed entries cover the 1M
+# models we route through 3rd-party endpoints (Anthropic-format or OpenAI-format).
+PROVIDER_MODEL_CONTEXT: dict[tuple[str, str], ModelContextSpec] = {
+    ("deepseek", "deepseek-v4-pro"): ModelContextSpec(1_000_000, supports_1m=True),
+    ("deepseek", "deepseek-v4-flash"): ModelContextSpec(1_000_000, supports_1m=True),
+    ("gemini", "models/gemini-3.1-flash-lite"): ModelContextSpec(
+        1_000_000, supports_1m=True
+    ),
+    ("open_router", "minimax/minimax-m3"): ModelContextSpec(
+        1_000_000, supports_1m=True
+    ),
+}
+
+
 PROVIDER_CATALOG: dict[str, ProviderDescriptor] = {
     "nvidia_nim": ProviderDescriptor(
         provider_id="nvidia_nim",
