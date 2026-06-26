@@ -5,7 +5,6 @@ import inspect
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from loguru import logger
 
-from config.provider_catalog import PROVIDER_MODEL_CONTEXT
 from config.settings import Settings
 from core.anthropic import get_token_count
 from core.trace import trace_event
@@ -13,11 +12,7 @@ from providers.registry import ProviderRegistry
 
 from . import dependencies
 from .dependencies import get_settings, require_api_key
-from .gateway_model_ids import (
-    gateway_model_id,
-    no_thinking_gateway_model_id,
-    one_m_gateway_model_id,
-)
+from .gateway_model_ids import gateway_model_id, no_thinking_gateway_model_id
 from .models.anthropic import MessagesRequest, TokenCountRequest
 from .models.responses import ModelResponse, ModelsListResponse
 from .services import ClaudeProxyService
@@ -126,23 +121,6 @@ def _append_provider_model_variants(
             display_name=f"{provider_model_ref} (no thinking)",
         ),
     )
-    if _provider_model_supports_1m(provider_model_ref):
-        _append_unique_model(
-            models,
-            seen,
-            _discovered_model_response(
-                one_m_gateway_model_id(provider_model_ref),
-                display_name=f"{provider_model_ref} (1M context)",
-            ),
-        )
-
-
-def _provider_model_supports_1m(provider_model_ref: str) -> bool:
-    """Return True when the catalog marks this provider/model as 1M-capable."""
-    provider_id = Settings.parse_provider_type(provider_model_ref)
-    provider_model = Settings.parse_model_name(provider_model_ref)
-    spec = PROVIDER_MODEL_CONTEXT.get((provider_id, provider_model))
-    return spec is not None and spec.supports_1m
 
 
 def _build_models_list_response(
