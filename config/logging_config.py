@@ -157,7 +157,7 @@ def configure_logging(
         encoding="utf-8",
         mode="a",
         rotation="50 MB",
-        retention="7 days",
+        retention=20,
         enqueue=True,
     )
 
