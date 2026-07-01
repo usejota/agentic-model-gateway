@@ -9,7 +9,7 @@ from loguru import logger
 from config.provider_ids import SUPPORTED_PROVIDER_IDS
 from config.settings import Settings
 
-from .gateway_model_ids import decode_gateway_model_id
+from .gateway_model_ids import ONE_M_SUFFIX, decode_gateway_model_id
 from .models.anthropic import MessagesRequest, TokenCountRequest
 
 
@@ -20,6 +20,7 @@ class ResolvedModel:
     provider_model: str
     provider_model_ref: str
     thinking_enabled: bool
+    one_m_context: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,6 +46,7 @@ class ModelRouter:
             direct_provider_id,
             direct_provider_model,
             force_thinking_enabled,
+            one_m_context,
         ) = self._direct_provider_model(claude_model_name)
         if direct_provider_id is not None and direct_provider_model is not None:
             thinking_enabled = (
@@ -53,11 +55,12 @@ class ModelRouter:
                 else self._settings.resolve_thinking(direct_provider_model)
             )
             logger.debug(
-                "MODEL DIRECT: '{}' -> provider='{}' model='{}' thinking={}",
+                "MODEL DIRECT: '{}' -> provider='{}' model='{}' thinking={} one_m={}",
                 claude_model_name,
                 direct_provider_id,
                 direct_provider_model,
                 thinking_enabled,
+                one_m_context,
             )
             return ResolvedModel(
                 original_model=claude_model_name,
@@ -65,6 +68,7 @@ class ModelRouter:
                 provider_model=direct_provider_model,
                 provider_model_ref=claude_model_name,
                 thinking_enabled=thinking_enabled,
+                one_m_context=one_m_context,
             )
 
         provider_model_ref = self._settings.resolve_model(claude_model_name)
@@ -85,25 +89,37 @@ class ModelRouter:
 
     def _direct_provider_model(
         self, model_name: str
-    ) -> tuple[str | None, str | None, bool | None]:
+    ) -> tuple[str | None, str | None, bool | None, bool]:
         decoded = decode_gateway_model_id(model_name)
         if decoded is not None:
             if decoded.provider_id not in SUPPORTED_PROVIDER_IDS:
-                return None, None, None
+                return None, None, None, False
+            # Gateway decoder already stripped any ``[1m]`` suffix into one_m_context;
+            # provider_model is clean for upstream.
             return (
                 decoded.provider_id,
                 decoded.provider_model,
                 decoded.force_thinking_enabled,
+                decoded.one_m_context,
             )
 
         provider_id, separator, provider_model = model_name.partition("/")
         if not separator:
-            return None, None, None
+            return None, None, None, False
         if provider_id not in SUPPORTED_PROVIDER_IDS:
-            return None, None, None
+            return None, None, None, False
         if not provider_model:
-            return None, None, None
-        return provider_id, provider_model, None
+            return None, None, None, False
+        # Raw ``provider/model`` typed by a user may carry the ``[1m]`` 1M signal.
+        # ``[1m]`` is never part of a real upstream model id (no provider uses
+        # brackets), so a trailing one is unambiguously the Claude Code signal:
+        # strip it before forwarding upstream (the OpenRouter-400 regression guard).
+        one_m_context = provider_model.endswith(ONE_M_SUFFIX)
+        if one_m_context:
+            provider_model = provider_model[: -len(ONE_M_SUFFIX)]
+            if not provider_model:
+                return None, None, None, False
+        return provider_id, provider_model, None, one_m_context
 
     def resolve_messages_request(
         self, request: MessagesRequest

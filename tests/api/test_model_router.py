@@ -178,6 +178,57 @@ def test_model_router_direct_prefixed_model_uses_provider_model_for_thinking(set
     assert resolved.thinking_enabled is True
 
 
+def test_model_router_strips_one_m_suffix_from_gateway_id(settings):
+    """A [1m]-suffixed gateway id flags 1M but forwards a clean upstream model."""
+    routed = ModelRouter(settings).resolve_messages_request(
+        MessagesRequest(
+            model="anthropic/open_router/minimax/minimax-m3[1m]",
+            max_tokens=100,
+            messages=[Message(role="user", content="hello")],
+        )
+    )
+
+    assert routed.resolved.provider_id == "open_router"
+    assert routed.resolved.provider_model == "minimax/minimax-m3"
+    assert routed.resolved.one_m_context is True
+    # Upstream must never receive the [1m] suffix (the OpenRouter-400 regression).
+    assert routed.request.model == "minimax/minimax-m3"
+    assert "[1m]" not in routed.request.model
+
+
+def test_model_router_strips_one_m_suffix_from_direct_id(settings):
+    """A user-typed raw provider/model[1m] is stripped before forwarding upstream."""
+    resolved = ModelRouter(settings).resolve("open_router/minimax/minimax-m3[1m]")
+
+    assert resolved.provider_id == "open_router"
+    assert resolved.provider_model == "minimax/minimax-m3"
+    assert resolved.one_m_context is True
+
+
+def test_model_router_never_forwards_one_m_suffix_upstream(settings):
+    """No [1m] reaches upstream for any [1m]-bearing id variant."""
+    router = ModelRouter(settings)
+    for model in (
+        "anthropic/open_router/minimax/minimax-m3[1m]",
+        "claude-3-freecc-no-thinking/deepseek/deepseek-v4-pro[1m]",
+        "open_router/minimax/minimax-m3[1m]",
+    ):
+        routed = router.resolve_messages_request(
+            MessagesRequest(
+                model=model,
+                max_tokens=100,
+                messages=[Message(role="user", content="hello")],
+            )
+        )
+        assert "[1m]" not in routed.request.model
+
+
+def test_model_router_plain_gateway_id_is_not_one_m(settings):
+    resolved = ModelRouter(settings).resolve("anthropic/open_router/minimax/minimax-m3")
+    assert resolved.one_m_context is False
+    assert resolved.provider_model == "minimax/minimax-m3"
+
+
 def test_model_router_routes_token_count_request(settings):
     settings.model_haiku = "lmstudio/qwen2.5-7b"
 

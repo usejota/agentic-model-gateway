@@ -175,7 +175,9 @@ def _claude_child_env(
     """Return a Claude Code environment that targets this proxy.
 
     Caller's shell ``CLAUDE_CODE_AUTO_COMPACT_WINDOW`` wins over the gateway
-    settings — the user is on the client machine and can override per-machine.
+    default. The default is high; Claude Code clamps it to each model's real
+    context window, so 1M (``[1m]``) models compact near 1M while smaller models
+    clamp down to ~200K on their own — no per-model env needed.
     """
 
     env = {

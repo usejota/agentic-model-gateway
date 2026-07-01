@@ -6,10 +6,20 @@ provider implementation imports (see contract tests).
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 
 TransportType = Literal["openai_chat", "anthropic_messages"]
+
+# Context-window sizing surfaced to Claude Code. Claude Code floors any model
+# whose name fails its ``has1mContext()`` check at 200K; the proxy is itself the
+# ``ANTHROPIC_BASE_URL`` endpoint, so every routed model would otherwise hit that
+# floor regardless of real capacity (see github.com/anthropics/claude-code
+# issue #46416). ``DEFAULT_CONTEXT_WINDOW`` is Claude Code's own default, so a
+# resolved value equal to it means "advertise nothing special".
+DEFAULT_CONTEXT_WINDOW = 200_000
+ONE_M_CONTEXT = 1_000_000
 
 # Default upstream base URLs (also re-exported via :mod:`providers.defaults`)
 NVIDIA_NIM_DEFAULT_BASE = "https://integrate.api.nvidia.com/v1"
@@ -52,6 +62,42 @@ class ProviderDescriptor:
     default_base_url: str | None = None
     base_url_attr: str | None = None
     proxy_attr: str | None = None
+
+
+# Manual per-(provider, model) context-window overrides, in tokens. Used for
+# providers whose model-list response omits a context length (deepseek, gemini,
+# kimi, …) and to force a value over an auto-discovered one. Auto-discovery
+# (e.g. OpenRouter's ``context_length``) covers the rest; see
+# :func:`resolve_context_window`. Keys use the bare provider model id, not the
+# gateway-encoded id (e.g. ``"minimax/minimax-m3"``, not ``"open_router/…"``).
+PROVIDER_MODEL_CONTEXT_OVERRIDES: dict[tuple[str, str], int] = {
+    ("deepseek", "deepseek-v4-pro"): 1_000_000,
+    ("deepseek", "deepseek-v4-flash"): 1_000_000,
+    ("gemini", "models/gemini-3.1-flash-lite"): 1_000_000,
+}
+
+
+def resolve_context_window(
+    provider_id: str,
+    provider_model: str,
+    *,
+    auto_lookup: Callable[[str, str], int | None] | None = None,
+) -> int:
+    """Resolve a model's context window: manual override > auto-discovered > 200K.
+
+    ``auto_lookup`` is an optional ``(provider_id, provider_model) -> int | None``
+    callable (typically ``ProviderRegistry.cached_context_window``) used when no
+    manual override exists. Returns :data:`DEFAULT_CONTEXT_WINDOW` when nothing is
+    known, which callers treat as "no special handling needed".
+    """
+    override = PROVIDER_MODEL_CONTEXT_OVERRIDES.get((provider_id, provider_model))
+    if override is not None:
+        return override
+    if auto_lookup is not None:
+        auto = auto_lookup(provider_id, provider_model)
+        if auto:
+            return auto
+    return DEFAULT_CONTEXT_WINDOW
 
 
 PROVIDER_CATALOG: dict[str, ProviderDescriptor] = {

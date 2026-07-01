@@ -5,6 +5,7 @@ import inspect
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from loguru import logger
 
+from config.provider_catalog import ONE_M_CONTEXT, resolve_context_window
 from config.settings import Settings
 from core.anthropic import get_token_count
 from core.trace import trace_event
@@ -12,7 +13,11 @@ from providers.registry import ProviderRegistry
 
 from . import dependencies
 from .dependencies import get_settings, require_api_key
-from .gateway_model_ids import gateway_model_id, no_thinking_gateway_model_id
+from .gateway_model_ids import (
+    gateway_model_id,
+    no_thinking_gateway_model_id,
+    one_m_gateway_model_id,
+)
 from .models.anthropic import MessagesRequest, TokenCountRequest
 from .models.responses import ModelResponse, ModelsListResponse
 from .services import ClaudeProxyService
@@ -97,12 +102,29 @@ def _append_unique_model(
     models.append(model)
 
 
+def _context_window_for_ref(
+    provider_model_ref: str, provider_registry: ProviderRegistry | None
+) -> int:
+    """Resolve a prefixed ``provider/model`` ref's context window (override > auto > 200K)."""
+    auto_lookup = (
+        provider_registry.cached_context_window
+        if provider_registry is not None
+        else None
+    )
+    return resolve_context_window(
+        Settings.parse_provider_type(provider_model_ref),
+        Settings.parse_model_name(provider_model_ref),
+        auto_lookup=auto_lookup,
+    )
+
+
 def _append_provider_model_variants(
     models: list[ModelResponse],
     seen: set[str],
     provider_model_ref: str,
     *,
     supports_thinking: bool | None = None,
+    context_window: int = 0,
 ) -> None:
     if supports_thinking is not False:
         _append_unique_model(
@@ -121,6 +143,18 @@ def _append_provider_model_variants(
             display_name=f"{provider_model_ref} (no thinking)",
         ),
     )
+    # 1M-capable models also get a [1m]-suffixed thinking variant so Claude Code's
+    # has1mContext() reports 1M. The suffix lives on the client-facing id only;
+    # ModelRouter strips it before forwarding upstream.
+    if context_window >= ONE_M_CONTEXT:
+        _append_unique_model(
+            models,
+            seen,
+            _discovered_model_response(
+                one_m_gateway_model_id(provider_model_ref),
+                display_name=f"{provider_model_ref} (1M context)",
+            ),
+        )
 
 
 def _build_models_list_response(
@@ -140,6 +174,7 @@ def _build_models_list_response(
             seen,
             ref.model_ref,
             supports_thinking=supports_thinking,
+            context_window=_context_window_for_ref(ref.model_ref, provider_registry),
         )
 
     if provider_registry is not None:
@@ -149,6 +184,9 @@ def _build_models_list_response(
                 seen,
                 model_info.model_id,
                 supports_thinking=model_info.supports_thinking,
+                context_window=_context_window_for_ref(
+                    model_info.model_id, provider_registry
+                ),
             )
 
     for model in SUPPORTED_CLAUDE_MODELS:

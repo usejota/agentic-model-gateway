@@ -148,6 +148,63 @@ def test_models_list_includes_cached_wafer_models():
     assert "claude-3-freecc-no-thinking/wafer/MiniMax-M2.7" in ids
 
 
+def test_models_list_advertises_one_m_variant_for_autodiscovered_window():
+    app = create_app(lifespan_enabled=False)
+    settings = _settings(
+        model="open_router/big-model", model_opus=None, model_haiku=None
+    )
+    registry = ProviderRegistry()
+    registry.cache_model_infos(
+        "open_router",
+        {
+            ProviderModelInfo(
+                "big-model", supports_thinking=True, context_window=1_000_000
+            ),
+            ProviderModelInfo(
+                "small-model", supports_thinking=True, context_window=200_000
+            ),
+        },
+    )
+    app.state.provider_registry = registry
+    app.dependency_overrides[get_settings] = lambda: settings
+
+    try:
+        response = TestClient(app).get("/v1/models")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    ids = [item["id"] for item in data]
+    display_names = {item["id"]: item["display_name"] for item in data}
+
+    assert "anthropic/open_router/big-model[1m]" in ids
+    assert (
+        display_names["anthropic/open_router/big-model[1m]"]
+        == "open_router/big-model (1M context)"
+    )
+    # The sub-1M model gets no [1m] variant.
+    assert "anthropic/open_router/small-model[1m]" not in ids
+
+
+def test_models_list_advertises_one_m_variant_for_manual_override():
+    app = create_app(lifespan_enabled=False)
+    settings = _settings(
+        model="deepseek/deepseek-v4-pro", model_opus=None, model_haiku=None
+    )
+    app.dependency_overrides[get_settings] = lambda: settings
+
+    try:
+        response = TestClient(app).get("/v1/models")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    ids = [item["id"] for item in response.json()["data"]]
+    # deepseek/deepseek-v4-pro is a manual 1M override (catalog), no registry needed.
+    assert "anthropic/deepseek/deepseek-v4-pro[1m]" in ids
+
+
 def test_models_list_works_without_provider_registry():
     app = create_app(lifespan_enabled=False)
     settings = _settings()

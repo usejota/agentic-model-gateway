@@ -202,6 +202,42 @@ async def test_openrouter_lists_tool_metadata_with_thinking_support() -> None:
 
 
 @pytest.mark.asyncio
+async def test_openrouter_captures_context_length() -> None:
+    provider = OpenRouterProvider(ProviderConfig(api_key="open-router-key"))
+    with patch.object(
+        provider._client,
+        "get",
+        new_callable=AsyncMock,
+        return_value=_response(
+            200,
+            {
+                "data": [
+                    {
+                        "id": "top-level-ctx",
+                        "supported_parameters": ["tools"],
+                        "context_length": 1_000_000,
+                    },
+                    {
+                        "id": "nested-ctx",
+                        "supported_parameters": ["tools"],
+                        "top_provider": {"context_length": 256_000},
+                    },
+                    {
+                        "id": "no-ctx",
+                        "supported_parameters": ["tools"],
+                    },
+                ]
+            },
+        ),
+    ):
+        infos = {info.model_id: info for info in await provider.list_model_infos()}
+
+    assert infos["top-level-ctx"].context_window == 1_000_000
+    assert infos["nested-ctx"].context_window == 256_000
+    assert infos["no-ctx"].context_window is None
+
+
+@pytest.mark.asyncio
 async def test_openrouter_lists_empty_set_when_no_tool_capable_models() -> None:
     provider = OpenRouterProvider(ProviderConfig(api_key="open-router-key"))
     with patch.object(

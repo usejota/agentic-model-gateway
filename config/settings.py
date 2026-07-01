@@ -316,9 +316,12 @@ class Settings(BaseSettings):
         default=None, validation_alias="MAX_MESSAGE_LOG_ENTRIES_PER_CHAT"
     )
 
-    # Auto-compaction window for Claude Code subprocess (default: 190k tokens).
+    # Auto-compaction window for the Claude Code subprocess. Defaults high because
+    # Claude Code clamps it to each model's real context window: a 1M ([1m]) model
+    # then compacts near 1M, while smaller models clamp down to ~200K on their own.
+    # Lower it only to force earlier compaction.
     claude_code_auto_compact_window: int = Field(
-        default=190000,
+        default=1_000_000,
         validation_alias="CLAUDE_CODE_AUTO_COMPACT_WINDOW",
         ge=10000,
         le=1_000_000,

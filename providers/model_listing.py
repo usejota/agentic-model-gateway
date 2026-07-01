@@ -15,6 +15,7 @@ class ProviderModelInfo:
 
     model_id: str
     supports_thinking: bool | None = None
+    context_window: int | None = None
 
 
 def model_infos_from_ids(
@@ -84,10 +85,26 @@ def extract_openrouter_tool_model_infos(
             ProviderModelInfo(
                 model_id=model_id,
                 supports_thinking="reasoning" in supported_parameter_names,
+                context_window=_context_length(item),
             )
         )
 
     return frozenset(model_infos)
+
+
+def _context_length(item: Any) -> int | None:
+    """Read an OpenRouter model's context length (top-level or ``top_provider``)."""
+    for candidate in (
+        _field(item, "context_length"),
+        _field(_field(item, "top_provider"), "context_length"),
+    ):
+        if isinstance(candidate, bool):
+            continue
+        if isinstance(candidate, int) and candidate > 0:
+            return candidate
+        if isinstance(candidate, float) and candidate > 0:
+            return int(candidate)
+    return None
 
 
 def extract_ollama_model_ids(payload: Any, *, provider_name: str) -> frozenset[str]:

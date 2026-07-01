@@ -57,4 +57,5 @@ claudim installed. Next:
        claudim "explain this repo"
   Args pass straight through to Claude Code. Override the gateway host/tailnet
   with CLAUDIM_HOST / CLAUDIM_TAILNET if needed (see `claudim` header comments).
+  Update claudim later with: claudim upgrade
 NEXT

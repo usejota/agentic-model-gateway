@@ -6,6 +6,7 @@
 #
 #   claudim                 # interactive Claude Code, pointed at the gateway
 #   claudim "fix this bug"  # all args pass straight through to claude
+#   claudim upgrade         # update claudim itself (re-runs the installer)
 #
 # Requirements on the dev machine:
 #   - Tailscale: installed and logged in to the company tailnet (jota.ai),
@@ -32,6 +33,22 @@ BASE_URL="http://${FQDN}:${PORT}"
 
 say()  { echo "[claudim] $*" >&2; }
 die()  { echo "[claudim] error: $*" >&2; exit 1; }
+
+# Self-update of the claudim launcher ONLY. Intercepted as the bare first arg so it
+# never reaches `claude` (this updates claudim, NOT Claude Code — for the latter use
+# `claude update`). Runs before the claude/tailscale checks so it works regardless.
+case "${1:-}" in
+  upgrade|--upgrade|self-update|--self-update)
+    INSTALLER="${CLAUDIM_INSTALLER:-https://raw.githubusercontent.com/usejota/agentic-model-gateway/main/scripts/install-claudim.sh}"
+    say "upgrading claudim from ${INSTALLER}"
+    if command -v curl >/dev/null 2>&1; then
+      exec sh -c "curl -fsSL '${INSTALLER}' | sh"
+    elif command -v wget >/dev/null 2>&1; then
+      exec sh -c "wget -qO- '${INSTALLER}' | sh"
+    fi
+    die "need curl or wget to upgrade claudim"
+    ;;
+esac
 
 command -v claude >/dev/null 2>&1 || die "claude not found. Install: npm install -g @anthropic-ai/claude-code"
 command -v tailscale >/dev/null 2>&1 || die "tailscale not found. Install Tailscale and log in to the jota.ai tailnet."
@@ -64,7 +81,11 @@ done
 export ANTHROPIC_BASE_URL="${BASE_URL}"
 export ANTHROPIC_AUTH_TOKEN="${TOKEN}"
 export CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1   # enables the /model picker
-export CLAUDE_CODE_AUTO_COMPACT_WINDOW="${CLAUDE_CODE_AUTO_COMPACT_WINDOW:-190000}"
+
+# High default; Claude Code clamps it to each model's real context window, so 1M
+# ([1m]) models compact near 1M and smaller models clamp down to ~200K on their
+# own. Lower it (or export in your shell) to force earlier compaction.
+export CLAUDE_CODE_AUTO_COMPACT_WINDOW="${CLAUDE_CODE_AUTO_COMPACT_WINDOW:-1000000}"
 
 say "gateway ${BASE_URL} — launching claude"
 exec claude "$@"
