@@ -77,6 +77,9 @@ resolve_model_alias() {
     deepseek-v4-flash) printf 'claude-3-freecc-no-thinking/open_router/deepseek/deepseek-v4-flash' ;;
     glm-5.2)           printf 'claude-3-freecc-no-thinking/open_router/z-ai/glm-5.2' ;;
     minimax-m3)        printf 'claude-3-freecc-no-thinking/open_router/minimax/minimax-m3' ;;
+    mistral-small)     printf 'claude-3-freecc-no-thinking/open_router/mistralai/mistral-small-3.2-24b-instruct' ;;
+    ministral-8b)      printf 'claude-3-freecc-no-thinking/open_router/mistralai/ministral-8b-2512' ;;
+    codestral)         printf 'claude-3-freecc-no-thinking/open_router/mistralai/codestral-2508' ;;
     *) printf '%s' "$1" ;;
   esac
 }
@@ -141,14 +144,18 @@ case "${1:-}" in
     ;;
   models|--models)
     if [ "${2:-}" = "--all" ] || [ "${2:-}" = "all" ]; then
-      # Live list of every Chinese-vendor no-thinking model the gateway offers.
-      # Filters out openai/anthropic/google/x-ai (and other non-Chinese vendors)
-      # by an allowlist of Chinese providers. Always reflects the current gateway.
+      # Live list of every NON-AMERICAN no-thinking model the gateway offers.
+      # Cost-driven: excludes the expensive US closed labs that charge premium
+      # per-token (plus the US aggregator's house models). Everything else is
+      # allowed — Chinese (deepseek/qwen/kimi/glm/minimax/...), Mistral (FR),
+      # Cohere (CA), AI21 (IL), Arcee (UK), Sakana (JP), Upstage (KR), and
+      # open-weight Llama + its fine-tunes (serving revenue doesn't reach a US
+      # closed lab per call). Always reflects the current gateway.
       curl -s -m 10 "${BASE_URL}/v1/models" -H "x-api-key: ${TOKEN}" 2>/dev/null | python3 -c '
 import sys, json
 from collections import defaultdict
-CHINESE = {"deepseek", "moonshotai", "z-ai", "minimax", "qwen",
-           "bytedance-seed", "stepfun", "xiaomi", "inclusionai"}
+US_CLOSED = {"openai", "anthropic", "google", "x-ai", "amazon", "nvidia",
+             "ibm-granite", "liquid", "rekaai", "relace", "openrouter"}
 try:
     d = json.load(sys.stdin)
 except Exception as e:
@@ -164,10 +171,11 @@ for m in d.get("data", []):
     if len(parts) < 4:
         continue
     vendor = parts[2].lstrip("~")
-    if vendor in CHINESE:
-        g[vendor].append(i)
+    if vendor in US_CLOSED:
+        continue
+    g[vendor].append(i)
 if not g:
-    sys.exit("no Chinese-vendor no-thinking models found on the gateway")
+    sys.exit("no non-American no-thinking models found on the gateway")
 for v in sorted(g):
     print(f"[{v}]")
     for i in sorted(g[v]):
@@ -176,24 +184,29 @@ for v in sorted(g):
       exit 0
     fi
     cat <<'MODELS'
-claudim delegate aliases — curated best-in-class, ALL Chinese providers
-(deepseek / moonshot-kimi / zhipu-glm / minimax). openai, anthropic, google
-and x-ai are NEVER called. All no-thinking (safe for `claude -p`).
+claudim delegate aliases — curated best-in-class NON-AMERICAN (Chinese +
+Mistral/France). US closed labs (openai, anthropic, google, x-ai, amazon,
+nvidia, ibm-granite, liquid, rekaai, relace) are NEVER called. All no-thinking
+(safe for `claude -p`).
 
   deepseek-v4-pro     smartest: heavy reasoning, multi-step logic, algorithms
   kimi-k2.7-code      coding: implement, refactor, bug fix, write tests
   deepseek-v4-flash   fastest/cheapest: triage, lookups, mechanical edits
   glm-5.2             long-context general: read/analyze big files, writing
   minimax-m3          long-context general alternative
+  mistral-small       non-Chinese general (France): cheap, good for writing/analysis
+  ministral-8b        non-Chinese cheapest (France): triage, lookups (alt to flash)
+  codestral           non-Chinese coding (France): implement, refactor (alt to kimi)
 
 Pick rule: use the CHEAPEST that can do the job; escalate to deepseek-v4-pro
-only when the task needs real reasoning.
+only when the task needs real reasoning. Chinese or Mistral — your call per
+task; both are cheap and non-American.
 
 Delegate:  claudim -p --model <alias> "<task>"
 JSON out:  claudim -p --output-format json --model <alias> "<task>"
 gcloud/net: claudim -p --unrestricted --model <alias> "<task>"  # bypass perms
 Watch live: CLAUDIM_TMUX=1 claudim -p --model <alias> "<task>"  # tmux attach -t claudim
-All Chinese models live:  claudim models --all
+All non-American models live:  claudim models --all
 A full routed id (contains "/") or a Claude alias (haiku/sonnet/opus) is
 passed through unchanged.
 MODELS

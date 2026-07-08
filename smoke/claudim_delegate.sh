@@ -26,7 +26,8 @@ CLAUDIM="${REPO_ROOT}/deploy/claudim"
 
 PROMPT="quanto é 17*23? Responda só o número, nada mais."
 EXPECT="391"
-ALIASES=(deepseek-v4-pro kimi-k2.7-code deepseek-v4-flash glm-5.2 minimax-m3)
+ALIASES=(deepseek-v4-pro kimi-k2.7-code deepseek-v4-flash glm-5.2 minimax-m3 \
+         mistral-small ministral-8b codestral)
 
 pass=0; fail=0
 ok()   { printf '  \033[32mPASS\033[0m %s\n' "$1"; pass=$((pass+1)); }
@@ -73,6 +74,24 @@ then ok "json contract"; else bad "json contract (see above)"; fi
 step "auth: ANTHROPIC_API_KEY=fake (parent subscription) must NOT poison the child"
 out="$(ANTHROPIC_API_KEY=fakeinvalid "${CLAUDIM}" -p --model deepseek-v4-flash "diga: ok" 2>/dev/null || true)"
 if [ -n "${out}" ]; then ok "child ignored inherited API_KEY -> $(echo "${out}" | head -c 40)"; else bad "child 401/hang on fake API_KEY"; fi
+
+step "models --all: non-American only (US closed labs excluded, Mistral present)"
+all="$("${CLAUDIM}" models --all 2>/dev/null || true)"
+if [ -z "${all}" ]; then
+  bad "models --all returned nothing (gateway reachable?)"
+else
+  leak=""
+  for v in openai anthropic google x-ai amazon nvidia ibm-granite liquid rekaai relace openrouter; do
+    echo "${all}" | grep -q "\[${v}\]" && leak="${leak} ${v}"
+  done
+  if [ -n "${leak}" ]; then
+    bad "US closed labs leaked into --all:${leak}"
+  elif echo "${all}" | grep -q "\[mistralai\]"; then
+    ok "no US closed labs; Mistral present ($(echo "${all}" | grep -c '^\[') vendors)"
+  else
+    bad "no US leak but Mistral missing (expected non-American)"
+  fi
+fi
 
 step "CLAUDIM_TMUX=1: delegate runs in a tmux window, stdout intact"
 if command -v tmux >/dev/null 2>&1; then

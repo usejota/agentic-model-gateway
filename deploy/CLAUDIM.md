@@ -57,12 +57,18 @@ Aliases (run `claudim models` to reprint):
 | `deepseek-v4-flash` | fastest/cheapest: triage, lookups, mechanical edits |
 | `glm-5.2` | long-context general: read/analyze big files, writing |
 | `minimax-m3` | long-context general alternative |
+| `mistral-small` | non-Chinese general (France): cheap, writing/analysis |
+| `ministral-8b` | non-Chinese cheapest (France): triage, lookups |
+| `codestral` | non-Chinese coding (France): implement, refactor |
 
-All five are Chinese providers (DeepSeek, Moonshot/Kimi, Zhipu/GLM, MiniMax).
-`openai`, `anthropic`, `google`, and `x-ai` are never called. To see every
-Chinese-vendor no-thinking model the gateway currently offers (live, filtered
-to Chinese providers only), run `claudim models --all` and pass any listed id
-verbatim to `--model`.
+All eight are non-American: five Chinese (DeepSeek, Moonshot/Kimi, Zhipu/GLM,
+MiniMax) + three French (Mistral). US closed labs — `openai`, `anthropic`,
+`google`, `x-ai`, `amazon`, `nvidia`, `ibm-granite`, `liquid`, `rekaai`,
+`relace` — are never called (cost-driven: they charge premium per-token; the
+rest are cheap, and open-weight Llama + fine-tunes don't fund a US lab per
+call). To see every non-American no-thinking model the gateway currently
+offers (live, US closed labs filtered out), run `claudim models --all` and pass
+any listed id verbatim to `--model`.
 
 A full routed id (contains `/`) or a Claude alias (`haiku`/`sonnet`/`opus`) is
 passed through unchanged — but don't use the Claude aliases for delegates, they
