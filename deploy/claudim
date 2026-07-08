@@ -150,13 +150,17 @@ run_in_tmux() {
   envp+=" CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=$(printf '%q' "$CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY")"
   envp+=" CLAUDE_CODE_AUTO_COMPACT_WINDOW=$(printf '%q' "$CLAUDE_CODE_AUTO_COMPACT_WINDOW")"
 
-  # stderr is NOT redirected: it stays on the pane's tty, so Claude Code
-  # renders its live spinner/progress there — that's what the user watches
-  # (`claude -p` only emits stdout at the very end). stdout is teed to the log
-  # (what the orchestrator captures; --output-format json stays clean) and
-  # echoes on the pane when it finally arrives. A short hold keeps the final
-  # output readable before the pane closes and the layout re-balances.
-  local shellcmd="$envp claude $cmd | tee $(printf '%q' "$out"); printf 1 > $(printf '%q' "$done"); echo; echo '[claudim] delegate done — pane closes in 5s'; sleep 5"
+  # Pane experience: `claude -p` prints stdout only at the very end and draws
+  # no spinner in print mode, so without help the pane sits mute for the whole
+  # run. We print a header (model + task), tick elapsed seconds while claude
+  # runs, then show the answer. stderr stays on the pane's tty (warnings show
+  # up live); stdout is teed to the log the orchestrator captures
+  # (--output-format json stays clean). A short hold keeps the final output
+  # readable before the pane closes and the layout re-balances.
+  local taskprev=""
+  for _a in "$@"; do case "$_a" in -*) ;; *) taskprev="$_a" ;; esac; done
+  taskprev="$(printf '%.120s' "$taskprev")"
+  local shellcmd="printf '\\033[1m[%s]\\033[0m %s\\n\\n' $(printf '%q' "${model:-delegate}") $(printf '%q' "$taskprev"); start=\$(date +%s); ( while :; do printf '\\r\\033[2K… working %ss' \$(( \$(date +%s) - start )); sleep 5; done ) & tick=\$!; $envp claude $cmd > $(printf '%q' "$out"); kill \$tick 2>/dev/null; printf '\\r\\033[2K\\n'; cat $(printf '%q' "$out"); printf 1 > $(printf '%q' "$done"); echo; echo '[claudim] delegate done — pane closes in 8s'; sleep 8"
 
   rm -f "$done"
   if [ "$in_session" -eq 1 ]; then
