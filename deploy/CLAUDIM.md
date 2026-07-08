@@ -28,7 +28,51 @@ tells you the line to add to your shell rc.
 ```sh
 claudim                 # interactive Claude Code via the gateway
 claudim "explain this"  # args pass straight through to claude
+claudim models          # list delegate aliases + their strengths
 ```
+
+### Delegate mode (cheap model per task)
+
+Run a single task on a cheap gateway model and get the answer on stdout — so an
+Opus/Fable orchestrator can delegate mechanical steps and keep cost down:
+
+```sh
+claudim -p --model deepseek-v4-pro "explain what foo() does"
+claudim -p --output-format json --model kimi-k2.7-code "add a test for bar()"
+```
+
+`--model <alias>` is rewritten to the gateway's **no-thinking** model id. This is
+mandatory for `claude -p`: reasoning backends otherwise stream a `thinking` block
+with an empty signature, which Claude Code in `-p`/SDK mode treats as an invalid
+turn and discards — yielding **empty stdout** even though the text was sent. The
+`claude-3-freecc-no-thinking/` prefix both tells Claude Code the model doesn't
+support thinking and tells the gateway to disable thinking upstream.
+
+Aliases (run `claudim models` to reprint):
+
+| Alias | Strength |
+|-------|----------|
+| `deepseek-v4-pro` | smartest: heavy reasoning, multi-step logic |
+| `kimi-k2.7-code` | coding: implement, refactor, bug fix, tests |
+| `deepseek-v4-flash` | fastest/cheapest: triage, lookups, mechanical edits |
+| `glm-5.2` | long-context general: read/analyze big files, writing |
+| `minimax-m3` | long-context general alternative |
+
+All five are Chinese providers (DeepSeek, Moonshot/Kimi, Zhipu/GLM, MiniMax).
+`openai`, `anthropic`, `google`, and `x-ai` are never called. To see every
+Chinese-vendor no-thinking model the gateway currently offers (live, filtered
+to Chinese providers only), run `claudim models --all` and pass any listed id
+verbatim to `--model`.
+
+A full routed id (contains `/`) or a Claude alias (`haiku`/`sonnet`/`opus`) is
+passed through unchanged — but don't use the Claude aliases for delegates, they
+route via gateway config and may enable thinking (same empty-stdout bug). For the
+full orchestration recipe (when to delegate, model selection, parallelism,
+output handling), see the `claudim-delegate` skill.
+
+`claudim` also unsets `ANTHROPIC_API_KEY` before launching, so an inherited
+parent-subscription API key (which Claude Code prefers over `ANTHROPIC_AUTH_TOKEN`)
+can't poison the child's auth against the gateway.
 
 ## Configuration (env overrides)
 

@@ -7,6 +7,15 @@
 #   claudim                 # interactive Claude Code, pointed at the gateway
 #   claudim "fix this bug"  # all args pass straight through to claude
 #   claudim upgrade         # update claudim itself (re-runs the installer)
+#   claudim models          # list delegate aliases + their strengths
+#   claudim -p --model deepseek-v4-pro "task"   # delegate: cheap model, returns
+#                                               # the answer on stdout
+#
+# `--model <alias>` is rewritten to the gateway's no-thinking model id so that
+# `claude -p` delegates return non-empty output (reasoning backends otherwise
+# stream an unsigned `thinking` block that Claude Code -p discards). A full
+# routed id (contains "/") or a Claude alias (haiku/sonnet/opus) is passed
+# through unchanged. See `claudim models`.
 #
 # Requirements on the dev machine:
 #   - Tailscale: installed and logged in to the company tailnet (jota.ai),
@@ -34,9 +43,29 @@ BASE_URL="http://${FQDN}:${PORT}"
 say()  { echo "[claudim] $*" >&2; }
 die()  { echo "[claudim] error: $*" >&2; exit 1; }
 
-# Self-update of the claudim launcher ONLY. Intercepted as the bare first arg so it
-# never reaches `claude` (this updates claudim, NOT Claude Code — for the latter use
-# `claude update`). Runs before the claude/tailscale checks so it works regardless.
+# Map a friendly delegate alias to the gateway's no-thinking model id.
+# The no-thinking variant is MANDATORY for `claude -p` delegates: reasoning
+# backends otherwise stream a `thinking` block with an empty signature, which
+# Claude Code in -p/SDK mode treats as an invalid turn and discards — yielding
+# empty stdout even though the text block was sent. The `claude-3-freecc-no-
+# thinking/` prefix both tells Claude Code the model doesn't support thinking
+# (no signature expected) and tells the gateway to disable thinking upstream.
+# Values that already look like a routed id (contain "/") or a Claude alias
+# (haiku/sonnet/opus) are passed through unchanged.
+resolve_model_alias() {
+  case "$1" in
+    deepseek-v4-pro)   printf 'claude-3-freecc-no-thinking/open_router/deepseek/deepseek-v4-pro' ;;
+    kimi-k2.7-code)    printf 'claude-3-freecc-no-thinking/open_router/moonshotai/kimi-k2.7-code' ;;
+    deepseek-v4-flash) printf 'claude-3-freecc-no-thinking/open_router/deepseek/deepseek-v4-flash' ;;
+    glm-5.2)           printf 'claude-3-freecc-no-thinking/open_router/z-ai/glm-5.2' ;;
+    minimax-m3)        printf 'claude-3-freecc-no-thinking/open_router/minimax/minimax-m3' ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
+# Self-update of the claudim launcher ONLY, and the `models` cheat-sheet. Both are
+# intercepted as the bare first arg so they never reach `claude`. Run before the
+# claude/tailscale checks so they work regardless.
 case "${1:-}" in
   upgrade|--upgrade|self-update|--self-update)
     INSTALLER="${CLAUDIM_INSTALLER:-https://raw.githubusercontent.com/usejota/agentic-model-gateway/main/scripts/install-claudim.sh}"
@@ -47,6 +76,64 @@ case "${1:-}" in
       exec sh -c "wget -qO- '${INSTALLER}' | sh"
     fi
     die "need curl or wget to upgrade claudim"
+    ;;
+  models|--models)
+    if [ "${2:-}" = "--all" ] || [ "${2:-}" = "all" ]; then
+      # Live list of every Chinese-vendor no-thinking model the gateway offers.
+      # Filters out openai/anthropic/google/x-ai (and other non-Chinese vendors)
+      # by an allowlist of Chinese providers. Always reflects the current gateway.
+      curl -s -m 10 "${BASE_URL}/v1/models" -H "x-api-key: ${TOKEN}" 2>/dev/null | python3 -c '
+import sys, json
+from collections import defaultdict
+CHINESE = {"deepseek", "moonshotai", "z-ai", "minimax", "qwen",
+           "bytedance-seed", "stepfun", "xiaomi", "inclusionai"}
+try:
+    d = json.load(sys.stdin)
+except Exception as e:
+    sys.exit(f"could not parse /v1/models: {e} (gateway reachable? tailscale up?)")
+g = defaultdict(list)
+for m in d.get("data", []):
+    i = m.get("id", "")
+    if not i.startswith("claude-3-freecc-no-thinking/"):
+        continue
+    parts = i.split("/")
+    # Format: claude-3-freecc-no-thinking/<route>/<vendor>/<model...>
+    # vendor is the segment right after the route (e.g. open_router).
+    if len(parts) < 4:
+        continue
+    vendor = parts[2].lstrip("~")
+    if vendor in CHINESE:
+        g[vendor].append(i)
+if not g:
+    sys.exit("no Chinese-vendor no-thinking models found on the gateway")
+for v in sorted(g):
+    print(f"[{v}]")
+    for i in sorted(g[v]):
+        print(f"  {i}")
+' || die "could not list models from ${BASE_URL} (tailscale up? gateway up?)"
+      exit 0
+    fi
+    cat <<'MODELS'
+claudim delegate aliases — curated best-in-class, ALL Chinese providers
+(deepseek / moonshot-kimi / zhipu-glm / minimax). openai, anthropic, google
+and x-ai are NEVER called. All no-thinking (safe for `claude -p`).
+
+  deepseek-v4-pro     smartest: heavy reasoning, multi-step logic, algorithms
+  kimi-k2.7-code      coding: implement, refactor, bug fix, write tests
+  deepseek-v4-flash   fastest/cheapest: triage, lookups, mechanical edits
+  glm-5.2             long-context general: read/analyze big files, writing
+  minimax-m3          long-context general alternative
+
+Pick rule: use the CHEAPEST that can do the job; escalate to deepseek-v4-pro
+only when the task needs real reasoning.
+
+Delegate:  claudim -p --model <alias> "<task>"
+JSON out:  claudim -p --output-format json --model <alias> "<task>"
+All Chinese models live:  claudim models --all
+A full routed id (contains "/") or a Claude alias (haiku/sonnet/opus) is
+passed through unchanged.
+MODELS
+    exit 0
     ;;
 esac
 
@@ -87,5 +174,36 @@ export CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1   # enables the /model picke
 # own. Lower it (or export in your shell) to force earlier compaction.
 export CLAUDE_CODE_AUTO_COMPACT_WINDOW="${CLAUDE_CODE_AUTO_COMPACT_WINDOW:-1000000}"
 
+# A parent Claude Code session (e.g. an Opus/Fable orchestrator on a real
+# Anthropic subscription) may export ANTHROPIC_API_KEY. Claude Code gives that
+# key precedence over ANTHROPIC_AUTH_TOKEN, so the child would auth against the
+# gateway with the wrong credential and 401/hang. Drop it so the gateway token
+# above is the sole auth source.
+unset ANTHROPIC_API_KEY
+
 say "gateway ${BASE_URL} — launching claude"
+
+# Rewrite `--model <alias>` (and `--model=<alias>`) to the no-thinking gateway id
+# so `claude -p` delegates return non-empty output. Only rebuild args when a
+# --model flag is present; otherwise pass through untouched (avoids empty-array
+# expansion under `set -u` on bash 3.2).
+has_model=0
+for _a in "$@"; do
+  case "$_a" in --model|--model=*) has_model=1 ;; esac
+done
+if [ "${has_model}" -eq 1 ]; then
+  args=()
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --model=*) args+=("--model=$(resolve_model_alias "${1#--model=}")"); shift ;;
+      --model)
+        args+=("--model"); shift
+        [ "$#" -gt 0 ] && { args+=("$(resolve_model_alias "$1")"); shift; }
+        ;;
+      *) args+=("$1"); shift ;;
+    esac
+  done
+  exec claude "${args[@]}"
+fi
+
 exec claude "$@"
