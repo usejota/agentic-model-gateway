@@ -92,21 +92,36 @@ CLAUDIM_TMUX=1 claudim -p --model kimi-k2.7-code "add a test for bar()"
 
 **Recommended workflow — run your orchestrator inside tmux.** Start your Claude
 Code session inside tmux (`tmux new -s main`, then `claude`). When the
-orchestrator launches delegates with `--tmux`, each window opens **in your
-current tmux session** — visible right where you are, no `attach` needed.
-`C-b n` / `C-b p` cycles windows, `C-b w` lists them; windows are named
-`<model>-<pid>` so you can tell delegates apart. You can type into a delegate's
-window to interact with it.
+orchestrator launches delegates with `--tmux`, each delegate opens as a **split
+pane in your current window** using tmux's `main-vertical` layout:
 
-**Outside tmux:** windows open in a detached session named `claudim`:
+```
++----------------------+----------------------+
+|                      |  kimi-k2.7-code-8424 |
+|                      +----------------------+
+|  orchestrator        |  glm-5.2-8423        |
+|  (left, full height) +----------------------+
+|                      |  codestral-2508-8425 |
++----------------------+----------------------+
+```
+
+Your orchestrator pane keeps the left half at full height; delegates stack as
+equal-height slices in the right half and re-balance as they come and go. Pane
+titles (shown in each pane's top border) carry `<model>-<pid>` so you can tell
+delegates apart. `C-b` + arrow keys moves between panes — click works too
+(mouse mode) — and you can type into a delegate's pane to interact with it.
+When a delegate finishes its pane closes and the rest re-balance.
+
+**Outside tmux:** there's no pane to split, so delegates go to windows in a
+detached session named `claudim`:
 ```sh
 tmux attach -t claudim     # in another terminal
 ```
 
-stdout is captured identically to the orchestrator (the tmux window is purely
-for your eyes/hands); stderr is separate, so `--output-format json` stays
-parseable. The window closes when the delegate finishes. `-p`-only. If tmux
-isn't installed (`brew install tmux`), delegates run inline with a stderr note.
+stdout is captured identically to the orchestrator (the pane is purely for
+your eyes/hands); stderr is separate, so `--output-format json` stays
+parseable. `-p`-only. If tmux isn't installed (`brew install tmux`), delegates
+run inline with a stderr note.
 
 **Parallelism note:** each delegate is a full Claude Code (Node) process.
 3-4 in parallel is heavy on RAM/CPU — cap parallel delegates at 2-3 and
@@ -143,7 +158,7 @@ read-only analysis that doesn't need the shell, omit it and stay sandboxed.
 | `CLAUDIM_TOKEN` | `freecc` | proxy auth token |
 | `CLAUDIM_WAIT` | `30` | seconds to wait for the gateway |
 | `CLAUDIM_BYPASS` | _unset_ | `1` = inject `--dangerously-skip-permissions` so `-p` delegates can run gcloud/network/file-writes (off by default; see gcloud / unrestricted delegates) |
-| `CLAUDIM_TMUX` | _unset_ | `1` = open each `-p` delegate in a tmux window — in your current tmux session if you're inside tmux, else in a detached session `claudim` (see Observing delegates) |
+| `CLAUDIM_TMUX` | _unset_ | `1` = show each `-p` delegate live — split pane in your current tmux window (main-vertical: orchestrator left, delegates stacked right) if inside tmux, else a window in a detached session `claudim` (see Observing delegates) |
 
 Example — point at a differently-named gateway node:
 

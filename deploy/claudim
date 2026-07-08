@@ -87,28 +87,37 @@ resolve_model_alias() {
   esac
 }
 
-# Run a `claude -p` delegate inside a tmux window so the user can watch it live
-# AND interact with it (approve prompts, type instructions). If the caller is
-# already inside tmux, the window opens in the caller's session (C-b n/p);
-# otherwise in a detached session `claudim`. stdout is teed to a log and
-# returned on claudim's stdout so the orchestrator captures it exactly like the
-# inline path. stderr goes to a separate file (not merged) so --output-format
-# json stays parseable. Blocks until the delegate exits, then kills the window.
+# Run a `claude -p` delegate inside a tmux PANE so the user watches it live
+# AND can interact with it (approve prompts, type instructions).
 #
-# Env is passed explicitly in the window command (env VAR=... claude ...) so a
+# Layout (inside the caller's tmux session): the orchestrator pane keeps the
+# LEFT HALF at full height; delegates stack vertically in the right half, one
+# equal-height slice each. Achieved with tmux's built-in `main-vertical`
+# layout (main-pane-width 50%), re-applied after every spawn so N delegates
+# always split the right column into N equal slices. When a delegate finishes
+# its pane closes and the layout re-balances.
+#
+# Outside tmux there is no pane to split, so delegates go to a window in a
+# detached session named "claudim" (tmux attach -t claudim from another
+# terminal).
+#
+# stdout is teed to a log and returned on claudim's stdout so the orchestrator
+# captures it exactly like the inline path. stderr goes to a separate file
+# (not merged) so --output-format json stays parseable. Blocks until the
+# delegate exits, then removes the pane/window.
+#
+# Env is passed explicitly in the pane command (env VAR=... claude ...) so a
 # pre-existing tmux server with a different environment can't lose the gateway
 # exports claudim set above.
 run_in_tmux() {
-  # If the caller (orchestrator session) is ALREADY inside tmux, open the
-  # delegate window in THAT session — it shows up right where the user is
-  # (C-b n/p to visit, and the user can interact with the agent directly).
-  # Outside tmux, fall back to a detached session named "claudim" the user can
-  # `tmux attach -t claudim` to.
-  local sess
+  local in_session=0
+  local sess=""
   if [ -n "${TMUX:-}" ]; then
+    in_session=1
     sess="$(tmux display-message -p '#S' 2>/dev/null)"
   fi
-  if [ -z "${sess:-}" ]; then
+  if [ -z "${sess}" ]; then
+    in_session=0
     sess="claudim"
     tmux has-session -t "$sess" 2>/dev/null || tmux new-session -d -s "$sess"
   fi
@@ -116,8 +125,8 @@ run_in_tmux() {
   local out="/tmp/claudim-$$.log"
   local err="/tmp/claudim-err-$$.log"
   local done="/tmp/claudim-done-$$"
-  # Window named after the delegate model (last path segment) so C-b w reads
-  # meaningfully; PID suffix keeps parallel delegates unique.
+  # Title carries the delegate model (last path segment) so panes/windows are
+  # tellable apart; PID suffix keeps parallel delegates unique.
   local model="" _prev=""
   for _a in "$@"; do
     case "$_prev" in --model) model="$_a" ;; esac
@@ -125,7 +134,7 @@ run_in_tmux() {
     _prev="$_a"
   done
   model="${model##*/}"
-  local win="${model:-del}-$$"
+  local title="${model:-del}-$$"
 
   # Shell-quote every claude arg so tmux's shell parses them verbatim.
   local cmd=""
@@ -140,17 +149,42 @@ run_in_tmux() {
   envp+=" CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=$(printf '%q' "$CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY")"
   envp+=" CLAUDE_CODE_AUTO_COMPACT_WINDOW=$(printf '%q' "$CLAUDE_CODE_AUTO_COMPACT_WINDOW")"
 
+  local shellcmd="$envp claude $cmd 2>$(printf '%q' "$err") | tee $(printf '%q' "$out"); printf 1 > $(printf '%q' "$done")"
+
   rm -f "$done"
-  tmux new-window -d -t "$sess" -n "$win" \
-    "$envp claude $cmd 2>$(printf '%q' "$err") | tee $(printf '%q' "$out"); printf 1 > $(printf '%q' "$done")"
+  if [ "$in_session" -eq 1 ]; then
+    # Split inside the ORCHESTRATOR's window. The first delegate splits the
+    # orchestrator pane horizontally (left|right); the next ones keep
+    # splitting, then `main-vertical` re-lays everything out: pane 0 (the
+    # orchestrator) becomes the left column at 50% width and full height, and
+    # every delegate pane becomes an equal-height slice in the right column.
+    local orig_win new_pane
+    orig_win="$(tmux display-message -p '#{window_id}' 2>/dev/null)"
+    new_pane="$(tmux split-window -d -h -t "$orig_win" -P -F '#{pane_id}' "$shellcmd" 2>/dev/null)"
+    [ -n "$new_pane" ] && tmux select-pane -t "$new_pane" -T "$title" 2>/dev/null || true
+    tmux select-pane -t "$orig_win.0" -T "orchestrator" 2>/dev/null || true
+    tmux set-window-option -t "$orig_win" pane-border-status top 2>/dev/null || true
+    tmux set-window-option -t "$orig_win" main-pane-width '50%' 2>/dev/null || true
+    tmux select-layout -t "$orig_win" main-vertical 2>/dev/null || true
+    # Re-balance once more when the pane count changes on exit (handled below
+    # after the sentinel, since the dying pane auto-closes).
+  else
+    tmux new-window -d -t "$sess" -n "$title" "$shellcmd"
+  fi
 
   # Block until the delegate finishes (sentinel file), regardless of
-  # remain-on-exit. Then surface stdout and tear down the window.
+  # remain-on-exit. Then surface stdout and tear down the pane/window.
   while [ ! -f "$done" ]; do sleep 0.5; done
   rm -f "$done"
   cat "$out" 2>/dev/null
   rm -f "$out" "$err"
-  tmux kill-window -t "$sess:$win" 2>/dev/null || true
+  if [ "$in_session" -eq 1 ]; then
+    # The delegate pane closed itself when its command exited; re-balance the
+    # remaining delegate slices (no-op if the orchestrator pane is alone).
+    tmux select-layout -t "$orig_win" main-vertical 2>/dev/null || true
+  else
+    tmux kill-window -t "$sess:$title" 2>/dev/null || true
+  fi
 }
 
 # Self-update of the claudim launcher ONLY, and the `models` cheat-sheet. Both are
