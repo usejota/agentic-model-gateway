@@ -336,6 +336,10 @@ for _a in "$@"; do
 done
 if [ "${CLAUDIM_BYPASS:-0}" = "1" ]; then has_unrestricted=1; fi
 if [ "${CLAUDIM_TMUX:-0}" = "1" ]; then has_tmux=1; fi
+# Inside a tmux session, live panes are the DEFAULT for -p delegates — the
+# orchestrator forgetting --tmux must not make a delegate invisible. Opt out
+# with CLAUDIM_TMUX=0 (headless) when explicitly wanted.
+if [ -n "${TMUX:-}" ] && [ "${CLAUDIM_TMUX:-}" != "0" ]; then has_tmux=1; fi
 
 need_rebuild=0
 if [ "${has_model}" -eq 1 ] || [ "${has_unrestricted}" -eq 1 ] || [ "${has_tmux}" -eq 1 ]; then
