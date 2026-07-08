@@ -74,6 +74,49 @@ output handling), see the `claudim-delegate` skill.
 parent-subscription API key (which Claude Code prefers over `ANTHROPIC_AUTH_TOKEN`)
 can't poison the child's auth against the gateway.
 
+### Observing delegates (tmux)
+
+`-p` delegates run invisibly by default. Set `CLAUDIM_TMUX=1` (or pass `--tmux`)
+and each `claudim -p` delegate runs inside its own window of a tmux session named
+`claudim`, so you can watch it stream live:
+
+```sh
+CLAUDIM_TMUX=1 claudim -p --model kimi-k2.7-code "add a test for bar()"
+tmux attach -t claudim     # C-b w lists windows; C-b n / C-b p cycles
+```
+
+Each delegate gets a window `del-<pid>` (unique, so parallel delegates don't
+collide). stdout is teed to a log and returned on `claudim`'s stdout exactly like
+the inline path — the orchestrator captures the same result; you just get to
+watch. stderr (spinner/progress) goes to a separate file, so `--output-format
+json` stays parseable. The window is killed when the delegate finishes; with
+parallel delegates the session stays alive until the last one exits.
+
+Needs `tmux` on your PATH (`brew install tmux`). If absent, `claudim` falls back
+to inline execution with a stderr note — delegates still work, you just can't
+watch. tmux observation is `-p`-only (ignored for interactive `claudim`).
+
+### gcloud / unrestricted delegates
+
+A `-p` delegate is non-interactive, so the Bash tool can't answer Claude Code's
+permission prompts. With the default `auto` permission mode, commands that need
+approval — `gcloud`, anything hitting the network, file writes — get denied, and
+the delegate reports it "needs approval" instead of running them. Pass
+`--unrestricted` (or set `CLAUDIM_BYPASS=1`) and `claudim` injects
+`--dangerously-skip-permissions` so the delegate can run those commands:
+
+```sh
+claudim -p --unrestricted --model deepseek-v4-flash \
+  "rode 'gcloud compute instances list' e reporte o resultado"
+```
+
+Off by default — use it only when the task needs gcloud/GCP/network/file-writes.
+**Risk:** `--unrestricted` is a full permission bypass on a cheap gateway model
+on your machine. Keep delegate tasks scoped and trusted; don't use it for tasks
+that consume untrusted content (e.g. "analyze this third-party issue") without
+review — a prompt-injection in the task could drive destructive commands. For
+read-only analysis that doesn't need the shell, omit it and stay sandboxed.
+
 ## Configuration (env overrides)
 
 | Var | Default | Meaning |
@@ -83,6 +126,8 @@ can't poison the child's auth against the gateway.
 | `CLAUDIM_PORT` | `8082` | proxy port |
 | `CLAUDIM_TOKEN` | `freecc` | proxy auth token |
 | `CLAUDIM_WAIT` | `30` | seconds to wait for the gateway |
+| `CLAUDIM_BYPASS` | _unset_ | `1` = inject `--dangerously-skip-permissions` so `-p` delegates can run gcloud/network/file-writes (off by default; see gcloud / unrestricted delegates) |
+| `CLAUDIM_TMUX` | _unset_ | `1` = wrap `-p` delegates in a tmux window for live observation (needs `tmux` on PATH; see Observing delegates) |
 
 Example — point at a differently-named gateway node:
 

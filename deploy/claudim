@@ -10,12 +10,26 @@
 #   claudim models          # list delegate aliases + their strengths
 #   claudim -p --model deepseek-v4-pro "task"   # delegate: cheap model, returns
 #                                               # the answer on stdout
+#   claudim -p --unrestricted --model deepseek-v4-flash "task"
+#                             # delegate that can run gcloud / network / file
+#                             # writes (bypasses Claude Code permission prompts,
+#                             # which -p can't answer). Opt-in: only when the
+#                             # task needs it. Default is sandboxed (auto).
+#   CLAUDIM_TMUX=1 claudim -p --model kimi-k2.7-code "task"
+#                             # run the delegate inside a tmux window so you can
+#                             # watch it live (tmux attach -t claudim). Only -p.
 #
 # `--model <alias>` is rewritten to the gateway's no-thinking model id so that
 # `claude -p` delegates return non-empty output (reasoning backends otherwise
 # stream an unsigned `thinking` block that Claude Code -p discards). A full
 # routed id (contains "/") or a Claude alias (haiku/sonnet/opus) is passed
 # through unchanged. See `claudim models`.
+#
+# `--unrestricted` (or CLAUDIM_BYPASS=1) injects `--dangerously-skip-permissions`
+# so a -p delegate can run gcloud/GCP/network/file-write commands that the
+# default `auto` permission mode would deny non-interactively. Off by default.
+# `--tmux` (or CLAUDIM_TMUX=1) wraps a -p delegate in a tmux window for live
+# observation. Both are claudim-only flags (stripped before reaching claude).
 #
 # Requirements on the dev machine:
 #   - Tailscale: installed and logged in to the company tailnet (jota.ai),
@@ -28,6 +42,10 @@
 #   CLAUDIM_PORT      proxy port                (default: 8082)
 #   CLAUDIM_TOKEN     proxy auth token          (default: freecc)
 #   CLAUDIM_WAIT      seconds to wait for proxy (default: 30)
+#   CLAUDIM_BYPASS    1 = inject --dangerously-skip-permissions (let -p delegate
+#                     run gcloud/network/file-writes; off by default)
+#   CLAUDIM_TMUX      1 = wrap -p delegate in a tmux window for live observation
+#                     (needs tmux on PATH; falls back to inline if absent)
 #
 set -euo pipefail
 
@@ -61,6 +79,50 @@ resolve_model_alias() {
     minimax-m3)        printf 'claude-3-freecc-no-thinking/open_router/minimax/minimax-m3' ;;
     *) printf '%s' "$1" ;;
   esac
+}
+
+# Run a `claude -p` delegate inside a tmux window so the user can watch it live
+# (tmux attach -t claudim; C-b w to list windows). stdout is teed to a log and
+# returned on claudim's stdout so the orchestrator captures it exactly like the
+# inline path. stderr goes to a separate file (not merged) so --output-format
+# json stays parseable. Blocks until the delegate exits, then kills the window.
+#
+# Env is passed explicitly in the window command (env VAR=... claude ...) so a
+# pre-existing tmux server with a different environment can't lose the gateway
+# exports claudim set above.
+run_in_tmux() {
+  local sess="claudim"
+  tmux has-session -t "$sess" 2>/dev/null || tmux new-session -d -s "$sess"
+
+  local out="/tmp/claudim-$$.log"
+  local err="/tmp/claudim-err-$$.log"
+  local done="/tmp/claudim-done-$$"
+  local win="del-$$"
+
+  # Shell-quote every claude arg so tmux's shell parses them verbatim.
+  local cmd=""
+  local _a
+  for _a in "$@"; do cmd+=$(printf '%q ' "$_a"); done
+
+  # Pass the gateway env explicitly (tmux server may not share claudim's env).
+  local envp="env"
+  envp+=" PATH=$(printf '%q' "$PATH")"
+  envp+=" ANTHROPIC_BASE_URL=$(printf '%q' "$ANTHROPIC_BASE_URL")"
+  envp+=" ANTHROPIC_AUTH_TOKEN=$(printf '%q' "$ANTHROPIC_AUTH_TOKEN")"
+  envp+=" CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=$(printf '%q' "$CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY")"
+  envp+=" CLAUDE_CODE_AUTO_COMPACT_WINDOW=$(printf '%q' "$CLAUDE_CODE_AUTO_COMPACT_WINDOW")"
+
+  rm -f "$done"
+  tmux new-window -d -t "$sess" -n "$win" \
+    "$envp claude $cmd 2>$(printf '%q' "$err") | tee $(printf '%q' "$out"); printf 1 > $(printf '%q' "$done")"
+
+  # Block until the delegate finishes (sentinel file), regardless of
+  # remain-on-exit. Then surface stdout and tear down the window.
+  while [ ! -f "$done" ]; do sleep 0.5; done
+  rm -f "$done"
+  cat "$out" 2>/dev/null
+  rm -f "$out" "$err"
+  tmux kill-window -t "$sess:$win" 2>/dev/null || true
 }
 
 # Self-update of the claudim launcher ONLY, and the `models` cheat-sheet. Both are
@@ -129,6 +191,8 @@ only when the task needs real reasoning.
 
 Delegate:  claudim -p --model <alias> "<task>"
 JSON out:  claudim -p --output-format json --model <alias> "<task>"
+gcloud/net: claudim -p --unrestricted --model <alias> "<task>"  # bypass perms
+Watch live: CLAUDIM_TMUX=1 claudim -p --model <alias> "<task>"  # tmux attach -t claudim
 All Chinese models live:  claudim models --all
 A full routed id (contains "/") or a Claude alias (haiku/sonnet/opus) is
 passed through unchanged.
@@ -183,18 +247,39 @@ unset ANTHROPIC_API_KEY
 
 say "gateway ${BASE_URL} — launching claude"
 
-# Rewrite `--model <alias>` (and `--model=<alias>`) to the no-thinking gateway id
-# so `claude -p` delegates return non-empty output. Only rebuild args when a
-# --model flag is present; otherwise pass through untouched (avoids empty-array
-# expansion under `set -u` on bash 3.2).
-has_model=0
+# Scan args once for: --model (rewrite to no-thinking id), --unrestricted
+# (inject bypass-permissions so -p can run gcloud/network/writes), --tmux
+# (wrap -p in a tmux window for live observation), and -p/--print (tmux only
+# applies to print mode). Rebuild args only when one of claudim's own flags is
+# present; otherwise pass through untouched (avoids empty-array expansion under
+# `set -u` on bash 3.2).
+has_model=0; has_unrestricted=0; has_tmux=0; has_print=0
 for _a in "$@"; do
-  case "$_a" in --model|--model=*) has_model=1 ;; esac
+  case "$_a" in
+    --model|--model=*) has_model=1 ;;
+    --unrestricted) has_unrestricted=1 ;;
+    --tmux) has_tmux=1 ;;
+    -p|--print) has_print=1 ;;
+  esac
 done
-if [ "${has_model}" -eq 1 ]; then
+if [ "${CLAUDIM_BYPASS:-0}" = "1" ]; then has_unrestricted=1; fi
+if [ "${CLAUDIM_TMUX:-0}" = "1" ]; then has_tmux=1; fi
+
+need_rebuild=0
+if [ "${has_model}" -eq 1 ] || [ "${has_unrestricted}" -eq 1 ] || [ "${has_tmux}" -eq 1 ]; then
+  need_rebuild=1
+fi
+
+if [ "${need_rebuild}" -eq 1 ]; then
   args=()
+  # Bypass flags first (only when --unrestricted): let the -p delegate run
+  # gcloud/GCP/network/file-writes the default `auto` mode denies non-interactively.
+  if [ "${has_unrestricted}" -eq 1 ]; then
+    args+=("--dangerously-skip-permissions" "--allow-dangerously-skip-permissions")
+  fi
   while [ "$#" -gt 0 ]; do
     case "$1" in
+      --unrestricted|--tmux) shift ;;                 # claudim-only, stripped
       --model=*) args+=("--model=$(resolve_model_alias "${1#--model=}")"); shift ;;
       --model)
         args+=("--model"); shift
@@ -203,6 +288,19 @@ if [ "${has_model}" -eq 1 ]; then
       *) args+=("$1"); shift ;;
     esac
   done
+
+  # tmux observation only in -p mode and only if tmux is installed.
+  if [ "${has_tmux}" -eq 1 ] && [ "${has_print}" -eq 1 ] && command -v tmux >/dev/null 2>&1; then
+    say "tmux: delegate in window del-$$ (tmux attach -t claudim)"
+    run_in_tmux "${args[@]}"
+    exit 0
+  fi
+  if [ "${has_tmux}" -eq 1 ] && [ "${has_print}" -eq 1 ]; then
+    say "tmux not found; running delegate inline (brew install tmux to observe)"
+  elif [ "${has_tmux}" -eq 1 ]; then
+    say "--tmux is for -p delegates only; ignoring"
+  fi
+
   exec claude "${args[@]}"
 fi
 

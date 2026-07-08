@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
 #
-# Local smoke for claudim delegate mode. Verifies the Part 1 fix: `claudim -p
-# --model <alias>` returns NON-empty stdout (the empty-response regression came
-# from reasoning backends streaming an unsigned `thinking` block that Claude
-# Code -p discards; the alias rewrites to the no-thinking gateway id).
+# Local smoke for claudim delegate mode. Verifies:
+#   - `claudim -p --model <alias>` returns NON-empty stdout (the empty-response
+#     regression: reasoning backends stream an unsigned `thinking` block that
+#     Claude Code -p discards; the alias rewrites to the no-thinking gateway id).
+#   - CLAUDIM_TMUX=1 wraps a delegate in a tmux window and still returns stdout;
+#     falls back to inline (with a stderr note) when tmux is absent from PATH.
+#   - `--unrestricted` lets a -p delegate run gcloud (bypasses the permission
+#     wall that non-interactive -p can't answer).
 #
 # Run locally before a PR:
 #   bash smoke/claudim_delegate.sh
@@ -27,6 +31,7 @@ ALIASES=(deepseek-v4-pro kimi-k2.7-code deepseek-v4-flash glm-5.2 minimax-m3)
 pass=0; fail=0
 ok()   { printf '  \033[32mPASS\033[0m %s\n' "$1"; pass=$((pass+1)); }
 bad()  { printf '  \033[31mFAIL\033[0m %s\n' "$1"; fail=$((fail+1)); }
+skip() { printf '  \033[33mSKIP\033[0m %s\n' "$1"; }
 step() { printf '\n== %s ==\n' "$1"; }
 
 # Skip cleanly without tailscale or gateway (CI / machines without tailnet).
@@ -68,6 +73,31 @@ then ok "json contract"; else bad "json contract (see above)"; fi
 step "auth: ANTHROPIC_API_KEY=fake (parent subscription) must NOT poison the child"
 out="$(ANTHROPIC_API_KEY=fakeinvalid "${CLAUDIM}" -p --model deepseek-v4-flash "diga: ok" 2>/dev/null || true)"
 if [ -n "${out}" ]; then ok "child ignored inherited API_KEY -> $(echo "${out}" | head -c 40)"; else bad "child 401/hang on fake API_KEY"; fi
+
+step "CLAUDIM_TMUX=1: delegate runs in a tmux window, stdout intact"
+if command -v tmux >/dev/null 2>&1; then
+  out="$(CLAUDIM_TMUX=1 "${CLAUDIM}" -p --model deepseek-v4-flash "${PROMPT}" 2>/dev/null || true)"
+  if [ -n "${out}" ] && echo "${out}" | grep -q "${EXPECT}"; then ok "tmux wrap -> $(echo "${out}" | head -c 40)"; else bad "tmux wrap: [$(echo "${out}" | head -c 60)]"; fi
+else
+  skip "tmux not installed (brew install tmux)"
+fi
+
+step "tmux fallback (no tmux on PATH): inline + stderr note, stdout intact"
+fbdir="$(mktemp -d 2>/dev/null || mktemp -d)"
+for b in claude tailscale curl nc python3; do
+  p="$(command -v "$b" 2>/dev/null)" && [ -n "$p" ] && ln -sf "$p" "$fbdir/$b"
+done
+out="$(PATH="$fbdir:/usr/bin:/bin" "${CLAUDIM}" -p --tmux --model deepseek-v4-flash "${PROMPT}" 2>/dev/null || true)"
+if [ -n "${out}" ] && echo "${out}" | grep -q "${EXPECT}"; then ok "fallback stdout intact -> $(echo "${out}" | head -c 40)"; else bad "fallback: [$(echo "${out}" | head -c 60)]"; fi
+rm -rf "$fbdir"
+
+step "--unrestricted: delegate runs gcloud --version (bypasses permission wall)"
+if command -v gcloud >/dev/null 2>&1; then
+  out="$("${CLAUDIM}" -p --unrestricted --model deepseek-v4-flash "Use the bash tool to run: gcloud --version. Then report ONLY the line starting with 'Google Cloud SDK'. Nothing else." 2>/dev/null || true)"
+  if [ -n "${out}" ] && echo "${out}" | grep -q "Google Cloud SDK"; then ok "gcloud ran -> $(echo "${out}" | head -c 50)"; else bad "gcloud: [$(echo "${out}" | head -c 60)]"; fi
+else
+  skip "gcloud not installed"
+fi
 
 echo ""
 echo "result: ${pass} passed, ${fail} failed"
