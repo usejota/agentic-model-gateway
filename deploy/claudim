@@ -102,9 +102,11 @@ resolve_model_alias() {
 # terminal).
 #
 # stdout is teed to a log and returned on claudim's stdout so the orchestrator
-# captures it exactly like the inline path. stderr goes to a separate file
-# (not merged) so --output-format json stays parseable. Blocks until the
-# delegate exits, then removes the pane/window.
+# captures it exactly like the inline path (--output-format json stays clean).
+# stderr stays on the pane's tty: that's where Claude Code renders its live
+# spinner/progress, which is what the user actually watches (`claude -p` only
+# emits stdout at the very end). Blocks until the delegate exits, then removes
+# the pane/window.
 #
 # Env is passed explicitly in the pane command (env VAR=... claude ...) so a
 # pre-existing tmux server with a different environment can't lose the gateway
@@ -123,7 +125,6 @@ run_in_tmux() {
   fi
 
   local out="/tmp/claudim-$$.log"
-  local err="/tmp/claudim-err-$$.log"
   local done="/tmp/claudim-done-$$"
   # Title carries the delegate model (last path segment) so panes/windows are
   # tellable apart; PID suffix keeps parallel delegates unique.
@@ -149,7 +150,13 @@ run_in_tmux() {
   envp+=" CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=$(printf '%q' "$CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY")"
   envp+=" CLAUDE_CODE_AUTO_COMPACT_WINDOW=$(printf '%q' "$CLAUDE_CODE_AUTO_COMPACT_WINDOW")"
 
-  local shellcmd="$envp claude $cmd 2>$(printf '%q' "$err") | tee $(printf '%q' "$out"); printf 1 > $(printf '%q' "$done")"
+  # stderr is NOT redirected: it stays on the pane's tty, so Claude Code
+  # renders its live spinner/progress there — that's what the user watches
+  # (`claude -p` only emits stdout at the very end). stdout is teed to the log
+  # (what the orchestrator captures; --output-format json stays clean) and
+  # echoes on the pane when it finally arrives. A short hold keeps the final
+  # output readable before the pane closes and the layout re-balances.
+  local shellcmd="$envp claude $cmd | tee $(printf '%q' "$out"); printf 1 > $(printf '%q' "$done"); echo; echo '[claudim] delegate done — pane closes in 5s'; sleep 5"
 
   rm -f "$done"
   if [ "$in_session" -eq 1 ]; then
@@ -177,7 +184,7 @@ run_in_tmux() {
   while [ ! -f "$done" ]; do sleep 0.5; done
   rm -f "$done"
   cat "$out" 2>/dev/null
-  rm -f "$out" "$err"
+  rm -f "$out"
   if [ "$in_session" -eq 1 ]; then
     # The delegate pane closed itself when its command exited; re-balance the
     # remaining delegate slices (no-op if the orchestrator pane is alone).
