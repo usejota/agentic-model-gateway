@@ -83,24 +83,34 @@ can't poison the child's auth against the gateway.
 ### Observing delegates (tmux)
 
 `-p` delegates run invisibly by default. Set `CLAUDIM_TMUX=1` (or pass `--tmux`)
-and each `claudim -p` delegate runs inside its own window of a tmux session named
-`claudim`, so you can watch it stream live:
+and each `claudim -p` delegate opens a tmux window you can watch live **and
+interact with** (approve a permission prompt, type an instruction):
 
 ```sh
 CLAUDIM_TMUX=1 claudim -p --model kimi-k2.7-code "add a test for bar()"
-tmux attach -t claudim     # C-b w lists windows; C-b n / C-b p cycles
 ```
 
-Each delegate gets a window `del-<pid>` (unique, so parallel delegates don't
-collide). stdout is teed to a log and returned on `claudim`'s stdout exactly like
-the inline path — the orchestrator captures the same result; you just get to
-watch. stderr (spinner/progress) goes to a separate file, so `--output-format
-json` stays parseable. The window is killed when the delegate finishes; with
-parallel delegates the session stays alive until the last one exits.
+**Recommended workflow — run your orchestrator inside tmux.** Start your Claude
+Code session inside tmux (`tmux new -s main`, then `claude`). When the
+orchestrator launches delegates with `--tmux`, each window opens **in your
+current tmux session** — visible right where you are, no `attach` needed.
+`C-b n` / `C-b p` cycles windows, `C-b w` lists them; windows are named
+`<model>-<pid>` so you can tell delegates apart. You can type into a delegate's
+window to interact with it.
 
-Needs `tmux` on your PATH (`brew install tmux`). If absent, `claudim` falls back
-to inline execution with a stderr note — delegates still work, you just can't
-watch. tmux observation is `-p`-only (ignored for interactive `claudim`).
+**Outside tmux:** windows open in a detached session named `claudim`:
+```sh
+tmux attach -t claudim     # in another terminal
+```
+
+stdout is captured identically to the orchestrator (the tmux window is purely
+for your eyes/hands); stderr is separate, so `--output-format json` stays
+parseable. The window closes when the delegate finishes. `-p`-only. If tmux
+isn't installed (`brew install tmux`), delegates run inline with a stderr note.
+
+**Parallelism note:** each delegate is a full Claude Code (Node) process.
+3-4 in parallel is heavy on RAM/CPU — cap parallel delegates at 2-3 and
+serialize the rest.
 
 ### gcloud / unrestricted delegates
 
@@ -133,7 +143,7 @@ read-only analysis that doesn't need the shell, omit it and stay sandboxed.
 | `CLAUDIM_TOKEN` | `freecc` | proxy auth token |
 | `CLAUDIM_WAIT` | `30` | seconds to wait for the gateway |
 | `CLAUDIM_BYPASS` | _unset_ | `1` = inject `--dangerously-skip-permissions` so `-p` delegates can run gcloud/network/file-writes (off by default; see gcloud / unrestricted delegates) |
-| `CLAUDIM_TMUX` | _unset_ | `1` = wrap `-p` delegates in a tmux window for live observation (needs `tmux` on PATH; see Observing delegates) |
+| `CLAUDIM_TMUX` | _unset_ | `1` = open each `-p` delegate in a tmux window — in your current tmux session if you're inside tmux, else in a detached session `claudim` (see Observing delegates) |
 
 Example — point at a differently-named gateway node:
 

@@ -101,7 +101,27 @@ else
   skip "tmux not installed (brew install tmux)"
 fi
 
-step "tmux fallback (no tmux on PATH): inline + stderr note, stdout intact"
+step "inside tmux: delegate window opens in the caller's session, stdout intact"
+if command -v tmux >/dev/null 2>&1; then
+  tmux kill-session -t claudim-smoke 2>/dev/null || true
+  tmux new-session -d -s claudim-smoke
+  tmux send-keys -t claudim-smoke "cd $(pwd) && CLAUDIM_TMUX=1 '${CLAUDIM}' -p --model deepseek-v4-flash '${PROMPT}' > /tmp/claudim-smoke-in.txt 2>/tmp/claudim-smoke-err.txt" Enter
+  waited=0
+  while [ ! -s /tmp/claudim-smoke-in.txt ] && [ "${waited}" -lt 120 ]; do sleep 2; waited=$((waited+2)); done
+  out="$(cat /tmp/claudim-smoke-in.txt 2>/dev/null || true)"
+  errnote="$(grep -c "your current session" /tmp/claudim-smoke-err.txt 2>/dev/null || echo 0)"
+  tmux kill-session -t claudim-smoke 2>/dev/null || true
+  rm -f /tmp/claudim-smoke-in.txt /tmp/claudim-smoke-err.txt
+  if [ -n "${out}" ] && echo "${out}" | grep -q "${EXPECT}" && [ "${errnote}" -ge 1 ]; then
+    ok "in-session window -> $(echo "${out}" | head -c 40)"
+  else
+    bad "in-session: out=[$(echo "${out}" | head -c 40)] note=${errnote}"
+  fi
+else
+  skip "tmux not installed"
+fi
+
+step "no tmux on PATH: inline fallback with stderr note, stdout intact"
 fbdir="$(mktemp -d 2>/dev/null || mktemp -d)"
 for b in claude tailscale curl nc python3; do
   p="$(command -v "$b" 2>/dev/null)" && [ -n "$p" ] && ln -sf "$p" "$fbdir/$b"

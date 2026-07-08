@@ -16,8 +16,10 @@
 #                             # which -p can't answer). Opt-in: only when the
 #                             # task needs it. Default is sandboxed (auto).
 #   CLAUDIM_TMUX=1 claudim -p --model kimi-k2.7-code "task"
-#                             # run the delegate inside a tmux window so you can
-#                             # watch it live (tmux attach -t claudim). Only -p.
+#                             # run the delegate inside a tmux window you can
+#                             # watch AND interact with. If you're inside tmux,
+#                             # it opens in YOUR session; else in a detached
+#                             # session `claudim` (tmux attach -t claudim). -p only.
 #
 # `--model <alias>` is rewritten to the gateway's no-thinking model id so that
 # `claude -p` delegates return non-empty output (reasoning backends otherwise
@@ -44,8 +46,9 @@
 #   CLAUDIM_WAIT      seconds to wait for proxy (default: 30)
 #   CLAUDIM_BYPASS    1 = inject --dangerously-skip-permissions (let -p delegate
 #                     run gcloud/network/file-writes; off by default)
-#   CLAUDIM_TMUX      1 = wrap -p delegate in a tmux window for live observation
-#                     (needs tmux on PATH; falls back to inline if absent)
+#   CLAUDIM_TMUX      1 = open each -p delegate in a tmux window (your current
+#                     session if inside tmux, else detached session `claudim`;
+#                     needs tmux on PATH; falls back to inline if absent)
 #
 set -euo pipefail
 
@@ -85,7 +88,9 @@ resolve_model_alias() {
 }
 
 # Run a `claude -p` delegate inside a tmux window so the user can watch it live
-# (tmux attach -t claudim; C-b w to list windows). stdout is teed to a log and
+# AND interact with it (approve prompts, type instructions). If the caller is
+# already inside tmux, the window opens in the caller's session (C-b n/p);
+# otherwise in a detached session `claudim`. stdout is teed to a log and
 # returned on claudim's stdout so the orchestrator captures it exactly like the
 # inline path. stderr goes to a separate file (not merged) so --output-format
 # json stays parseable. Blocks until the delegate exits, then kills the window.
@@ -94,13 +99,33 @@ resolve_model_alias() {
 # pre-existing tmux server with a different environment can't lose the gateway
 # exports claudim set above.
 run_in_tmux() {
-  local sess="claudim"
-  tmux has-session -t "$sess" 2>/dev/null || tmux new-session -d -s "$sess"
+  # If the caller (orchestrator session) is ALREADY inside tmux, open the
+  # delegate window in THAT session — it shows up right where the user is
+  # (C-b n/p to visit, and the user can interact with the agent directly).
+  # Outside tmux, fall back to a detached session named "claudim" the user can
+  # `tmux attach -t claudim` to.
+  local sess
+  if [ -n "${TMUX:-}" ]; then
+    sess="$(tmux display-message -p '#S' 2>/dev/null)"
+  fi
+  if [ -z "${sess:-}" ]; then
+    sess="claudim"
+    tmux has-session -t "$sess" 2>/dev/null || tmux new-session -d -s "$sess"
+  fi
 
   local out="/tmp/claudim-$$.log"
   local err="/tmp/claudim-err-$$.log"
   local done="/tmp/claudim-done-$$"
-  local win="del-$$"
+  # Window named after the delegate model (last path segment) so C-b w reads
+  # meaningfully; PID suffix keeps parallel delegates unique.
+  local model="" _prev=""
+  for _a in "$@"; do
+    case "$_prev" in --model) model="$_a" ;; esac
+    case "$_a" in --model=*) model="${_a#--model=}" ;; esac
+    _prev="$_a"
+  done
+  model="${model##*/}"
+  local win="${model:-del}-$$"
 
   # Shell-quote every claude arg so tmux's shell parses them verbatim.
   local cmd=""
@@ -205,7 +230,7 @@ task; both are cheap and non-American.
 Delegate:  claudim -p --model <alias> "<task>"
 JSON out:  claudim -p --output-format json --model <alias> "<task>"
 gcloud/net: claudim -p --unrestricted --model <alias> "<task>"  # bypass perms
-Watch live: CLAUDIM_TMUX=1 claudim -p --model <alias> "<task>"  # tmux attach -t claudim
+Watch live: CLAUDIM_TMUX=1 claudim -p --model <alias> "<task>"  # tmux window (in your session if you're inside tmux)
 All non-American models live:  claudim models --all
 A full routed id (contains "/") or a Claude alias (haiku/sonnet/opus) is
 passed through unchanged.
@@ -302,13 +327,20 @@ if [ "${need_rebuild}" -eq 1 ]; then
     esac
   done
 
-  # tmux observation only in -p mode and only if tmux is installed.
-  if [ "${has_tmux}" -eq 1 ] && [ "${has_print}" -eq 1 ] && command -v tmux >/dev/null 2>&1; then
-    say "tmux: delegate in window del-$$ (tmux attach -t claudim)"
-    run_in_tmux "${args[@]}"
-    exit 0
-  fi
+  # Observation: tmux window per delegate. If the orchestrator session already
+  # runs inside tmux ($TMUX set), the window opens in THAT session — visible
+  # right where the user is, navigable (C-b n/p) and interactive. Outside tmux
+  # it opens in a detached session `claudim` (tmux attach -t claudim). -p only.
   if [ "${has_tmux}" -eq 1 ] && [ "${has_print}" -eq 1 ]; then
+    if command -v tmux >/dev/null 2>&1; then
+      if [ -n "${TMUX:-}" ]; then
+        say "tmux: delegate window opening in your current session (C-b n / C-b w)"
+      else
+        say "tmux: delegate in detached session (tmux attach -t claudim)"
+      fi
+      run_in_tmux "${args[@]}"
+      exit 0
+    fi
     say "tmux not found; running delegate inline (brew install tmux to observe)"
   elif [ "${has_tmux}" -eq 1 ]; then
     say "--tmux is for -p delegates only; ignoring"
