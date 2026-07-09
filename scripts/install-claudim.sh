@@ -15,23 +15,40 @@ REPO_RAW="https://raw.githubusercontent.com/usejota/agentic-model-gateway/main"
 SRC="${CLAUDIM_SRC:-${REPO_RAW}/deploy/claudim}"
 BIN_DIR="${CLAUDIM_BIN_DIR:-${HOME}/.local/bin}"
 DEST="${BIN_DIR}/claudim"
+# The claudim-delegate skill (orchestrator recipe + kill switch). Installed
+# globally so it loads in any Claude Code session, not just this repo.
+SKILL_SRC="${CLAUDIM_SKILL_SRC:-${REPO_RAW}/.claude/skills/claudim-delegate/SKILL.md}"
+SKILL_DIR="${HOME}/.claude/skills/claudim-delegate"
+SKILL_DEST="${SKILL_DIR}/SKILL.md"
 
 say()  { printf '==> %s\n' "$*"; }
 warn() { printf 'warning: %s\n' "$*" >&2; }
 fail() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
+# fetch URL DEST — curl or wget, picked once.
+fetch() {
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL "$1" -o "$2" || fail "download failed from $1"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -qO "$2" "$1" || fail "download failed from $1"
+  else
+    fail "need curl or wget to download claudim"
+  fi
+}
+
 say "Installing claudim to ${DEST}"
 mkdir -p "${BIN_DIR}"
-
-if command -v curl >/dev/null 2>&1; then
-  curl -fsSL "${SRC}" -o "${DEST}" || fail "download failed from ${SRC}"
-elif command -v wget >/dev/null 2>&1; then
-  wget -qO "${DEST}" "${SRC}" || fail "download failed from ${SRC}"
-else
-  fail "need curl or wget to download claudim"
-fi
+fetch "${SRC}" "${DEST}"
 chmod +x "${DEST}"
 say "Installed."
+
+# Install the claudim-delegate skill globally so an Opus/Fable orchestrator
+# picks it up in any session (when to delegate, model picks, parallelism, tmux
+# observation, the unrestricted/gcloud path, and the workflow kill switch).
+say "Installing claudim-delegate skill to ${SKILL_DEST}"
+mkdir -p "${SKILL_DIR}"
+fetch "${SKILL_SRC}" "${SKILL_DEST}"
+say "Skill installed."
 
 # PATH check.
 case ":${PATH}:" in
@@ -57,5 +74,8 @@ claudim installed. Next:
        claudim "explain this repo"
   Args pass straight through to Claude Code. Override the gateway host/tailnet
   with CLAUDIM_HOST / CLAUDIM_TAILNET if needed (see `claudim` header comments).
+  The claudim-delegate skill was installed to ~/.claude/skills/ — it teaches an
+  Opus/Fable orchestrator when/how to delegate to the cheap non-American models
+  (and defers to native workflows if you say "workflow"/"fan out subagents").
   Update claudim later with: claudim upgrade
 NEXT

@@ -74,7 +74,11 @@ A full routed id (contains `/`) or a Claude alias (`haiku`/`sonnet`/`opus`) is
 passed through unchanged — but don't use the Claude aliases for delegates, they
 route via gateway config and may enable thinking (same empty-stdout bug). For the
 full orchestration recipe (when to delegate, model selection, parallelism,
-output handling), see the `claudim-delegate` skill.
+output handling), see the `claudim-delegate` skill — it ships in this repo at
+[`.claude/skills/claudim-delegate/SKILL.md`](../.claude/skills/claudim-delegate/SKILL.md)
+and the installer downloads it into `~/.claude/skills/` so it loads globally.
+It has a kill switch: if you say "workflow"/"fan out subagents" it defers to
+Claude Code's native Workflow/Agent tools instead.
 
 `claudim` also unsets `ANTHROPIC_API_KEY` before launching, so an inherited
 parent-subscription API key (which Claude Code prefers over `ANTHROPIC_AUTH_TOKEN`)
