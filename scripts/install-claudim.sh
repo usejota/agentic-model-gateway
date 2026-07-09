@@ -25,30 +25,37 @@ say()  { printf '==> %s\n' "$*"; }
 warn() { printf 'warning: %s\n' "$*" >&2; }
 fail() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
-# fetch URL DEST — curl or wget, picked once.
+# fetch URL DEST — curl or wget, picked once. Returns 0 on success, 1 on failure
+# without exiting, so callers can decide whether to fail or warn.
 fetch() {
   if command -v curl >/dev/null 2>&1; then
-    curl -fsSL "$1" -o "$2" || fail "download failed from $1"
+    curl -fsSL "$1" -o "$2" && return 0
+    return 1
   elif command -v wget >/dev/null 2>&1; then
-    wget -qO "$2" "$1" || fail "download failed from $1"
+    wget -qO "$2" "$1" && return 0
+    return 1
   else
-    fail "need curl or wget to download claudim"
+    return 1
   fi
 }
 
 say "Installing claudim to ${DEST}"
 mkdir -p "${BIN_DIR}"
-fetch "${SRC}" "${DEST}"
+fetch "${SRC}" "${DEST}" || fail "download failed from ${SRC}"
 chmod +x "${DEST}"
 say "Installed."
 
 # Install the claudim-delegate skill globally so an Opus/Fable orchestrator
 # picks it up in any session (when to delegate, model picks, parallelism, tmux
 # observation, the unrestricted/gcloud path, and the workflow kill switch).
+# Non-fatal: claudim works without the skill; it's just the orchestration recipe.
 say "Installing claudim-delegate skill to ${SKILL_DEST}"
 mkdir -p "${SKILL_DIR}"
-fetch "${SKILL_SRC}" "${SKILL_DEST}"
-say "Skill installed."
+if fetch "${SKILL_SRC}" "${SKILL_DEST}"; then
+  say "Skill installed."
+else
+  warn "could not install claudim-delegate skill from ${SKILL_SRC}"
+fi
 
 # PATH check.
 case ":${PATH}:" in
