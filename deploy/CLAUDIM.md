@@ -31,7 +31,25 @@ claudim "explain this"  # args pass straight through to claude
 claudim models          # list delegate aliases + their strengths
 ```
 
-### Delegate mode (cheap model per task)
+### Native delegate agents (interactive mode)
+
+In interactive mode, `claudim` auto-generates **one native Agent-tool subagent per
+gateway delegate model** (`delegate-<model>`). The orchestrator (your session model)
+picks the cheapest competent delegate per task — no `-p` or tmux needed. The agent
+list is fetched live from the gateway at launch via `GET /v1/models/delegates`.
+
+The endpoint returns curated, no-thinking, non-US-closed model ids ready for
+delegation. Exclusions are configurable server-side (`MODEL_DELEGATE_EXCLUSIONS` —
+see [Exclusions and the delegate endpoint](#exclusions-and-the-delegate-endpoint))
+and apply **only** to the delegate pool — `/v1/models` is unfiltered so the human
+`/model` picker still sees every model.
+
+`CLAUDIM_MAX_AGENTS` (default 30) caps the number of auto-generated agents to
+bound system-prompt bloat. The session gets `CLAUDIM=1` exported into its
+environment, and an `--append-system-prompt` tells the model it is inside claudim
+and should use the `delegate-*` subagents for delegation.
+
+### Delegate mode (`-p` / `--tmux`, fallback)
 
 Run a single task on a cheap gateway model and get the answer on stdout — so an
 Opus/Fable orchestrator can delegate mechanical steps and keep cost down:
@@ -64,11 +82,12 @@ Aliases (run `claudim models` to reprint):
 All eight are non-American: five Chinese (DeepSeek, Moonshot/Kimi, Zhipu/GLM,
 MiniMax) + three French (Mistral). US closed labs — `openai`, `anthropic`,
 `google`, `x-ai`, `amazon`, `nvidia`, `ibm-granite`, `liquid`, `rekaai`,
-`relace` — are never called (cost-driven: they charge premium per-token; the
-rest are cheap, and open-weight Llama + fine-tunes don't fund a US lab per
-call). To see every non-American no-thinking model the gateway currently
-offers (live, US closed labs filtered out), run `claudim models --all` and pass
-any listed id verbatim to `--model`.
+`relace` — are never called for delegation (cost-driven: they charge premium
+per-token; the rest are cheap, and open-weight Llama + fine-tunes don't fund a
+US lab per call). The US_CLOSED filter lives **server-side** in the gateway
+(`GET /v1/models/delegates`) — the launcher no longer maintains its own
+vendor list. To see every non-American no-thinking model the gateway currently
+offers, run `claudim models --all` and pass any listed id verbatim to `--model`.
 
 A full routed id (contains `/`) or a Claude alias (`haiku`/`sonnet`/`opus`) is
 passed through unchanged — but don't use the Claude aliases for delegates, they
@@ -164,6 +183,8 @@ read-only analysis that doesn't need the shell, omit it and stay sandboxed.
 | `CLAUDIM_MAX_WAIT` | `3600` | max seconds to wait for a tmux delegate sentinel before killing its pane/window; `0` disables |
 | `CLAUDIM_BYPASS` | _unset_ | `1` = inject `--dangerously-skip-permissions` so `-p` delegates can run gcloud/network/file-writes (off by default; see gcloud / unrestricted delegates) |
 | `CLAUDIM_TMUX` | _unset_ | `1` = show each `-p` delegate live — split pane in your current tmux window (main-vertical: orchestrator left, delegates stacked right) if inside tmux, else a window in a detached session `claudim` (see Observing delegates) |
+| `CLAUDIM_BASE_URL` | `http://<host>.<tailnet>:<port>` | override the gateway URL (skips tailscale checks; for local testing against `localhost`) |
+| `CLAUDIM_MAX_AGENTS` | `30` | cap on auto-generated `delegate-*` agents (bounds system-prompt bloat) |
 
 Example — point at a differently-named gateway node:
 
@@ -183,6 +204,43 @@ export CLAUDIM_HOST=fcc-proxy-staging
 (`ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, model-discovery, compact window), and
 `exec`s `claude` with your args. It's the global-install form of
 `deploy/fcc-connect-tailscale`.
+
+## Exclusions and the delegate endpoint
+
+`GET /v1/models/delegates` returns the curated delegate pool (no-thinking,
+non-US-closed ids, after exclusions). The launcher calls this endpoint at
+startup to generate the `delegate-*` agents. It is **not** the same as
+`/v1/models` — the human `/model` picker still sees every model the gateway
+can route.
+
+### MODEL_DELEGATE_EXCLUSIONS
+
+Set in the gateway Admin UI (or via the `MODEL_DELEGATE_EXCLUSIONS` env var on
+the gateway server). Comma-separated `fnmatch` globs that hide models from the
+delegate pool **only**:
+
+```
+open_router/deepseek/*    # hide all DeepSeek models routed through OpenRouter
+*gpt-oss*                 # hide any model with "gpt-oss" in its ref
+open_router/qwen/qwen-coder-plus  # hide a specific model
+```
+
+A glob without a wildcard is an exact match. The exclusion is checked against
+the full model ref (e.g. `open_router/deepseek/deepseek-v4-flash`).
+
+### Hard enforcement (subagents only)
+
+Exclusions are enforced at request time by the gateway: any `/v1/messages`
+request whose resolved model matches a `MODEL_DELEGATE_EXCLUSIONS` pattern is
+rejected with an invalid-request error — **unless** it is Claude Code's main
+conversation loop (detected by the CLI's system-prompt marker, `"You are
+Claude Code"`). So the human `/model` picker keeps working for every model,
+while Agent-tool subagents (or any side-channel request) cannot use excluded
+models — even if the session model passes an explicit `model` param or writes
+its own `.claude/agents/*.md`. Caveat: the marker is a heuristic — a client
+that forges a main-loop system prompt bypasses it, and if a future Claude Code
+release changes its system-prompt opening, the main loop would start being
+blocked too (fix: update `_CLAUDE_CODE_MAIN_LOOP_PREFIX` in `api/services.py`).
 
 ## Troubleshooting
 

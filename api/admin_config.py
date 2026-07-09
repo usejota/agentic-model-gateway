@@ -450,6 +450,18 @@ FIELDS: tuple[ConfigFieldSpec, ...] = (
         ),
     ),
     ConfigFieldSpec(
+        "MODEL_DELEGATE_EXCLUSIONS",
+        "Delegate Exclusions",
+        "models",
+        settings_attr="model_delegate_exclusions",
+        description=(
+            "Comma-separated provider/model refs (fnmatch globs allowed, e.g. "
+            "open_router/qwen/*) hidden from claudim delegate agents via the "
+            "/v1/models/delegates endpoint; does NOT filter /v1/models — the human "
+            "/model picker still sees every model; empty = nothing excluded."
+        ),
+    ),
+    ConfigFieldSpec(
         "IMAGE_ROUTE",
         "Image Route",
         "models",

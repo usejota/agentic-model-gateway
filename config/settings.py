@@ -170,6 +170,13 @@ class Settings(BaseSettings):
         default_factory=list, validation_alias="FALLBACK_MODELS"
     )
 
+    # Comma-separated provider/model refs (fnmatch globs allowed) hidden from
+    # /v1/models/delegates and thus from auto-generated claudim delegate
+    # subagents; does NOT filter /v1/models; empty = nothing excluded.
+    model_delegate_exclusions: Annotated[list[str], NoDecode] = Field(
+        default_factory=list, validation_alias="MODEL_DELEGATE_EXCLUSIONS"
+    )
+
     # Optional image reroute. When a request has image content (top-level user
     # message or nested in a tool_result) AND the resolved primary model
     # doesn't accept images, this provider+model handles just that turn.
@@ -443,7 +450,7 @@ class Settings(BaseSettings):
             result[name] = token
         return result
 
-    @field_validator("fallback_models", mode="before")
+    @field_validator("fallback_models", "model_delegate_exclusions", mode="before")
     @classmethod
     def parse_fallback_models(cls, v: Any) -> Any:
         """Parse the fallback model chain from a comma-separated string.

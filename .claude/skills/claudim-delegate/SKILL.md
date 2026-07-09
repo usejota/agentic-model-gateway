@@ -1,108 +1,121 @@
 ---
 name: claudim-delegate
-description: REQUIRED when the user mentions claudim or asks to delegate/orchestrate with cheap models — load this skill. Do NOT improvise with the Agent tool (haiku/sonnet/opus subagents) when the user says claudim, "modelos baratos", "delegar", or "orquestrar"; use `claudim -p --model <alias>` via Bash instead, with the curated NON-AMERICAN models (deepseek / kimi / glm / minimax / mistral / codestral — US closed labs never called). If unsure, invoke via `/claudim-delegate`. Auto-triggers (any language) on: "claudim", "do claudim", "pelo claudim", "agentes claudim", "força bruta do claudim", "delegate to claudim", "use claudim", "delega pros modelos baratos do claudim", "delega pro claudim", "delegar com claudim", "delegue a execução para agentes claudim", "delegar para o claudim", "delegue pros modelos chineses", "use modelos chineses baratos", "use modelos não americanos", "modelos baratos não americanos", "orchestrate with cheap models", "claudim-delegate", or whenever a plan step is mechanical and the user implies delegation. KILL SWITCH — do NOT activate (and if already loaded, stand down and defer to Claude Code's NATIVE Workflow/Agent tools instead) when the user says: "workflow", "workflows", "fan out subagents", "fan-out subagents", "fan-out", "multi-agent", "use a workflow", "run a workflow", "orchestrate with subagents", or otherwise explicitly invokes Claude Code's built-in multi-agent orchestration (Workflow tool, Agent tool with model: haiku/sonnet/opus). Those are native features — claudim delegates are the alternative, not a layer on top of them. Only activate when the user wants CHEAP NON-AMERICAN gateway models via `claudim -p`.
+description: REQUIRED whenever you spawn ANY subagent (Agent tool, Workflow tool, fan-out, multi-agent) OR the user mentions claudim / cheap-model delegation — load this skill FIRST to decide which models the subagents run on. TWO MODES by environment. (1) INSIDE a claudim session (env CLAUDIM=1 or delegate-* agents in the agent list): EVERY multi-agent mechanism — fan-out, workflows, single subagents, Agent tool, Workflow tool — runs on delegate-* gateway models (or their full no-thinking ids in Workflow model params); NEVER spawn subagents on anthropic-tier models (haiku/sonnet/opus/fable/inherit) there, and `claudim -p` subprocess delegation is a fallback only. (2) OUTSIDE claudim (plain claude session): fan-out / workflows / subagents use the NORMAL Anthropic models — do NOT reach for claudim there; only use `claudim -p --model <alias>` when the user explicitly asks for claudim/cheap/non-American models via the trigger phrases. Auto-triggers (any language): "claudim", "do claudim", "pelo claudim", "agentes claudim", "delegate to claudim", "use claudim", "delega pros modelos baratos do claudim", "delega pro claudim", "delegar com claudim", "delegue a execução para agentes claudim", "delegar para o claudim", "delegue pros modelos chineses", "use modelos chineses baratos", "use modelos não americanos", "modelos baratos não americanos", "orchestrate with cheap models", "claudim-delegate" — plus ANY subagent/workflow/fan-out spawn while inside a claudim session.
 ---
 
 # claudim-delegate
 
-## KILL SWITCH — read this first
+## Decision tree — read this FIRST
 
-**If the user said any of these, STOP. Do not use claudim. Close this skill and
-use Claude Code's NATIVE multi-agent tools instead:**
+**Step 1 — detect the environment.** You are INSIDE a claudim session when
+**either** is true:
 
-- "workflow" / "workflows" / "use a workflow" / "run a workflow"
-- "fan out subagents" / "fan-out subagents" / "fan-out"
-- "multi-agent" / "orchestrate with subagents"
-- any explicit reference to the **Workflow** tool or the **Agent** tool with
-  `model: haiku/sonnet/opus`
+- The env var `CLAUDIM=1` is set.
+- `delegate-*` agents appear in your agent list (check the system preamble or run `/agents`).
 
-These are Claude Code's built-in features (the `Workflow` tool for deterministic
-multi-agent scripts, the `Agent` tool for spawning subagents). They are NOT what
-this skill is for. claudim delegates are the **alternative** to those — cheap
-non-American gateway models over Tailscale, not a layer on top of the native
-orchestration.
+**Step 2 — apply the mode.**
 
-**Decision rule:** the user wants claudim only when they want **cheap
-non-American gateway models** (`deepseek` / `kimi` / `glm` / `minimax` /
-`mistral` / `codestral`) via `claudim -p`. If they want native Claude Code
-subagents/workflows — which can use `model: haiku` routed to a cheap gateway
-model, or spawn many in-process — defer to the native tools and do not invoke
-`claudim`.
+### MODE A: inside claudim — delegates for EVERYTHING, no exceptions
 
-When in doubt and no gateway/cheap-model language is present, default to the
-native tools and mention that `claudim` is available if they want the
-non-American-model pool instead.
+Every multi-agent mechanism routes through the delegate pool:
+
+- **Agent tool** (single subagent, fan-out, parallel spawns) -> use the
+  `delegate-*` agents. Pick per task (see the model table below).
+- **Workflow tool** -> pass a full delegate id as each `agent()` call's
+  `model` param (e.g. `claude-3-freecc-no-thinking/open_router/deepseek/deepseek-v4-flash`).
+  Never leave `model` to inherit.
+- **Generic agents** (Explore, general-purpose, Plan, ...) -> give them a
+  delegate model override; never let them inherit the session model.
+
+**NEVER spawn a subagent on `haiku`/`sonnet`/`opus`/`fable`/inherit inside
+claudim.** The session model (you) is the only expensive brain; everything you
+spawn is a cheap delegate. "fan out subagents", "workflow", "multi-agent" are
+NOT exceptions — inside claudim they all mean "fan out on delegates".
+`claudim -p` subprocess delegation exists only as the fallback (see below).
+The gateway hard-rejects excluded models for subagents (MODEL_DELEGATE_EXCLUSIONS)
+— if a spawn fails with "excluded for subagents", pick another delegate.
+
+### MODE B: outside claudim (plain claude session)
+
+- Fan-out / workflows / subagents -> **normal Anthropic models** (the native
+  default). Do NOT reach for claudim or force cheap models.
+- `claudim -p --tmux --model <alias>` ONLY when the user explicitly asks for
+  claudim / cheap / non-American models (the trigger phrases). That is the sole
+  claudim entry point outside a claudim session — there are no `delegate-*`
+  agents available.
 
 ---
 
 You are the **orchestrator** (Opus or Fable). You plan, decide, and integrate.
-**Delegate** well-scoped, mechanical steps to a cheap model through `claudim -p`,
-capture its stdout, and use it. This keeps quality (you) high and cost (delegates)
-low.
+**Delegate** well-scoped, mechanical steps to the cheapest competent model in the
+gateway pool, capture its output, and use it. This keeps quality (you) high and
+cost (delegates) low.
 
-## The command
+## PRIMARY: Native delegate agents
 
-**The base command is `claudim -p --tmux` — `--tmux` is part of the command,
-not an option.** Every single delegate launch includes it (the user watches
-delegates live in split panes). Omitting it makes the delegate invisible,
-which the user treats as a bug. The ONLY exception: the user explicitly asked
-for silent/headless.
+When inside a claudim session, the launcher auto-generates one `delegate-*`
+subagent per gateway model (capped at `CLAUDIM_MAX_AGENTS`, default 30). Each
+agent is wired to the gateway's **no-thinking** model id — mandatory: reasoning
+backends otherwise stream an unsigned `thinking` block that the Agent tool
+discards and you'd get empty output.
 
-```sh
-claudim -p --tmux --model <alias> "<task>"                            # stdout = answer (text)
-claudim -p --tmux --output-format json --model <alias> "<task>"       # JSON: result, stop_reason, is_error, usage
-claudim -p --tmux --unrestricted --model <alias> "<task>"             # needs gcloud/network/file-writes
-```
+Use the **Agent tool** with these subagents. No Bash, no `claudim -p`, no
+subprocess overhead. The session model spawns them natively.
 
-`claudim` is on the dev machine (gateway launcher over Tailscale). `--model <alias>`
-is rewritten to the gateway's **no-thinking** model id — this is mandatory:
-reasoning backends otherwise stream an unsigned `thinking` block that `claude -p`
-discards and you'd get empty stdout. Never use `--model haiku/sonnet/opus` for a
-delegate (those route via gateway config and may enable thinking → empty).
+### Pick the model per task — YOUR call, whole pool available
 
-## Pick the model per task (non-American — auto-selection)
+**The entire delegate pool is yours to choose from — every `delegate-*` agent
+in your list, not just the 8 curated ones.** The curated table below is a
+starting shortcut, not a boundary. If you know a better fit for the task
+(qwen for data work, a specific coder variant, a flash model you trust), USE
+IT. Trust your own knowledge of model strengths; the pool is already filtered
+to non-American + admin-approved, so every listed agent is safe and cheap to
+pick. Do not restrict yourself to the curated list when the task deserves
+better.
 
-All aliases below are non-American: Chinese (DeepSeek, Moonshot/Kimi,
-Zhipu/GLM, MiniMax) + Mistral (France). **US closed labs — openai, anthropic,
-google, x-ai, amazon, nvidia, ibm-granite, liquid, rekaai, relace — are never
-called** (cost-driven: they charge premium per-token; the rest are cheap, and
-open-weight Llama + fine-tunes don't fund a US lab per call). Decide by what
-the task needs — pick the **cheapest that can do the job**, escalate only when
-the task demands:
+All pool models are non-American: Chinese (DeepSeek, Qwen, Moonshot/Kimi,
+Zhipu/GLM, MiniMax, ByteDance, ...) + Mistral (France) + others. **US closed
+labs — openai, anthropic, google, x-ai, amazon, nvidia, ibm-granite, liquid,
+rekaai, relace — are never in the pool** (filtered server-side). Pick the
+**cheapest that can do the job well**; escalate freely when the task demands.
+
+Curated shortcuts (when you have no stronger opinion):
 
 - **Smartest / hardest reasoning** — algorithm design, multi-step logic,
-  architecture tradeoffs → `deepseek-v4-pro`
-- **Coding** — implement a function, refactor, fix a bug, write a test →
-  `kimi-k2.7-code` (Chinese) or `codestral` (France, non-Chinese alt)
+  architecture tradeoffs -> `delegate-deepseek-v4-pro`
+- **Coding** — implement a function, refactor, fix a bug, write a test ->
+  `delegate-kimi-k2-7-code` (Chinese) or `delegate-codestral` (France, non-Chinese alt)
 - **Fastest / cheapest** — triage, lookups, mechanical edits, simple answers,
-  bulk work → `deepseek-v4-flash` (Chinese) or `ministral-8b` (France, non-Chinese alt)
-- **Long-context general** — read/analyze large files, writing, summaries →
-  `glm-5.2` (or `minimax-m3` as alternative) (Chinese) or `mistral-small` (France)
+  bulk work -> `delegate-deepseek-v4-flash` (Chinese) or `delegate-ministral-8b` (France, non-Chinese alt)
+- **Long-context general** — read/analyze large files, writing, summaries ->
+  `delegate-glm-5-2` (or `delegate-minimax-m3` as alternative) (Chinese) or `delegate-mistral-small` (France)
 
-Default to `deepseek-v4-flash` for anything simple; reach for `kimi-k2.7-code`
-or `codestral` on code; reach for `deepseek-v4-pro` only when real reasoning is
-required. Prefer a non-Chinese model (Mistral) when the task or your preference
-calls for it — both pools are cheap and non-American.
+Examples of going beyond the shortcuts (encouraged):
+- Data analysis / structured extraction -> a qwen max/plus variant often beats
+  the curated picks.
+- Vision / screenshots -> a `-vl` variant.
+- A giant bulk sweep -> the cheapest flash/lite model in the pool, even one
+  not in the table.
 
-### Need a model outside the curated 8?
+Agent names are sanitized from the model id tail (`[a-z0-9-]`), so `kimi-k2.7-code`
+becomes `delegate-kimi-k2-7-code`, etc. Run `/agents` to see every delegate
+available in this session — scan it before defaulting to a curated pick.
 
-Run `claudim models --all` to list **every** non-American no-thinking model
-the gateway currently offers (live, US closed labs filtered out). Pass any
-listed id verbatim to `--model`:
+### Pool bigger than the agent list?
+
+The launcher caps generated agents at `CLAUDIM_MAX_AGENTS` (default 30), so
+the gateway may offer models with no `delegate-*` agent. Run
+`claudim models --all` to list the full live pool; for a model without an
+agent, use the `-p` fallback with its id verbatim:
 
 ```sh
-claudim models --all          # grouped by vendor, all non-American, all no-thinking
+claudim models --all          # full pool, grouped by vendor, all no-thinking
 claudim -p --model <id-from-list> "<task>"
 ```
 
-Use this when a task wants a specialized non-American model the curated 8 don't
-cover (e.g. a different coding model, a specific flash variant, a reasoning
-model you want to try). Don't hand-pick American vendors — `--all` already
-excludes US closed labs.
-
 Run `claudim models` any time to reprint the curated cheat-sheet.
 
-## When to delegate vs. do it yourself
+### When to delegate vs. do it yourself
 
 **Delegate** when the step is well-scoped and mechanical:
 - Implement a single function / small module from a clear spec.
@@ -120,7 +133,119 @@ Run `claudim models` any time to reprint the curated cheat-sheet.
 
 You own the plan and the final result. Delegates execute.
 
-## How to run a delegate
+### How to use a native delegate agent
+
+Use the **Agent tool** with the `delegate-<model>` name. Give it a
+self-contained task: include file paths, the exact change, and any convention
+it must follow. The delegate runs in-process — no subprocess, no tmux, no
+permission walls.
+
+Native agents have **no 2-3 process parallelism cap** (that cap was a `-p`
+subprocess concern only). You can fan out to as many delegates as the task
+needs — the Agent tool handles scheduling. Still be reasonable: don't spawn 20
+delegates for a 3-file change.
+
+### Delegate that further delegates (subagents of a delegate)
+
+A delegate (native agent **or** `claudim -p`) is a real `claude` process with
+the **same tools** as your own session: Read, Write, Edit, Bash, Grep, Glob,
+plus anything loaded from its cwd's `CLAUDE.md` / skills. It can also spawn
+more delegates of its own. If you're orchestrating a workflow where the
+delegate will itself run more delegates (or just needs to read files and write
+outputs), write the prompt so it can't talk itself out of the task:
+
+- **Declare tool access up front.** Open the prompt with: *"You have full
+  tool access: Read, Write, Edit, Bash, Grep, Glob. CWD is `<abs path>`."*
+  Without this, a cheap non-thinking model sometimes sees a single tool error
+  and concludes (wrongly) that "I'm running as a subagent in a restricted
+  context where I have no access to tools" and gives up — even when its next
+  tool call would have succeeded. The `claudim-render.py` pane feed (the
+  `-p` observer pane) shows the error TEXT on `✗`, so you can see the real
+  reason, but the prompt should still prime the delegate not to over-react.
+- **`✗` on a tool_result is per-call, NOT a permission denial.** Tell the
+  delegate: *"If a tool returns ✗, read the error message, fix the path or
+  args, and retry. Do NOT conclude you have no tools."* Cheap models
+  sometimes stop on the first error; one explicit instruction prevents it.
+- **Pass ABSOLUTE file paths** for anything the delegate (or its sub-delegates)
+  must read or write. Relative paths in subagent prompts are the most common
+  reason a delegate reports a Read failure on a file the user can see.
+- **CWD matches the parent invocation.** The delegate runs in the same
+  working directory as the parent, not in `~`. If the task needs the delegate
+  to operate in a different directory, either `cd` in the task prompt or pass
+  an absolute path everywhere.
+- **Cap recursion.** Each delegate is its own `claude` process; a delegate
+  spawning N sub-delegates multiplies the resource cost. Tell the delegate
+  explicitly: *"Spawn at most 2-3 sub-delegates in parallel; serialize
+  dependent steps."* — the same parallelism cap you would follow. (Native
+  Agent-tool delegates have no hard cap, but the same cost reasoning applies.)
+
+A safe prompt body for a delegate-that-further-delegates (shown in the
+`claudim -p` fallback form; for a native agent, pass the same body to the
+Agent tool):
+
+```sh
+claudim -p --tmux --model kimi-k2.7-code "You have full tool access
+(Read, Write, Edit, Bash, Grep, Glob). CWD is $(pwd). If a tool returns
+✗, read the error and retry — do NOT conclude you have no tools.
+
+Task: <self-contained, with absolute paths to every file the
+delegate or its sub-delegates will need>. Spawn at most 2-3
+sub-delegates in parallel; serialize dependent steps.
+
+Output: write the final JSONL to /abs/path/to/output.jsonl when done."
+```
+
+### After a delegate returns
+
+1. **Check it didn't come back empty.** Empty output = the model failed. If
+   empty, retry with a different delegate or do the step yourself.
+2. **Verify the work** if it touched files — read the diff. You are
+   accountable for correctness, not the delegate.
+3. **Integrate** into the plan / next step. You stitch outputs together.
+
+### Parallel delegates
+
+For independent plan steps, spawn several Agent tool calls in parallel.
+Collect outputs, then integrate. Serialize steps that depend on each other —
+pass the previous delegate's output into the next one's prompt.
+
+---
+
+## Fallback: `claudim -p --tmux`
+
+Use the **fallback** when:
+
+- You are **not** in a claudim session (no `CLAUDIM=1`, no `delegate-*` agents).
+- The user **explicitly asks** for tmux observation panes.
+- You are in a **headless / scripted** context where native agents are not
+  available.
+- The gateway was down at launch so no agents were generated.
+
+In these cases, each delegate is a full `claude -p` subprocess launched via
+`claudim -p --tmux`. This is heavier (Node process per delegate, ~300-500MB
+RAM each) and has a hard parallelism cap.
+
+### The command
+
+**The base command is `claudim -p --tmux` — `--tmux` is part of the command,
+not an option.** Every single delegate launch includes it (the user watches
+delegates live in split panes). Omitting it makes the delegate invisible,
+which the user treats as a bug. The ONLY exception: the user explicitly asked
+for silent/headless.
+
+```sh
+claudim -p --tmux --model <alias> "<task>"                            # stdout = answer (text)
+claudim -p --tmux --output-format json --model <alias> "<task>"       # JSON: result, stop_reason, is_error, usage
+claudim -p --tmux --unrestricted --model <alias> "<task>"             # needs gcloud/network/file-writes
+```
+
+`claudim` is on the dev machine (gateway launcher over Tailscale). `--model <alias>`
+is rewritten to the gateway's **no-thinking** model id — this is mandatory:
+reasoning backends otherwise stream an unsigned `thinking` block that `claude -p`
+discards and you'd get empty stdout. Never use `--model haiku/sonnet/opus` for a
+delegate (those route via gateway config and may enable thinking -> empty).
+
+### How to run a delegate (fallback)
 
 The `claude -p` child runs in your cwd and can read files itself. Give it a
 self-contained task: include file paths, the exact change, and any convention it
@@ -136,69 +261,15 @@ must follow (the child may not load your CLAUDE.md unless you skip `--bare`).
   tasks in a repo, omit `--bare` so the delegate picks up CLAUDE.md, or spell
   out the convention in the prompt.
 
-## Delegate that further delegates (subagents of a delegate)
-
-A `claudim -p` delegate is a real `claude` process with the **same tools** as
-your own session: Read, Write, Edit, Bash, Grep, Glob, plus anything loaded
-from its cwd's `CLAUDE.md` / skills. It can also spawn more `claudim -p`
-delegates of its own. If you're orchestrating a workflow where the delegate
-will itself run more delegates (or just needs to read files and write
-outputs), write the prompt so it can't talk itself out of the task:
-
-- **Declare tool access up front.** Open the prompt with: *"You have full
-  tool access: Read, Write, Edit, Bash, Grep, Glob. CWD is `<abs path>`."*
-  Without this, a cheap non-thinking model sometimes sees a single tool error
-  and concludes (wrongly) that "I'm running as a subagent in a restricted
-  context where I have no access to tools" and gives up — even when its next
-  tool call would have succeeded. The `claudim-render.py` pane feed (the
-  observer pane) now shows the error TEXT on `✗`, so you can see the real
-  reason, but the prompt should still prime the delegate not to over-react.
-- **`✗` on a tool_result is per-call, NOT a permission denial.** Tell the
-  delegate: *"If a tool returns ✗, read the error message, fix the path or
-  args, and retry. Do NOT conclude you have no tools."* Cheap models
-  sometimes stop on the first error; one explicit instruction prevents it.
-- **Pass ABSOLUTE file paths** for anything the delegate (or its sub-delegates)
-  must read or write. Relative paths in subagent prompts are the most common
-  reason a delegate reports a Read failure on a file the user can see.
-- **CWD matches the parent invocation.** The delegate runs in the same
-  working directory as the `claudim` command, not in `~`. If the task needs
-  the delegate to operate in a different directory, either `cd` in the task
-  prompt or pass an absolute path everywhere.
-- **Cap recursion.** Each `claudim -p` is its own `claude` process; a delegate
-  spawning N sub-delegates multiplies the resource cost. Tell the delegate
-  explicitly: *"Spawn at most 2-3 sub-delegates in parallel; serialize
-  dependent steps."* — the same parallelism cap you would follow.
-
-A safe shell for a delegate-that-further-delegates looks like:
-
-```sh
-claudim -p --tmux --model kimi-k2.7-code "You have full tool access
-(Read, Write, Edit, Bash, Grep, Glob). CWD is $(pwd). If a tool returns
-✗, read the error and retry — do NOT conclude you have no tools.
-
-Task: <self-contained, with absolute paths to every file the
-delegate or its sub-delegates will need>. Spawn at most 2-3
-sub-delegates in parallel; serialize dependent steps.
-
-Output: write the final JSONL to /abs/path/to/output.jsonl when done."
-```
-
-## Parallel delegates
-
-For independent plan steps, launch several `claudim -p` calls in parallel
-(Bash `run_in_background`, or `&` + `wait`). Collect outputs, then integrate.
-Serialize steps that depend on each other — pass the previous delegate's output
-into the next one's prompt.
-
-## Observar delegates ao vivo (tmux)
+### Observar delegates ao vivo (tmux) — fallback only
 
 **Preflight tmux — obrigatório antes do PRIMEIRO `claudim -p --tmux` da sessão.**
 
 `claudim --tmux` assume que existe um tmux server rodando. Se o server caiu
-(restart, sleep+resume, nunca subiu nesse shell), o delegate **pendura
+(systemd restart, sleep+resume, nunca subiu nesse shell), o delegate **pendura
 silencioso esperando uma janela que nunca abre** — pode ficar 30-60 min
-invisível até alguém matar. Sintoma: `exit 144` no Bash tool e tempo gigante
-sem output. Checar:
+invisível até alguém matar. O sintoma é `exit 144` no Bash tool e tempo
+gigante sem output. Checar:
 
 ```sh
 tmux ls               # falha = server morto; sucesso = server vivo
@@ -210,19 +281,22 @@ Decidir antes de lançar:
 - **Server morto (`tmux ls` falha):** suba um server primeiro
   (`tmux new -d -s scratch`) OU abra um shell novo dentro de tmux
   (`tmux new -s main`) e rode `claude --continue` lá. Sem server, **não lance
-  `--tmux`** — o delegate vai pendurar. Sem tmux instalado, o launcher já cai
-  em inline com nota, sem pane.
-- **Server vivo, `$TMUX` setado:** orquestrador dentro de tmux — cada delegate
-  abre como split pane na janela atual. **Setup ideal.**
-- **Server vivo, `$TMUX` vazio:** delegates vão pra sessão detached `claudim` —
-  o usuário precisa `tmux attach -t claudim` em OUTRO terminal pra assistir.
-  Funciona, mas é pior. **Recomende migrar antes de continuar delegando:**
+  `--tmux`** — o delegate vai pendurar. Sem tmux instalado, o launcher já
+  cai em inline com nota, sem pane.
+- **Server vivo, `$TMUX` setado:** o orquestrador está dentro de tmux (o
+  usuário abriu `tmux new -s main` e rodou `claude` lá). Cada delegate abre
+  como split pane na janela atual. **Setup ideal — o usuário vê tudo ao vivo.**
+- **Server vivo, `$TMUX` vazio:** delegates vão pra uma sessão detached
+  `claudim` — o usuário precisa `tmux attach -t claudim` em OUTRO terminal
+  pra assistir. Funciona, mas é pior que estar dentro de tmux. **Recomende
+  pro usuário migrar antes de continuar delegando:**
   `tmux new -s main` → `claude --continue` lá dentro → próximos delegates
-  viram split panes do lado dele. (Mover a sessão atual pra dentro de tmux não
-  rola sem reiniciar o Claude Code — o processo nasceu preso a este terminal.)
+  viram split panes do lado dele, sem precisar attachar sessão separada.
+  (Mover a sessão atual pra dentro de tmux não rola sem reiniciar o Claude
+  Code — o processo já nasceu preso a este terminal.)
 
-Só depois do preflight vale lançar o delegate. Não assuma que o setup está bom
-só porque `--tmux` não deu erro na invocação — o erro é silencioso.
+Só depois do preflight é que vale lançar o delegate. Não assuma que o setup
+está bom só porque `--tmux` não deu erro na invocação — o erro é silencioso.
 
 Delegates `-p` rodam invisíveis por padrão. Passe `--tmux` (ou
 `CLAUDIM_TMUX=1`) em cada launch e o delegate abre uma janela tmux que o
@@ -242,7 +316,7 @@ sessão detached `claudim` (`tmux attach -t claudim` em outro terminal).
 
 stdout capturado igual pro orquestrador (a janela é pros olhos/mãos do
 usuário); stderr separado, `--output-format json` parseável. Janela fecha
-quando o delegate termina. `-p` only. Sem tmux instalado → inline com nota.
+quando o delegate termina. `-p` only. Sem tmux instalado -> inline com nota.
 
 **Padrão: observação ON em todo delegate.** Passe `--tmux` em **cada** launch
 de `claudim -p` — não espere o usuário pedir, não exija sinal no prompt. Só
@@ -250,7 +324,11 @@ pule se ele disser explicitamente que quer quieto/headless ("roda silencioso",
 "sem observação", "modo autônomo"). Útil também pra debugar delegate
 lento/travado.
 
-## Limite de paralelismo (importante)
+**Importante:** chamadas do Bash tool **não carregam env entre si** — um
+`export CLAUDIM_TMUX=1` mid-sessão não propaga pro próximo `claudim -p`. Use
+`--tmux` por chamada.
+
+### Limite de paralelismo (fallback — importante)
 
 Cada delegate é um processo Claude Code (Node) completo — ~300-500MB RAM +
 CPU de inicialização. **Máximo 2-3 delegates em paralelo**; 4+ trava a máquina
@@ -264,9 +342,9 @@ prompt do outro).
 `~/.zshenv` pra default geral sem precisar da flag — aí nem a skill precisa
 lembrar.)
 
-## gcloud / GCP / rede no delegate
+### gcloud / GCP / rede no delegate (fallback)
 
-Delegate `-p` é non-interactive → Bash tool não consegue aprovar prompts de
+Delegate `-p` é non-interactive -> Bash tool não consegue aprovar prompts de
 permissão do Claude Code. No default `auto`, comandos que precisam approval
 (`gcloud`, rede, escrita de arquivo) são NEGADOS — o delegate responde
 "preciso de aprovação" em vez de rodar. Resulta no orquestrador tendo que
@@ -293,7 +371,7 @@ terceiro") sem revisão — prompt-injection no conteúdo da task poderia guiar
 comandos destrutivos. Pra GCP read-only puro, prefira dar ao delegate um
 comando `gcloud ...` explícito e scope restrito no prompt.
 
-## After a delegate returns
+### After a delegate returns (fallback)
 
 1. **Check it didn't come back empty.** Empty stdout = the model failed (or you
    accidentally used a thinking alias). If empty, retry with a different alias or
@@ -302,7 +380,7 @@ comando `gcloud ...` explícito e scope restrito no prompt.
    for correctness, not the delegate.
 3. **Integrate** into the plan / next step. You stitch outputs together.
 
-## Failure modes to expect
+### Failure modes to expect (fallback)
 
 - **Empty stdout**: wrong alias (thinking variant) or the model gave up. Retry
   with another alias; fall back to doing it yourself.
@@ -316,12 +394,49 @@ comando `gcloud ...` explícito e scope restrito no prompt.
 - **Slow first call**: `claudim` waits for the gateway node to wake on the
   tailnet (up to 30s). Subsequent calls are fast.
 
-## Example orchestration turn
+### Example orchestration turn (fallback)
 
 > Plan: (1) find every caller of `foo()`, (2) rename to `bar()`, (3) run tests.
 >
-> Step 1 → delegate `kimi-k2.7-code`: "list every file:line that calls `foo()`
+> Step 1 -> delegate `kimi-k2.7-code`: "list every file:line that calls `foo()`
 > in this repo; output as a plain list." Capture the list.
-> Step 2 → delegate `deepseek-v4-flash`: "rename `foo` to `bar` at these exact
+> Step 2 -> delegate `deepseek-v4-flash`: "rename `foo` to `bar` at these exact
 > locations: <paste list>. Don't touch comments." Verify the diff yourself.
-> Step 3 → you run `uv run pytest` and interpret (judgment step, not delegated).
+> Step 3 -> you run `uv run pytest` and interpret (judgment step, not delegated).
+
+---
+
+## KILL SWITCH — when to stand down
+
+**"workflow", "fan-out", "multi-agent" are NO LONGER a stand-down signal.**
+Native orchestration via `delegate-*` agents IS the claudim path — use them
+for fan-out and multi-agent tasks.
+
+Stand down and defer to plain Claude Code Workflow/Agent tools ONLY when:
+
+- The user **explicitly** wants **anthropic-tier** subagents (haiku/sonnet/opus)
+  and does NOT want cheap non-American models.
+- The user wants a **fully custom workflow** the delegate pool cannot serve
+  (e.g., specific agent tool permissions, custom system prompts per agent tier,
+  or a deterministic Workflow-tool script that the delegate agents don't fit).
+
+When in doubt and no gateway/cheap-model language is present, still try the
+native `delegate-*` agents first — mention that plain Claude Code subagents are
+available if they want the anthropic-tier pool instead.
+
+---
+
+## Model discovery and exclusions
+
+Models are **auto-discovered** from the gateway at session launch (via
+`GET /v1/models/delegates`). Run `claudim models --all` to list every
+available model live.
+
+Admins can exclude models from the delegate pool via
+`MODEL_DELEGATE_EXCLUSIONS` in the gateway Admin UI (supports glob patterns,
+e.g. `open_router/qwen/*`). Exclusions affect **only** delegation — the human
+`/model` picker still sees every model. Enforcement is **hard**: the gateway
+rejects any subagent request on an excluded model at request time (only the
+Claude Code main loop is exempt), so do not try to spawn agents on excluded
+models via explicit `model` params — they will fail. Exclusions are
+hot-reloaded by the gateway; relaunch the claudim session to pick up changes.
