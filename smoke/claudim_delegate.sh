@@ -107,6 +107,8 @@ if command -v tmux >/dev/null 2>&1; then
   tmux new-session -d -s claudim-smoke
   tmux send-keys -t claudim-smoke "cd $(pwd) && CLAUDIM_TMUX=1 '${CLAUDIM}' -p --model deepseek-v4-flash '${PROMPT}' > /tmp/claudim-smoke-in.txt 2>/tmp/claudim-smoke-err.txt" Enter
   waited=0
+  # 120s cap: generous for a warm gateway, but a cold start (first call after
+  # the gateway node wakes on the tailnet) can exceed it and false-negative.
   while [ ! -s /tmp/claudim-smoke-in.txt ] && [ "${waited}" -lt 120 ]; do sleep 2; waited=$((waited+2)); done
   out="$(cat /tmp/claudim-smoke-in.txt 2>/dev/null || true)"
   errnote="$(grep -c "your current session" /tmp/claudim-smoke-err.txt 2>/dev/null || echo 0)"

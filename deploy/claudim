@@ -124,8 +124,14 @@ run_in_tmux() {
     tmux has-session -t "$sess" 2>/dev/null || tmux new-session -d -s "$sess"
   fi
 
-  local out="/tmp/claudim-$$.log"
-  local done="/tmp/claudim-done-$$"
+  # mktemp dir (not PID-based) so parallel delegates can't collide and nothing
+  # predictable sits in /tmp. Trap cleans it up on normal exit OR Ctrl+C during
+  # the wait loop below.
+  local tmpdir
+  tmpdir="$(mktemp -d 2>/dev/null || mktemp -d -t claudim)"
+  trap 'rm -rf "$tmpdir"' EXIT INT TERM
+  local out="$tmpdir/out.log"
+  local done="$tmpdir/done"
   # Title carries the delegate model (last path segment) so panes/windows are
   # tellable apart; PID suffix keeps parallel delegates unique.
   local model="" _prev=""
@@ -153,11 +159,13 @@ run_in_tmux() {
   # Pane experience: `claude -p` prints stdout only at the very end and draws
   # nothing in print mode — a mute pane. So the delegate actually runs with
   # `--output-format stream-json --verbose`, and a small renderer turns the
-  # event stream into a live feed on the pane: assistant text as it arrives,
-  # tool calls as "⚡ Tool(args)", tool results as "✓". The renderer extracts
-  # the final result and writes it to the log in the format the CALLER asked
-  # for (text by default, the raw result object for --output-format json), so
-  # the orchestrator's captured stdout is unchanged by the live view.
+  # event stream into a per-turn feed on the pane: assistant text + tool calls
+  # shown when each turn completes (not char-by-char — the renderer handles
+  # `assistant`/`user`/`result` events, not raw `stream_event` deltas), tool
+  # results as "✓"/"✗". The renderer extracts the final result and writes it
+  # to the log in the format the CALLER asked for (text by default, the raw
+  # result object for --output-format json), so the orchestrator's captured
+  # stdout is unchanged by the live view.
   local caller_fmt="text"
   local strip=() _skip=0
   for _a in "$@"; do
@@ -171,7 +179,7 @@ run_in_tmux() {
   local scmd=""
   for _a in "${strip[@]}"; do scmd+=$(printf '%q ' "$_a"); done
 
-  local renderer="/tmp/claudim-render-$$.py"
+  local renderer="$tmpdir/render.py"
   cat > "$renderer" <<'RENDER_EOF'
 import json, sys
 out_path, fmt = sys.argv[1], sys.argv[2]
@@ -211,9 +219,13 @@ with open(out_path, "w") as f:
 RENDER_EOF
 
   local taskprev=""
-  for _a in "$@"; do case "$_a" in -*) ;; *) taskprev="$_a" ;; esac; done
+  for _a in "$@"; do case "$_a" in -*) ;; *) taskprev="$_a"; break ;; esac; done
   taskprev="$(printf '%.120s' "$taskprev")"
-  local shellcmd="printf '\\033[1m[%s]\\033[0m %s\\n\\n' $(printf '%q' "${model:-delegate}") $(printf '%q' "$taskprev"); $envp claude $scmd --output-format stream-json --verbose | python3 $(printf '%q' "$renderer") $(printf '%q' "$out") $(printf '%q' "$caller_fmt"); printf 1 > $(printf '%q' "$done"); echo; echo '[claudim] delegate done — pane closes in 8s'; sleep 8"
+  # `unset ANTHROPIC_API_KEY` first: the tmux SERVER may have inherited it
+  # from its own startup env (e.g. the user's shell rc), and `env VAR=...`
+  # below only overrides — it doesn't unset. Without this, a delegate pane
+  # could auth with the parent subscription key instead of the gateway token.
+  local shellcmd="unset ANTHROPIC_API_KEY; printf '\\033[1m[%s]\\033[0m %s\\n\\n' $(printf '%q' "${model:-delegate}") $(printf '%q' "$taskprev"); $envp claude $scmd --output-format stream-json --verbose | python3 $(printf '%q' "$renderer") $(printf '%q' "$out") $(printf '%q' "$caller_fmt"); printf 1 > $(printf '%q' "$done"); echo; echo '[claudim] delegate done — pane closes in 8s'; sleep 8"
 
   rm -f "$done"
   if [ "$in_session" -eq 1 ]; then
@@ -222,11 +234,12 @@ RENDER_EOF
     # splitting, then `main-vertical` re-lays everything out: pane 0 (the
     # orchestrator) becomes the left column at 50% width and full height, and
     # every delegate pane becomes an equal-height slice in the right column.
-    local orig_win new_pane
+    local orig_win orig_pane new_pane
     orig_win="$(tmux display-message -p '#{window_id}' 2>/dev/null)"
-    new_pane="$(tmux split-window -d -h -t "$orig_win" -P -F '#{pane_id}' "$shellcmd" 2>/dev/null)"
+    orig_pane="$(tmux display-message -p '#{pane_id}' 2>/dev/null)"
+    new_pane="$(tmux split-window -d -h -t "$orig_pane" -P -F '#{pane_id}' "$shellcmd" 2>/dev/null)"
     [ -n "$new_pane" ] && tmux select-pane -t "$new_pane" -T "$title" 2>/dev/null || true
-    tmux select-pane -t "$orig_win.0" -T "orchestrator" 2>/dev/null || true
+    tmux select-pane -t "$orig_pane" -T "orchestrator" 2>/dev/null || true
     tmux set-window-option -t "$orig_win" pane-border-status top 2>/dev/null || true
     tmux set-window-option -t "$orig_win" main-pane-width '50%' 2>/dev/null || true
     tmux select-layout -t "$orig_win" main-vertical 2>/dev/null || true
