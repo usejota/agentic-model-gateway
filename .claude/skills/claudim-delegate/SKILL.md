@@ -203,10 +203,6 @@ pule se ele disser explicitamente que quer quieto/headless ("roda silencioso",
 "sem observação", "modo autônomo"). Útil também pra debugar delegate
 lento/travado.
 
-**Importante:** chamadas do Bash tool **não carregam env entre si** — um
-`export CLAUDIM_TMUX=1` mid-sessão não propaga pro próximo `claudim -p`. Use
-`--tmux` por chamada.
-
 ## Limite de paralelismo (importante)
 
 Cada delegate é um processo Claude Code (Node) completo — ~300-500MB RAM +

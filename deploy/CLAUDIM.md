@@ -161,6 +161,7 @@ read-only analysis that doesn't need the shell, omit it and stay sandboxed.
 | `CLAUDIM_PORT` | `8082` | proxy port |
 | `CLAUDIM_TOKEN` | `freecc` | proxy auth token |
 | `CLAUDIM_WAIT` | `30` | seconds to wait for the gateway |
+| `CLAUDIM_MAX_WAIT` | `3600` | max seconds to wait for a tmux delegate sentinel before killing its pane/window; `0` disables |
 | `CLAUDIM_BYPASS` | _unset_ | `1` = inject `--dangerously-skip-permissions` so `-p` delegates can run gcloud/network/file-writes (off by default; see gcloud / unrestricted delegates) |
 | `CLAUDIM_TMUX` | _unset_ | `1` = show each `-p` delegate live — split pane in your current tmux window (main-vertical: orchestrator left, delegates stacked right) if inside tmux, else a window in a detached session `claudim` (see Observing delegates) |
 

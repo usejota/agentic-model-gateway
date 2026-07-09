@@ -44,6 +44,7 @@
 #   CLAUDIM_PORT      proxy port                (default: 8082)
 #   CLAUDIM_TOKEN     proxy auth token          (default: freecc)
 #   CLAUDIM_WAIT      seconds to wait for proxy (default: 30)
+#   CLAUDIM_MAX_WAIT  max seconds to wait for a tmux delegate (default: 3600)
 #   CLAUDIM_BYPASS    1 = inject --dangerously-skip-permissions (let -p delegate
 #                     run gcloud/network/file-writes; off by default)
 #   CLAUDIM_TMUX      1 = open each -p delegate in a tmux window (your current
@@ -132,6 +133,10 @@ run_in_tmux() {
   trap 'rm -rf "$tmpdir"' EXIT INT TERM
   local out="$tmpdir/out.log"
   local done="$tmpdir/done"
+  local max_wait="${CLAUDIM_MAX_WAIT:-3600}"
+  case "$max_wait" in
+    ''|*[!0-9]*) die "CLAUDIM_MAX_WAIT must be a non-negative integer (seconds)" ;;
+  esac
   # Title carries the delegate model (last path segment) so panes/windows are
   # tellable apart; PID suffix keeps parallel delegates unique.
   local model="" _prev=""
@@ -228,17 +233,19 @@ RENDER_EOF
   local shellcmd="unset ANTHROPIC_API_KEY; printf '\\033[1m[%s]\\033[0m %s\\n\\n' $(printf '%q' "${model:-delegate}") $(printf '%q' "$taskprev"); $envp claude $scmd --output-format stream-json --verbose | python3 $(printf '%q' "$renderer") $(printf '%q' "$out") $(printf '%q' "$caller_fmt"); printf 1 > $(printf '%q' "$done"); echo; echo '[claudim] delegate done — pane closes in 8s'; sleep 8"
 
   rm -f "$done"
+  local orig_win="" orig_pane="" new_pane="" new_win=""
   if [ "$in_session" -eq 1 ]; then
     # Split inside the ORCHESTRATOR's window. The first delegate splits the
     # orchestrator pane horizontally (left|right); the next ones keep
     # splitting, then `main-vertical` re-lays everything out: pane 0 (the
     # orchestrator) becomes the left column at 50% width and full height, and
     # every delegate pane becomes an equal-height slice in the right column.
-    local orig_win orig_pane new_pane
     orig_win="$(tmux display-message -p '#{window_id}' 2>/dev/null)"
     orig_pane="$(tmux display-message -p '#{pane_id}' 2>/dev/null)"
-    new_pane="$(tmux split-window -d -h -t "$orig_pane" -P -F '#{pane_id}' "$shellcmd" 2>/dev/null)"
-    [ -n "$new_pane" ] && tmux select-pane -t "$new_pane" -T "$title" 2>/dev/null || true
+    if ! new_pane="$(tmux split-window -d -h -t "$orig_pane" -P -F '#{pane_id}' "$shellcmd" 2>/dev/null)" || [ -z "$new_pane" ]; then
+      die "tmux split-window failed; delegate was not started"
+    fi
+    tmux select-pane -t "$new_pane" -T "$title" 2>/dev/null || true
     tmux select-pane -t "$orig_pane" -T "orchestrator" 2>/dev/null || true
     tmux set-window-option -t "$orig_win" pane-border-status top 2>/dev/null || true
     tmux set-window-option -t "$orig_win" main-pane-width '50%' 2>/dev/null || true
@@ -246,12 +253,26 @@ RENDER_EOF
     # Re-balance once more when the pane count changes on exit (handled below
     # after the sentinel, since the dying pane auto-closes).
   else
-    tmux new-window -d -t "$sess" -n "$title" "$shellcmd"
+    if ! new_win="$(tmux new-window -d -t "$sess" -n "$title" -P -F '#{window_id}' "$shellcmd" 2>/dev/null)" || [ -z "$new_win" ]; then
+      die "tmux new-window failed; delegate was not started"
+    fi
   fi
 
   # Block until the delegate finishes (sentinel file), regardless of
   # remain-on-exit. Then surface stdout and tear down the pane/window.
-  while [ ! -f "$done" ]; do sleep 0.5; done
+  local deadline=$(( $(date +%s) + 10#$max_wait ))
+  while [ ! -f "$done" ]; do
+    sleep 0.5
+    if [ "$max_wait" -gt 0 ] && [ "$(date +%s)" -ge "$deadline" ]; then
+      if [ "$in_session" -eq 1 ]; then
+        tmux kill-pane -t "$new_pane" 2>/dev/null || true
+        [ -n "$orig_win" ] && tmux select-layout -t "$orig_win" main-vertical 2>/dev/null || true
+      else
+        tmux kill-window -t "${new_win:-$sess:$title}" 2>/dev/null || true
+      fi
+      die "tmux delegate timed out after ${max_wait}s (set CLAUDIM_MAX_WAIT to override; 0 disables)"
+    fi
+  done
   rm -f "$done"
   cat "$out" 2>/dev/null
   rm -f "$out" "$renderer"
@@ -260,7 +281,7 @@ RENDER_EOF
     # remaining delegate slices (no-op if the orchestrator pane is alone).
     tmux select-layout -t "$orig_win" main-vertical 2>/dev/null || true
   else
-    tmux kill-window -t "$sess:$title" 2>/dev/null || true
+    tmux kill-window -t "${new_win:-$sess:$title}" 2>/dev/null || true
   fi
 }
 

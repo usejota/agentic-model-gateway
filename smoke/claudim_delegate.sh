@@ -23,6 +23,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 CLAUDIM="${REPO_ROOT}/deploy/claudim"
+HOST="${CLAUDIM_HOST:-fcc-proxy}"
+TAILNET="${CLAUDIM_TAILNET:-tail576af6.ts.net}"
+PORT="${CLAUDIM_PORT:-8082}"
+TOKEN="${CLAUDIM_TOKEN:-freecc}"
+FQDN="${HOST}.${TAILNET}"
+BASE_URL="http://${FQDN}:${PORT}"
 
 PROMPT="quanto é 17*23? Responda só o número, nada mais."
 EXPECT="391"
@@ -42,8 +48,8 @@ fi
 if ! tailscale status >/dev/null 2>&1; then
   echo "skip: not connected to the tailnet."; exit 0
 fi
-if ! curl -s -o /dev/null -m 5 "http://fcc-proxy.tail576af6.ts.net:8082/v1/models" -H "x-api-key: freecc"; then
-  echo "skip: fcc-proxy gateway not reachable (set CLAUDIM_HOST/CLAUDIM_TAILNET if renamed)."; exit 0
+if ! curl -s -o /dev/null -m 5 "${BASE_URL}/v1/models" -H "x-api-key: ${TOKEN}"; then
+  echo "skip: gateway ${FQDN}:${PORT} not reachable (override CLAUDIM_HOST/CLAUDIM_TAILNET/CLAUDIM_PORT/CLAUDIM_TOKEN if needed)."; exit 0
 fi
 
 step "alias -> non-empty stdout containing ${EXPECT}"
