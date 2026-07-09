@@ -151,16 +151,69 @@ run_in_tmux() {
   envp+=" CLAUDE_CODE_AUTO_COMPACT_WINDOW=$(printf '%q' "$CLAUDE_CODE_AUTO_COMPACT_WINDOW")"
 
   # Pane experience: `claude -p` prints stdout only at the very end and draws
-  # no spinner in print mode, so without help the pane sits mute for the whole
-  # run. We print a header (model + task), tick elapsed seconds while claude
-  # runs, then show the answer. stderr stays on the pane's tty (warnings show
-  # up live); stdout is teed to the log the orchestrator captures
-  # (--output-format json stays clean). A short hold keeps the final output
-  # readable before the pane closes and the layout re-balances.
+  # nothing in print mode — a mute pane. So the delegate actually runs with
+  # `--output-format stream-json --verbose`, and a small renderer turns the
+  # event stream into a live feed on the pane: assistant text as it arrives,
+  # tool calls as "⚡ Tool(args)", tool results as "✓". The renderer extracts
+  # the final result and writes it to the log in the format the CALLER asked
+  # for (text by default, the raw result object for --output-format json), so
+  # the orchestrator's captured stdout is unchanged by the live view.
+  local caller_fmt="text"
+  local strip=() _skip=0
+  for _a in "$@"; do
+    if [ "$_skip" = "1" ]; then _skip=0; caller_fmt="$_a"; continue; fi
+    case "$_a" in
+      --output-format) _skip=1 ;;
+      --output-format=*) caller_fmt="${_a#--output-format=}" ;;
+      *) strip+=("$_a") ;;
+    esac
+  done
+  local scmd=""
+  for _a in "${strip[@]}"; do scmd+=$(printf '%q ' "$_a"); done
+
+  local renderer="/tmp/claudim-render-$$.py"
+  cat > "$renderer" <<'RENDER_EOF'
+import json, sys
+out_path, fmt = sys.argv[1], sys.argv[2]
+result_payload = ""
+def say(s=""):
+    sys.stdout.write(s + "\n"); sys.stdout.flush()
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        ev = json.loads(line)
+    except ValueError:
+        continue
+    t = ev.get("type")
+    if t == "system" and ev.get("subtype") == "init":
+        say(f"· session started (model: {ev.get('model', '?')})")
+    elif t == "assistant":
+        for block in (ev.get("message") or {}).get("content", []):
+            bt = block.get("type")
+            if bt == "text" and block.get("text"):
+                say(block["text"])
+            elif bt == "tool_use":
+                arg = json.dumps(block.get("input", {}), ensure_ascii=False)
+                if len(arg) > 160:
+                    arg = arg[:160] + "…"
+                say(f"\033[36m⚡ {block.get('name', '?')}\033[0m {arg}")
+    elif t == "user":
+        for block in (ev.get("message") or {}).get("content", []):
+            if isinstance(block, dict) and block.get("type") == "tool_result":
+                mark = "\033[31m✗\033[0m" if block.get("is_error") else "\033[32m✓\033[0m"
+                say(f"  {mark} tool result")
+    elif t == "result":
+        result_payload = json.dumps(ev, ensure_ascii=False) if fmt == "json" else (ev.get("result") or "")
+with open(out_path, "w") as f:
+    f.write(result_payload)
+RENDER_EOF
+
   local taskprev=""
   for _a in "$@"; do case "$_a" in -*) ;; *) taskprev="$_a" ;; esac; done
   taskprev="$(printf '%.120s' "$taskprev")"
-  local shellcmd="printf '\\033[1m[%s]\\033[0m %s\\n\\n' $(printf '%q' "${model:-delegate}") $(printf '%q' "$taskprev"); start=\$(date +%s); ( while :; do printf '\\r\\033[2K… working %ss' \$(( \$(date +%s) - start )); sleep 5; done ) & tick=\$!; $envp claude $cmd > $(printf '%q' "$out"); kill \$tick 2>/dev/null; printf '\\r\\033[2K\\n'; cat $(printf '%q' "$out"); printf 1 > $(printf '%q' "$done"); echo; echo '[claudim] delegate done — pane closes in 8s'; sleep 8"
+  local shellcmd="printf '\\033[1m[%s]\\033[0m %s\\n\\n' $(printf '%q' "${model:-delegate}") $(printf '%q' "$taskprev"); $envp claude $scmd --output-format stream-json --verbose | python3 $(printf '%q' "$renderer") $(printf '%q' "$out") $(printf '%q' "$caller_fmt"); printf 1 > $(printf '%q' "$done"); echo; echo '[claudim] delegate done — pane closes in 8s'; sleep 8"
 
   rm -f "$done"
   if [ "$in_session" -eq 1 ]; then
@@ -188,7 +241,7 @@ run_in_tmux() {
   while [ ! -f "$done" ]; do sleep 0.5; done
   rm -f "$done"
   cat "$out" 2>/dev/null
-  rm -f "$out"
+  rm -f "$out" "$renderer"
   if [ "$in_session" -eq 1 ]; then
     # The delegate pane closed itself when its command exited; re-balance the
     # remaining delegate slices (no-op if the orchestrator pane is alone).
