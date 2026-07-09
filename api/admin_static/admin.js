@@ -307,7 +307,18 @@ function renderField(field) {
     : element;
   input.id = `field-${field.key}`;
   input.dataset.key = field.key;
-  input.dataset.original = input.value || field.value || "";
+  // Original must mirror what readFieldValue() will report: checkboxes map to
+  // "true"/"false" (their .value is the meaningless default "on"), the
+  // exclusion picker's hidden input holds a normalized sorted list, and plain
+  // fields report their raw value.
+  input.dataset.original =
+    input.type === "checkbox"
+      ? input.checked
+        ? "true"
+        : "false"
+      : input.dataset.exclusionValue === "true"
+        ? input.value
+        : field.value || "";
   input.dataset.secret = field.secret ? "true" : "false";
   input.dataset.configured = field.configured ? "true" : "false";
   input.disabled = field.locked;
@@ -540,7 +551,7 @@ function buildExclusionPicker(currentValue) {
   const hidden = document.createElement("input");
   hidden.type = "hidden";
   hidden.dataset.exclusionValue = "true";
-  hidden.value = Array.from(selected).join(",");
+  hidden.value = Array.from(selected).sort().join(",");
 
   const search = document.createElement("input");
   search.type = "search";
