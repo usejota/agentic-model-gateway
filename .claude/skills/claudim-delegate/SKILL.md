@@ -145,6 +145,38 @@ into the next one's prompt.
 
 ## Observar delegates ao vivo (tmux)
 
+**Preflight tmux — obrigatório antes do PRIMEIRO `claudim -p --tmux` da sessão.**
+
+`claudim --tmux` assume que existe um tmux server rodando. Se o server caiu
+(restart, sleep+resume, nunca subiu nesse shell), o delegate **pendura
+silencioso esperando uma janela que nunca abre** — pode ficar 30-60 min
+invisível até alguém matar. Sintoma: `exit 144` no Bash tool e tempo gigante
+sem output. Checar:
+
+```sh
+tmux ls               # falha = server morto; sucesso = server vivo
+[ -n "$TMUX" ] && echo "in-tmux" || echo "not-in-tmux"
+```
+
+Decidir antes de lançar:
+
+- **Server morto (`tmux ls` falha):** suba um server primeiro
+  (`tmux new -d -s scratch`) OU abra um shell novo dentro de tmux
+  (`tmux new -s main`) e rode `claude --continue` lá. Sem server, **não lance
+  `--tmux`** — o delegate vai pendurar. Sem tmux instalado, o launcher já cai
+  em inline com nota, sem pane.
+- **Server vivo, `$TMUX` setado:** orquestrador dentro de tmux — cada delegate
+  abre como split pane na janela atual. **Setup ideal.**
+- **Server vivo, `$TMUX` vazio:** delegates vão pra sessão detached `claudim` —
+  o usuário precisa `tmux attach -t claudim` em OUTRO terminal pra assistir.
+  Funciona, mas é pior. **Recomende migrar antes de continuar delegando:**
+  `tmux new -s main` → `claude --continue` lá dentro → próximos delegates
+  viram split panes do lado dele. (Mover a sessão atual pra dentro de tmux não
+  rola sem reiniciar o Claude Code — o processo nasceu preso a este terminal.)
+
+Só depois do preflight vale lançar o delegate. Não assuma que o setup está bom
+só porque `--tmux` não deu erro na invocação — o erro é silencioso.
+
 Delegates `-p` rodam invisíveis por padrão. Passe `--tmux` (ou
 `CLAUDIM_TMUX=1`) em cada launch e o delegate abre uma janela tmux que o
 usuário pode acompanhar ao vivo **e interagir** (aprovar prompt, digitar
