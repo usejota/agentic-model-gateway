@@ -299,24 +299,22 @@ function renderField(field) {
     label.appendChild(sourceEl);
   }
 
-  const input = inputForField(field);
+  const element = inputForField(field);
+  // Composite widgets (e.g. the exclusion picker) carry their value in an
+  // inner hidden input; plain fields ARE the input.
+  const input = element.dataset.exclusionPicker === "true"
+    ? element.querySelector("input[data-exclusion-value]")
+    : element;
   input.id = `field-${field.key}`;
   input.dataset.key = field.key;
-  input.dataset.original =
-    input.dataset.modelMultiSelect === "true"
-      ? (field.value || "")
-          .split(",")
-          .map((entry) => entry.trim())
-          .filter(Boolean)
-          .join(",")
-      : field.value || "";
+  input.dataset.original = input.value || field.value || "";
   input.dataset.secret = field.secret ? "true" : "false";
   input.dataset.configured = field.configured ? "true" : "false";
   input.disabled = field.locked;
   input.addEventListener("input", updateDirtyState);
   input.addEventListener("change", updateDirtyState);
 
-  wrapper.append(label, input);
+  wrapper.append(label, element);
   if (field.description) {
     const description = document.createElement("div");
     description.className = "field-description";
@@ -354,15 +352,11 @@ function inputForField(field) {
   }
 
   if (field.key === "MODEL_DELEGATE_EXCLUSIONS") {
-    // Multi-select: pick the model refs to exclude from delegate agents.
-    // Stored as a comma-separated list; custom fnmatch globs typed via the
-    // env file still round-trip (unknown values are kept as options).
-    const select = document.createElement("select");
-    select.multiple = true;
-    select.size = 10;
-    select.dataset.modelMultiSelect = "true";
-    fillModelMultiSelect(select, field.value || "");
-    return select;
+    // Checkbox picker with search: filter models (e.g. "openai"), tick
+    // individually or "select all shown", selections accumulate across
+    // searches. Stored as a comma-separated list in a hidden input; custom
+    // fnmatch globs typed via the env file round-trip as checked entries.
+    return buildExclusionPicker(field.value || "");
   }
 
   if (field.key.startsWith("MODEL")) {
@@ -402,11 +396,6 @@ function option(value, label) {
 
 function readFieldValue(input) {
   if (input.type === "checkbox") return input.checked ? "true" : "false";
-  if (input.dataset.modelMultiSelect === "true") {
-    return Array.from(input.selectedOptions)
-      .map((optionEl) => optionEl.value)
-      .join(",");
-  }
   if (input.dataset.secret === "true" && input.dataset.configured === "true") {
     return input.value ? input.value : MASKED_SECRET;
   }
@@ -534,29 +523,126 @@ function fillModelSelect(select, currentValue) {
   select.value = previous || "";
 }
 
-function fillModelMultiSelect(select, currentValue) {
-  const selected = (currentValue || "")
-    .split(",")
-    .map((entry) => entry.trim())
-    .filter(Boolean);
-  select.innerHTML = "";
-  const values = Array.from(new Set([...selected, ...state.modelOptions])).sort();
-  values.forEach((model) => {
-    const optionEl = option(model, model);
-    optionEl.selected = selected.includes(model);
-    select.appendChild(optionEl);
+function buildExclusionPicker(currentValue) {
+  const container = document.createElement("div");
+  container.className = "exclusion-picker";
+  container.dataset.exclusionPicker = "true";
+
+  // Selection lives in a Set; the hidden input holds the serialized value the
+  // apply flow reads via readFieldValue/changedValues.
+  const selected = new Set(
+    (currentValue || "")
+      .split(",")
+      .map((entry) => entry.trim())
+      .filter(Boolean),
+  );
+
+  const hidden = document.createElement("input");
+  hidden.type = "hidden";
+  hidden.dataset.exclusionValue = "true";
+  hidden.value = Array.from(selected).join(",");
+
+  const search = document.createElement("input");
+  search.type = "search";
+  search.placeholder = "Search models (e.g. openai, qwen)…";
+  search.className = "exclusion-search";
+
+  const toolbar = document.createElement("div");
+  toolbar.className = "exclusion-toolbar";
+  const selectAll = document.createElement("button");
+  selectAll.type = "button";
+  selectAll.textContent = "Select all shown";
+  const clearShown = document.createElement("button");
+  clearShown.type = "button";
+  clearShown.textContent = "Unselect shown";
+  const counter = document.createElement("span");
+  counter.className = "exclusion-count";
+  toolbar.append(selectAll, clearShown, counter);
+
+  const list = document.createElement("div");
+  list.className = "exclusion-list";
+
+  const chips = document.createElement("div");
+  chips.className = "exclusion-chips";
+
+  function sync() {
+    hidden.value = Array.from(selected).sort().join(",");
+    counter.textContent = `${selected.size} excluded`;
+    chips.innerHTML = "";
+    Array.from(selected)
+      .sort()
+      .forEach((ref) => {
+        const chip = document.createElement("span");
+        chip.className = "exclusion-chip";
+        chip.textContent = ref;
+        const removeBtn = document.createElement("button");
+        removeBtn.type = "button";
+        removeBtn.textContent = "×";
+        removeBtn.addEventListener("click", () => {
+          selected.delete(ref);
+          sync();
+          render();
+          hidden.dispatchEvent(new Event("change", { bubbles: true }));
+        });
+        chip.appendChild(removeBtn);
+        chips.appendChild(chip);
+      });
+  }
+
+  function visibleRefs() {
+    const query = search.value.trim().toLowerCase();
+    const values = Array.from(new Set([...selected, ...state.modelOptions])).sort();
+    return query ? values.filter((ref) => ref.toLowerCase().includes(query)) : values;
+  }
+
+  function render() {
+    list.innerHTML = "";
+    visibleRefs().forEach((ref) => {
+      const row = document.createElement("label");
+      row.className = "exclusion-row";
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.checked = selected.has(ref);
+      checkbox.addEventListener("change", () => {
+        if (checkbox.checked) selected.add(ref);
+        else selected.delete(ref);
+        sync();
+        hidden.dispatchEvent(new Event("change", { bubbles: true }));
+      });
+      row.append(checkbox, document.createTextNode(` ${ref}`));
+      list.appendChild(row);
+    });
+  }
+
+  search.addEventListener("input", render);
+  selectAll.addEventListener("click", () => {
+    visibleRefs().forEach((ref) => selected.add(ref));
+    sync();
+    render();
+    hidden.dispatchEvent(new Event("change", { bubbles: true }));
   });
-  select.dataset.original = selected.join(",");
+  clearShown.addEventListener("click", () => {
+    visibleRefs().forEach((ref) => selected.delete(ref));
+    sync();
+    render();
+    hidden.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+
+  container.append(hidden, search, toolbar, chips, list);
+  container.dataset.render = "true";
+  container.refreshOptions = render;
+  sync();
+  render();
+  return container;
 }
 
 function populateModelSelects() {
   document
     .querySelectorAll('select[data-model-select="true"]')
     .forEach((select) => fillModelSelect(select, select.value));
-  document.querySelectorAll('select[data-model-multi-select="true"]').forEach((select) => {
-    const current = readFieldValue(select);
-    fillModelMultiSelect(select, current || select.dataset.original || "");
-  });
+  document
+    .querySelectorAll('[data-exclusion-picker="true"]')
+    .forEach((picker) => picker.refreshOptions && picker.refreshOptions());
 }
 
 function showMessage(message, kind = "") {
