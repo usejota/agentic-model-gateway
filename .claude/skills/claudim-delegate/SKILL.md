@@ -32,15 +32,24 @@ discards and you'd get empty output.
 Use the **Agent tool** with these subagents. No Bash, no `claudim -p`, no
 subprocess overhead. The session model spawns them natively.
 
-### Pick the model per task (non-American — auto-selection)
+### Pick the model per task — YOUR call, whole pool available
 
-All models below are non-American: Chinese (DeepSeek, Moonshot/Kimi,
-Zhipu/GLM, MiniMax) + Mistral (France). **US closed labs — openai, anthropic,
-google, x-ai, amazon, nvidia, ibm-granite, liquid, rekaai, relace — are never
-called** (cost-driven: they charge premium per-token; the rest are cheap, and
-open-weight Llama + fine-tunes don't fund a US lab per call). Decide by what
-the task needs — pick the **cheapest that can do the job**, escalate only when
-the task demands:
+**The entire delegate pool is yours to choose from — every `delegate-*` agent
+in your list, not just the 8 curated ones.** The curated table below is a
+starting shortcut, not a boundary. If you know a better fit for the task
+(qwen for data work, a specific coder variant, a flash model you trust), USE
+IT. Trust your own knowledge of model strengths; the pool is already filtered
+to non-American + admin-approved, so every listed agent is safe and cheap to
+pick. Do not restrict yourself to the curated list when the task deserves
+better.
+
+All pool models are non-American: Chinese (DeepSeek, Qwen, Moonshot/Kimi,
+Zhipu/GLM, MiniMax, ByteDance, ...) + Mistral (France) + others. **US closed
+labs — openai, anthropic, google, x-ai, amazon, nvidia, ibm-granite, liquid,
+rekaai, relace — are never in the pool** (filtered server-side). Pick the
+**cheapest that can do the job well**; escalate freely when the task demands.
+
+Curated shortcuts (when you have no stronger opinion):
 
 - **Smartest / hardest reasoning** — algorithm design, multi-step logic,
   architecture tradeoffs -> `delegate-deepseek-v4-pro`
@@ -51,31 +60,28 @@ the task demands:
 - **Long-context general** — read/analyze large files, writing, summaries ->
   `delegate-glm-5-2` (or `delegate-minimax-m3` as alternative) (Chinese) or `delegate-mistral-small` (France)
 
-Default to `delegate-deepseek-v4-flash` for anything simple; reach for
-`delegate-kimi-k2-7-code` or `delegate-codestral` on code; reach for
-`delegate-deepseek-v4-pro` only when real reasoning is required. Prefer a
-non-Chinese model (Mistral) when the task or your preference calls for it —
-both pools are cheap and non-American.
+Examples of going beyond the shortcuts (encouraged):
+- Data analysis / structured extraction -> a qwen max/plus variant often beats
+  the curated picks.
+- Vision / screenshots -> a `-vl` variant.
+- A giant bulk sweep -> the cheapest flash/lite model in the pool, even one
+  not in the table.
 
 Agent names are sanitized from the model id tail (`[a-z0-9-]`), so `kimi-k2.7-code`
-becomes `delegate-kimi-k2-7-code`, etc. Run `/agents` to see the exact names
-available in this session.
+becomes `delegate-kimi-k2-7-code`, etc. Run `/agents` to see every delegate
+available in this session — scan it before defaulting to a curated pick.
 
-### Need a model outside the curated 8?
+### Pool bigger than the agent list?
 
-Run `claudim models --all` to list **every** non-American no-thinking model
-the gateway currently offers (live, US closed labs filtered out). Pass any
-listed id verbatim to `--model`:
+The launcher caps generated agents at `CLAUDIM_MAX_AGENTS` (default 30), so
+the gateway may offer models with no `delegate-*` agent. Run
+`claudim models --all` to list the full live pool; for a model without an
+agent, use the `-p` fallback with its id verbatim:
 
 ```sh
-claudim models --all          # grouped by vendor, all non-American, all no-thinking
+claudim models --all          # full pool, grouped by vendor, all no-thinking
 claudim -p --model <id-from-list> "<task>"
 ```
-
-Use this when a task wants a specialized non-American model the curated 8 don't
-cover (e.g. a different coding model, a specific flash variant, a reasoning
-model you want to try). Don't hand-pick American vendors — `--all` already
-excludes US closed labs.
 
 Run `claudim models` any time to reprint the curated cheat-sheet.
 

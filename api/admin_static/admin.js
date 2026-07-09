@@ -639,7 +639,7 @@ function buildExclusionPicker(currentValue) {
     hidden.dispatchEvent(new Event("change", { bubbles: true }));
   });
 
-  container.append(hidden, search, toolbar, chips, list);
+  container.append(hidden, search, toolbar, list, chips);
   container.dataset.render = "true";
   container.refreshOptions = render;
   sync();
