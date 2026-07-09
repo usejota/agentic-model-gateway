@@ -302,7 +302,14 @@ function renderField(field) {
   const input = inputForField(field);
   input.id = `field-${field.key}`;
   input.dataset.key = field.key;
-  input.dataset.original = field.value || "";
+  input.dataset.original =
+    input.dataset.modelMultiSelect === "true"
+      ? (field.value || "")
+          .split(",")
+          .map((entry) => entry.trim())
+          .filter(Boolean)
+          .join(",")
+      : field.value || "";
   input.dataset.secret = field.secret ? "true" : "false";
   input.dataset.configured = field.configured ? "true" : "false";
   input.disabled = field.locked;
@@ -346,6 +353,18 @@ function inputForField(field) {
     return select;
   }
 
+  if (field.key === "MODEL_DELEGATE_EXCLUSIONS") {
+    // Multi-select: pick the model refs to exclude from delegate agents.
+    // Stored as a comma-separated list; custom fnmatch globs typed via the
+    // env file still round-trip (unknown values are kept as options).
+    const select = document.createElement("select");
+    select.multiple = true;
+    select.size = 10;
+    select.dataset.modelMultiSelect = "true";
+    fillModelMultiSelect(select, field.value || "");
+    return select;
+  }
+
   if (field.key.startsWith("MODEL")) {
     const select = document.createElement("select");
     select.dataset.modelSelect = "true";
@@ -383,6 +402,11 @@ function option(value, label) {
 
 function readFieldValue(input) {
   if (input.type === "checkbox") return input.checked ? "true" : "false";
+  if (input.dataset.modelMultiSelect === "true") {
+    return Array.from(input.selectedOptions)
+      .map((optionEl) => optionEl.value)
+      .join(",");
+  }
   if (input.dataset.secret === "true" && input.dataset.configured === "true") {
     return input.value ? input.value : MASKED_SECRET;
   }
@@ -510,10 +534,29 @@ function fillModelSelect(select, currentValue) {
   select.value = previous || "";
 }
 
+function fillModelMultiSelect(select, currentValue) {
+  const selected = (currentValue || "")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  select.innerHTML = "";
+  const values = Array.from(new Set([...selected, ...state.modelOptions])).sort();
+  values.forEach((model) => {
+    const optionEl = option(model, model);
+    optionEl.selected = selected.includes(model);
+    select.appendChild(optionEl);
+  });
+  select.dataset.original = selected.join(",");
+}
+
 function populateModelSelects() {
   document
     .querySelectorAll('select[data-model-select="true"]')
     .forEach((select) => fillModelSelect(select, select.value));
+  document.querySelectorAll('select[data-model-multi-select="true"]').forEach((select) => {
+    const current = readFieldValue(select);
+    fillModelMultiSelect(select, current || select.dataset.original || "");
+  });
 }
 
 function showMessage(message, kind = "") {
