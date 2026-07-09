@@ -206,6 +206,20 @@ def test_enforce_allows_main_loop_requests():
         "anthropic/open_router/openai/gpt-oss-120b",
         system=[{"type": "text", "text": "You are Claude Code, official CLI."}],
     )
+    # Output styles REPLACE the CLI prompt, but the claudim launcher's
+    # append-system-prompt sentinel lands in a later block — still main loop.
+    _enforce(
+        settings,
+        "anthropic/open_router/openai/gpt-oss-120b",
+        system=[
+            {"type": "text", "text": "Respond terse like smart caveman."},
+            {
+                "type": "text",
+                "text": "You are inside claudim (gateway session). Your agent "
+                "list includes delegate-* subagents.",
+            },
+        ],
+    )
 
 
 def test_enforce_allows_non_excluded_models_for_subagents():

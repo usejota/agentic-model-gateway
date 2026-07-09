@@ -87,24 +87,40 @@ def _require_non_empty_messages(messages: list[Any]) -> None:
         raise InvalidRequestError("messages cannot be empty")
 
 
-# Claude Code's MAIN conversation loop always opens its system prompt with this
-# marker; subagent (Agent tool) requests carry the agent's own prompt instead.
-# Used to enforce MODEL_DELEGATE_EXCLUSIONS as a hard block on subagents while
-# the human-driven main loop (the /model picker) stays free to use any model.
-_CLAUDE_CODE_MAIN_LOOP_PREFIX = "You are Claude Code"
+# Markers identifying Claude Code's MAIN conversation loop (the model the human
+# drives via /model). Subagent (Agent tool) requests carry the agent's own
+# prompt instead. Two markers because output styles REPLACE the CLI's default
+# system prompt (dropping "You are Claude Code"), while the claudim launcher's
+# --append-system-prompt sentinel survives any output style — it is appended to
+# the main loop only, never to subagent prompts.
+_MAIN_LOOP_MARKERS = (
+    "You are Claude Code",
+    "You are inside claudim (gateway session)",
+)
 
 
-def _system_prompt_head(system: Any) -> str:
-    """Return the leading text of an Anthropic ``system`` value ('' if none)."""
+def _system_prompt_texts(system: Any) -> list[str]:
+    """Return every text block of an Anthropic ``system`` value."""
     if isinstance(system, str):
-        return system
-    if isinstance(system, list) and system:
-        first = system[0]
-        text = getattr(first, "text", None)
-        if text is None and isinstance(first, dict):
-            text = first.get("text")
-        return text or ""
-    return ""
+        return [system]
+    if isinstance(system, list):
+        texts = []
+        for block in system:
+            text = getattr(block, "text", None)
+            if text is None and isinstance(block, dict):
+                text = block.get("text")
+            if text:
+                texts.append(text)
+        return texts
+    return []
+
+
+def _is_main_loop_request(request: MessagesRequest) -> bool:
+    return any(
+        marker in text
+        for text in _system_prompt_texts(request.system)
+        for marker in _MAIN_LOOP_MARKERS
+    )
 
 
 def _enforce_delegate_exclusions(
@@ -128,11 +144,7 @@ def _enforce_delegate_exclusions(
         ref = ref[: -len("[1m]")]
     if not any(fnmatch.fnmatchcase(ref, pattern) for pattern in exclusions):
         return
-    if (
-        _system_prompt_head(request.system)
-        .lstrip()
-        .startswith(_CLAUDE_CODE_MAIN_LOOP_PREFIX)
-    ):
+    if _is_main_loop_request(request):
         return
     raise InvalidRequestError(
         f"model '{ref}' is excluded for subagents by MODEL_DELEGATE_EXCLUSIONS; "
