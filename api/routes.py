@@ -1,5 +1,6 @@
 """FastAPI route handlers."""
 
+import fnmatch
 import inspect
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -280,6 +281,85 @@ async def list_models(
     registry = getattr(request.app.state, "provider_registry", None)
     provider_registry = registry if isinstance(registry, ProviderRegistry) else None
     return _build_models_list_response(settings, provider_registry)
+
+
+# Vendors whose models are excluded from claudim delegate discovery. Sourced
+# verbatim from the launcher's former US_CLOSED set (deploy/claudim) so the
+# gateway is the single source of truth for the non-American filter.
+US_CLOSED_VENDORS = frozenset(
+    {
+        "openai",
+        "anthropic",
+        "google",
+        "x-ai",
+        "amazon",
+        "nvidia",
+        "ibm-granite",
+        "liquid",
+        "rekaai",
+        "relace",
+        "openrouter",
+    }
+)
+
+
+def _delegate_vendor(ref: str) -> str:
+    """Return the vendor segment of a ``provider/vendor/model`` (or ``vendor/model``) ref."""
+    parts = ref.split("/")
+    vendor = parts[1] if len(parts) >= 3 else parts[0]
+    return vendor.lstrip("~")
+
+
+def _build_delegate_model_ids(
+    settings: Settings, provider_registry: ProviderRegistry | None
+) -> list[str]:
+    """Build the flat list of no-thinking gateway ids available for claudim delegates.
+
+    Sources match ``_build_models_list_response`` (configured refs + discovered
+    prefixed infos), deduped order-preserving. US-closed vendors and refs
+    matching ``settings.model_delegate_exclusions`` (fnmatch) are skipped.
+    """
+    refs: list[str] = []
+    seen: set[str] = set()
+
+    for ref in settings.configured_chat_model_refs():
+        if ref.model_ref not in seen:
+            seen.add(ref.model_ref)
+            refs.append(ref.model_ref)
+
+    if provider_registry is not None:
+        for model_info in provider_registry.cached_prefixed_model_infos():
+            if model_info.model_id not in seen:
+                seen.add(model_info.model_id)
+                refs.append(model_info.model_id)
+
+    exclusions = settings.model_delegate_exclusions
+    ids: list[str] = []
+    for ref in refs:
+        if _delegate_vendor(ref) in US_CLOSED_VENDORS:
+            continue
+        if any(fnmatch.fnmatchcase(ref, pattern) for pattern in exclusions):
+            continue
+        ids.append(no_thinking_gateway_model_id(ref))
+    return ids
+
+
+@router.get("/v1/models/delegates")
+async def list_delegate_models(
+    request: Request,
+    settings: Settings = Depends(get_settings),
+    _auth=Depends(require_api_key),
+):
+    """List no-thinking gateway model ids available for claudim native delegates.
+
+    Excludes US-closed vendors and admin-configured ``MODEL_DELEGATE_EXCLUSIONS``
+    patterns. ``/v1/models`` is intentionally NOT filtered — the human model
+    picker still sees every model.
+    """
+    trace_event(stage="ingress", event="api.models.delegates", source="api")
+    registry = getattr(request.app.state, "provider_registry", None)
+    provider_registry = registry if isinstance(registry, ProviderRegistry) else None
+    return {"data": _build_delegate_model_ids(settings, provider_registry)}
 
 
 @router.post("/stop")

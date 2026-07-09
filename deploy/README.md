@@ -99,6 +99,17 @@ In the Admin UI: paste the provider key, set `MODEL` / `MODEL_OPUS` /
 change only these fields — no redeploy. Keep the Secret Manager secret in sync so
 a VM rebuild restores config.
 
+The gateway also exposes `GET /v1/models/delegates` — a curated, no-thinking,
+non-US-closed delegate pool for the `claudim` launcher. Models can be hidden from
+this pool via `MODEL_DELEGATE_EXCLUSIONS` (comma-separated `fnmatch` globs,
+e.g. `open_router/deepseek/*`). `/v1/models` is unfiltered so the human
+`/model` picker still sees every model, but enforcement is hard: the gateway
+rejects subagent requests on excluded models at request time (only Claude
+Code's main conversation loop, detected by its system-prompt marker, is
+exempt). The US_CLOSED vendor filter (OpenAI, Anthropic, Google, etc.) is
+server-side in this endpoint; the launcher no longer maintains its own vendor
+list.
+
 > Note: `security.md` #5 flags that the loopback check is not real authentication
 > over a tunnel. Restrict the `fcc-admin` SSH path (`roles/compute.osLogin`) to a
 > small admins group, and track adding real Admin UI auth as follow-up.
@@ -147,6 +158,7 @@ Security:
 Access / end-to-end:
 - [ ] SSH via IAP works with OS Login: `gcloud compute ssh fcc-proxy --zone="$ZONE" --tunnel-through-iap`.
 - [ ] Server healthy on the VM: `systemctl status fcc` and `curl -s localhost:8082/v1/models` returns models.
+- [ ] Delegate endpoint: `curl -s localhost:8082/v1/models/delegates` returns only no-thinking, non-US-closed ids (no `openai`, `anthropic`, `google`, etc.).
 - [ ] IAP gate works: a user **not** in the group is rejected by `start-iap-tunnel`; a member succeeds.
 - [ ] End-to-end: a member runs `fcc-connect`, sends a real prompt, gets a streamed response; the provider dashboard shows the call.
 - [ ] Long session: a session open >60 min survives (gcloud refreshes IAP creds; timeout disabled in the wrapper).

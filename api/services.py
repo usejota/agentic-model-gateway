@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fnmatch
 import traceback
 import uuid
 from collections.abc import AsyncIterator, Callable
@@ -86,6 +87,59 @@ def _require_non_empty_messages(messages: list[Any]) -> None:
         raise InvalidRequestError("messages cannot be empty")
 
 
+# Claude Code's MAIN conversation loop always opens its system prompt with this
+# marker; subagent (Agent tool) requests carry the agent's own prompt instead.
+# Used to enforce MODEL_DELEGATE_EXCLUSIONS as a hard block on subagents while
+# the human-driven main loop (the /model picker) stays free to use any model.
+_CLAUDE_CODE_MAIN_LOOP_PREFIX = "You are Claude Code"
+
+
+def _system_prompt_head(system: Any) -> str:
+    """Return the leading text of an Anthropic ``system`` value ('' if none)."""
+    if isinstance(system, str):
+        return system
+    if isinstance(system, list) and system:
+        first = system[0]
+        text = getattr(first, "text", None)
+        if text is None and isinstance(first, dict):
+            text = first.get("text")
+        return text or ""
+    return ""
+
+
+def _enforce_delegate_exclusions(
+    settings: Settings, request: MessagesRequest, provider_model_ref: str
+) -> None:
+    """Hard-block excluded models for subagent requests.
+
+    ``MODEL_DELEGATE_EXCLUSIONS`` patterns are matched (fnmatch) against the
+    resolved provider/model ref. A match is rejected unless the request is
+    Claude Code's main conversation loop (system prompt opens with the CLI
+    marker) — i.e. the human /model picker keeps working; Agent-tool subagents
+    (and any other side-channel request) cannot use excluded models.
+    """
+    exclusions = settings.model_delegate_exclusions
+    if not exclusions:
+        return
+    ref = provider_model_ref.removeprefix("anthropic/").removeprefix(
+        "claude-3-freecc-no-thinking/"
+    )
+    if ref.endswith("[1m]"):
+        ref = ref[: -len("[1m]")]
+    if not any(fnmatch.fnmatchcase(ref, pattern) for pattern in exclusions):
+        return
+    if (
+        _system_prompt_head(request.system)
+        .lstrip()
+        .startswith(_CLAUDE_CODE_MAIN_LOOP_PREFIX)
+    ):
+        return
+    raise InvalidRequestError(
+        f"model '{ref}' is excluded for subagents by MODEL_DELEGATE_EXCLUSIONS; "
+        "pick a delegate model from /v1/models/delegates"
+    )
+
+
 class ClaudeProxyService:
     """Coordinate request optimization, model routing, token count, and providers."""
 
@@ -107,6 +161,9 @@ class ClaudeProxyService:
             _require_non_empty_messages(request_data.messages)
 
             routed = self._model_router.resolve_messages_request(request_data)
+            _enforce_delegate_exclusions(
+                self._settings, request_data, routed.resolved.provider_model_ref
+            )
             routed = self._maybe_reroute_for_images(routed)
             if routed.resolved.provider_id in _OPENAI_CHAT_UPSTREAM_IDS:
                 tool_err = openai_chat_upstream_server_tool_error(

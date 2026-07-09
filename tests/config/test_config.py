@@ -220,6 +220,14 @@ class TestSettings:
         settings = Settings()
         assert settings.provider_rate_window == 30
 
+    def test_model_delegate_exclusions_from_env(self, monkeypatch):
+        """MODEL_DELEGATE_EXCLUSIONS env var is comma-split with blanks trimmed."""
+        from config.settings import Settings
+
+        monkeypatch.setenv("MODEL_DELEGATE_EXCLUSIONS", "a/b, c/d ,")
+        settings = Settings()
+        assert settings.model_delegate_exclusions == ["a/b", "c/d"]
+
     def test_http_read_timeout_from_env(self, monkeypatch):
         """HTTP_READ_TIMEOUT env var is loaded into settings."""
         from config.settings import Settings

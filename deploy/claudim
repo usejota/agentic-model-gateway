@@ -44,6 +44,11 @@
 #   CLAUDIM_PORT      proxy port                (default: 8082)
 #   CLAUDIM_TOKEN     proxy auth token          (default: freecc)
 #   CLAUDIM_WAIT      seconds to wait for proxy (default: 30)
+#   CLAUDIM_BASE_URL  override the gateway endpoint entirely (e.g.
+#                     http://localhost:8082) for LOCAL TESTING against a
+#                     gateway that is NOT on the tailnet. When set, the
+#                     tailscale-connected check and the nc reachability probe
+#                     are skipped (reachable() falls back to its curl branch).
 #   CLAUDIM_BYPASS    1 = inject --dangerously-skip-permissions (let -p delegate
 #                     run gcloud/network/file-writes; off by default)
 #   CLAUDIM_TMUX      1 = open each -p delegate in a tmux window (your current
@@ -59,7 +64,7 @@ TOKEN="${CLAUDIM_TOKEN:-freecc}"
 WAIT="${CLAUDIM_WAIT:-30}"
 
 FQDN="${HOST}.${TAILNET}"
-BASE_URL="http://${FQDN}:${PORT}"
+BASE_URL="${CLAUDIM_BASE_URL:-http://${FQDN}:${PORT}}"
 
 say()  { echo "[claudim] $*" >&2; }
 die()  { echo "[claudim] error: $*" >&2; exit 1; }
@@ -280,38 +285,35 @@ case "${1:-}" in
     ;;
   models|--models)
     if [ "${2:-}" = "--all" ] || [ "${2:-}" = "all" ]; then
-      # Live list of every NON-AMERICAN no-thinking model the gateway offers.
-      # Cost-driven: excludes the expensive US closed labs that charge premium
-      # per-token (plus the US aggregator's house models). Everything else is
-      # allowed — Chinese (deepseek/qwen/kimi/glm/minimax/...), Mistral (FR),
-      # Cohere (CA), AI21 (IL), Arcee (UK), Sakana (JP), Upstage (KR), and
-      # open-weight Llama + its fine-tunes (serving revenue doesn't reach a US
-      # closed lab per call). Always reflects the current gateway.
-      curl -s -m 10 "${BASE_URL}/v1/models" -H "x-api-key: ${TOKEN}" 2>/dev/null | python3 -c '
+      # Live list of every no-thinking delegate model the gateway offers for
+      # DELEGATION. The gateway filters out US closed labs and any admin
+      # exclusions (MODEL_DELEGATE_EXCLUSIONS) server-side — so this list is
+      # already non-American + exclusion-filtered, and every id is a ready-to-
+      # use no-thinking id. /v1/models (the user /model picker) is NOT filtered.
+      curl -s -m 10 "${BASE_URL}/v1/models/delegates" -H "x-api-key: ${TOKEN}" 2>/dev/null | python3 -c '
 import sys, json
 from collections import defaultdict
-US_CLOSED = {"openai", "anthropic", "google", "x-ai", "amazon", "nvidia",
-             "ibm-granite", "liquid", "rekaai", "relace", "openrouter"}
+PREFIX = "claude-3-freecc-no-thinking/"
 try:
     d = json.load(sys.stdin)
 except Exception as e:
-    sys.exit(f"could not parse /v1/models: {e} (gateway reachable? tailscale up?)")
+    sys.exit(f"could not parse /v1/models/delegates: {e} (gateway reachable? tailscale up?)")
 g = defaultdict(list)
-for m in d.get("data", []):
-    i = m.get("id", "")
-    if not i.startswith("claude-3-freecc-no-thinking/"):
-        continue
-    parts = i.split("/")
-    # Format: claude-3-freecc-no-thinking/<route>/<vendor>/<model...>
-    # vendor is the segment right after the route (e.g. open_router).
-    if len(parts) < 4:
-        continue
-    vendor = parts[2].lstrip("~")
-    if vendor in US_CLOSED:
+for i in d.get("data", []):
+    # Vendor is the segment after the no-thinking prefix. For a 3-segment ref
+    # (route/vendor/model) that is parts[1]; for a 2-segment ref (provider/model)
+    # it is parts[0]. Matches the gateway-side US_CLOSED / exclusion filter.
+    ref = i[len(PREFIX):] if i.startswith(PREFIX) else i
+    parts = ref.split("/")
+    if len(parts) >= 3:
+        vendor = parts[1]
+    elif len(parts) == 2:
+        vendor = parts[0]
+    else:
         continue
     g[vendor].append(i)
 if not g:
-    sys.exit("no non-American no-thinking models found on the gateway")
+    sys.exit("no delegate models found on the gateway")
 for v in sorted(g):
     print(f"[{v}]")
     for i in sorted(g[v]):
@@ -351,16 +353,22 @@ MODELS
 esac
 
 command -v claude >/dev/null 2>&1 || die "claude not found. Install: npm install -g @anthropic-ai/claude-code"
-command -v tailscale >/dev/null 2>&1 || die "tailscale not found. Install Tailscale and log in to the jota.ai tailnet."
 
-# Must be connected to the tailnet.
-if ! tailscale status >/dev/null 2>&1; then
-  die "not connected to the tailnet. Run 'tailscale up' (or open the Tailscale app) and retry."
+# Tailscale checks only apply to the default tailnet path. When CLAUDIM_BASE_URL
+# overrides the endpoint (local testing against a non-tailnet gateway), skip
+# them and let reachable() probe the URL directly via its curl branch.
+if [ -z "${CLAUDIM_BASE_URL:-}" ]; then
+  command -v tailscale >/dev/null 2>&1 || die "tailscale not found. Install Tailscale and log in to the jota.ai tailnet."
+
+  # Must be connected to the tailnet.
+  if ! tailscale status >/dev/null 2>&1; then
+    die "not connected to the tailnet. Run 'tailscale up' (or open the Tailscale app) and retry."
+  fi
 fi
 
 # Wait for the gateway to be reachable (it may be briefly unreachable; node could be asleep).
 reachable() {
-  if command -v nc >/dev/null 2>&1; then
+  if [ -z "${CLAUDIM_BASE_URL:-}" ] && command -v nc >/dev/null 2>&1; then
     nc -z -w 3 "${FQDN}" "${PORT}" >/dev/null 2>&1
   else
     curl -s -o /dev/null -m 3 "${BASE_URL}/v1/models" -H "x-api-key: ${TOKEN}"
@@ -393,6 +401,7 @@ export CLAUDE_CODE_AUTO_COMPACT_WINDOW="${CLAUDE_CODE_AUTO_COMPACT_WINDOW:-10000
 # gateway with the wrong credential and 401/hang. Drop it so the gateway token
 # above is the sole auth source.
 unset ANTHROPIC_API_KEY
+export CLAUDIM=1
 
 say "gateway ${BASE_URL} — launching claude"
 
@@ -418,8 +427,88 @@ if [ "${CLAUDIM_TMUX:-0}" = "1" ]; then has_tmux=1; fi
 # with CLAUDIM_TMUX=0 (headless) when explicitly wanted.
 if [ -n "${TMUX:-}" ] && [ "${CLAUDIM_TMUX:-}" != "0" ]; then has_tmux=1; fi
 
+# Delegate agents — INTERACTIVE mode only (has_print==0). Ask the gateway which
+# no-thinking models are available for delegation (/v1/models/delegates, already
+# US-closed + exclusion filtered server-side) and build a native `--agents` JSON
+# object: one agent per model, so the session model can spawn delegates via the
+# Agent tool without `claudim -p`. The script is written to a temp file (same
+# pattern as the tmux renderer) and fed the curl response on stdin; any failure
+# (gateway down, 401, empty/invalid JSON) leaves AGENTS_JSON empty and the
+# session launches without delegate agents — the pre-existing behavior. -p /
+# headless delegates keep using run_in_tmux below.
+AGENTS_JSON=""
+if [ "${has_print}" -eq 0 ]; then
+  _agents_py="$(mktemp 2>/dev/null || mktemp -t claudim)"
+  cat > "$_agents_py" <<'AGENTS_EOF'
+import json, os, re, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+PREFIX = "claude-3-freecc-no-thinking/"
+ids = [i for i in d.get("data", []) if i]
+# Curated one-line strengths keyed by the tail segment (last path segment of the
+# ref after stripping the no-thinking prefix). Non-curated models get a generic
+# description. Curated ones are listed first, then the rest in gateway order.
+STRENGTHS = {
+    "deepseek-v4-pro": "heavy reasoning / multi-step planning",
+    "kimi-k2.7-code": "coding / agentic tool use",
+    "deepseek-v4-flash": "fastest / cheapest triage",
+    "glm-5.2": "long-context non-Chinese alt",
+    "minimax-m3": "long-context non-Chinese alt",
+    "mistral-small-3.2-24b-instruct": "non-Chinese general alt",
+    "ministral-8b-2512": "tiny / ultra-cheap",
+    "codestral-2508": "code completion / non-Chinese",
+}
+def ref_of(i):
+    return i[len(PREFIX):] if i.startswith(PREFIX) else i
+def tail(i):
+    return ref_of(i).split("/")[-1]
+def vendor(i):
+    parts = ref_of(i).split("/")
+    return parts[1] if len(parts) >= 3 else (parts[0] if len(parts) >= 2 else "x")
+def slug(s):
+    return re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-")
+curated = [i for i in ids if tail(i) in STRENGTHS]
+rest = [i for i in ids if tail(i) not in STRENGTHS]
+ordered = curated + rest
+try:
+    cap = int(os.environ.get("CLAUDIM_MAX_AGENTS", "30"))
+except ValueError:
+    cap = 30
+ordered = ordered[:cap]
+seen = {}
+agents = {}
+for i in ordered:
+    t = tail(i)
+    name = "delegate-" + slug(t)
+    if name in seen:
+        # Collision (same tail under different routes): vendor-prefix it.
+        name = "delegate-" + slug(vendor(i)) + "-" + slug(t)
+    base = name
+    n = 2
+    while name in seen:
+        name = "%s-%d" % (base, n)
+        n += 1
+    seen[name] = 1
+    agents[name] = {
+        "description": STRENGTHS.get(t, "delegate subagent"),
+        "prompt": "You are a delegate subagent running " + i
+                  + ". Complete the task exactly as scoped and report concisely.",
+        "model": i,
+    }
+if agents:
+    print(json.dumps(agents, ensure_ascii=False))
+AGENTS_EOF
+  AGENTS_JSON="$(curl -s -m 10 "${BASE_URL}/v1/models/delegates" -H "x-api-key: ${TOKEN}" 2>/dev/null | python3 "$_agents_py" || true)"
+  rm -f "$_agents_py"
+  if [ -z "${AGENTS_JSON:-}" ]; then
+    say "warning: delegate agents unavailable (gateway list failed); launching without them"
+  fi
+fi
+
 need_rebuild=0
-if [ "${has_model}" -eq 1 ] || [ "${has_unrestricted}" -eq 1 ] || [ "${has_tmux}" -eq 1 ]; then
+if [ "${has_model}" -eq 1 ] || [ "${has_unrestricted}" -eq 1 ] || [ "${has_tmux}" -eq 1 ] || [ -n "${AGENTS_JSON}" ]; then
   need_rebuild=1
 fi
 
@@ -441,6 +530,14 @@ if [ "${need_rebuild}" -eq 1 ]; then
       *) args+=("$1"); shift ;;
     esac
   done
+
+  # Inject the delegate agents built above (interactive mode only). Gives the
+  # session model one native Agent-tool subagent per gateway model, plus a steer
+  # to pick the cheapest competent one per subtask.
+  if [ -n "${AGENTS_JSON}" ]; then
+    args+=("--agents" "${AGENTS_JSON}")
+    args+=("--append-system-prompt" "You are inside claudim (gateway session). Your agent list includes delegate-* subagents, one per gateway model. When delegating subtasks, pick the cheapest competent delegate per task; escalate only when the task demands it. Use claudim models --all to see the full list.")
+  fi
 
   # Observation: tmux window per delegate. If the orchestrator session already
   # runs inside tmux ($TMUX set), the window opens in THAT session — visible
