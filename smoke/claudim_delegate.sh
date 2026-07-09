@@ -41,6 +41,46 @@ bad()  { printf '  \033[31mFAIL\033[0m %s\n' "$1"; fail=$((fail+1)); }
 skip() { printf '  \033[33mSKIP\033[0m %s\n' "$1"; }
 step() { printf '\n== %s ==\n' "$1"; }
 
+# Renderer test runs WITHOUT tailscale/gateway — pipes synthetic stream-json
+# into claudim-render.py and asserts the compact pane feed. Catches regressions
+# in the error-text visibility (the original "✗ tool result" black box) and the
+# per-tool compact display.
+RENDERER="${REPO_ROOT}/deploy/claudim-render.py"
+if [ -f "${RENDERER}" ]; then
+  step "renderer: compact tool display, error text visible, Read shows size"
+  out="$(mktemp)"; fx="$(mktemp)"
+  cat > "$fx" <<'JSONL'
+{"type":"system","subtype":"init","model":"claude-test"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"hi"}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"/abs/judge-task.md"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"# judge task\nline2\nline3","is_error":false}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t2","name":"Read","input":{"file_path":"/abs/missing.jsonl"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t2","content":"ENOENT: no such file or directory","is_error":true}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t3","name":"Edit","input":{"file_path":"/abs/foo.py","old_string":"a\nb","new_string":"a\nb\nc\nd"}}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t4","name":"Bash","input":{"command":"wc -l /abs/foo.py"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t4","content":"       4 /abs/foo.py","is_error":false}]}}
+{"type":"result","result":"391"}
+JSONL
+  rendered="$(python3 "$RENDERER" "$out" text < "$fx")"
+  rc=$?
+  rm -f "$fx"
+  if [ $rc -ne 0 ]; then
+    bad "renderer exited $rc"
+  else
+    if echo "$rendered" | grep -q "Read /abs/judge-task.md"; then ok "Read shows path"; else bad "Read path missing: $(echo "$rendered" | head -3)"; fi
+    if echo "$rendered" | grep -q "3 lines · # judge task"; then ok "Read shows size + first line"; else bad "Read size/first-line missing"; fi
+    if echo "$rendered" | grep -q "ENOENT: no such file"; then ok "tool error text visible (the bug fix)"; else bad "tool error text NOT surfaced"; fi
+    if echo "$rendered" | grep -q "Edit /abs/foo.py (-1/+3)"; then ok "Edit compact form (-A/+B)"; else bad "Edit form wrong: $(echo "$rendered" | grep Edit)"; fi
+    if echo "$rendered" | grep -q "Bash \$ wc -l /abs/foo.py"; then ok "Bash compact form"; else bad "Bash form wrong"; fi
+    if echo "$rendered" | grep -q "T1\|T2\|T3"; then ok "turn separators present"; else bad "no turn separator"; fi
+    captured="$(cat "$out" 2>/dev/null || true)"
+    if [ "$captured" = "391" ]; then ok "result extraction unchanged (caller gets plain text)"; else bad "result extraction broken: [$captured]"; fi
+  fi
+  rm -f "$out"
+else
+  skip "renderer script not found (deploy/claudim-render.py)"
+fi
+
 # Skip cleanly without tailscale or gateway (CI / machines without tailnet).
 if ! command -v tailscale >/dev/null 2>&1; then
   echo "skip: tailscale not on PATH (no tailnet -> can't reach fcc-proxy)."; exit 0

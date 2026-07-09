@@ -136,6 +136,53 @@ must follow (the child may not load your CLAUDE.md unless you skip `--bare`).
   tasks in a repo, omit `--bare` so the delegate picks up CLAUDE.md, or spell
   out the convention in the prompt.
 
+## Delegate that further delegates (subagents of a delegate)
+
+A `claudim -p` delegate is a real `claude` process with the **same tools** as
+your own session: Read, Write, Edit, Bash, Grep, Glob, plus anything loaded
+from its cwd's `CLAUDE.md` / skills. It can also spawn more `claudim -p`
+delegates of its own. If you're orchestrating a workflow where the delegate
+will itself run more delegates (or just needs to read files and write
+outputs), write the prompt so it can't talk itself out of the task:
+
+- **Declare tool access up front.** Open the prompt with: *"You have full
+  tool access: Read, Write, Edit, Bash, Grep, Glob. CWD is `<abs path>`."*
+  Without this, a cheap non-thinking model sometimes sees a single tool error
+  and concludes (wrongly) that "I'm running as a subagent in a restricted
+  context where I have no access to tools" and gives up — even when its next
+  tool call would have succeeded. The `claudim-render.py` pane feed (the
+  observer pane) now shows the error TEXT on `✗`, so you can see the real
+  reason, but the prompt should still prime the delegate not to over-react.
+- **`✗` on a tool_result is per-call, NOT a permission denial.** Tell the
+  delegate: *"If a tool returns ✗, read the error message, fix the path or
+  args, and retry. Do NOT conclude you have no tools."* Cheap models
+  sometimes stop on the first error; one explicit instruction prevents it.
+- **Pass ABSOLUTE file paths** for anything the delegate (or its sub-delegates)
+  must read or write. Relative paths in subagent prompts are the most common
+  reason a delegate reports a Read failure on a file the user can see.
+- **CWD matches the parent invocation.** The delegate runs in the same
+  working directory as the `claudim` command, not in `~`. If the task needs
+  the delegate to operate in a different directory, either `cd` in the task
+  prompt or pass an absolute path everywhere.
+- **Cap recursion.** Each `claudim -p` is its own `claude` process; a delegate
+  spawning N sub-delegates multiplies the resource cost. Tell the delegate
+  explicitly: *"Spawn at most 2-3 sub-delegates in parallel; serialize
+  dependent steps."* — the same parallelism cap you would follow.
+
+A safe shell for a delegate-that-further-delegates looks like:
+
+```sh
+claudim -p --tmux --model kimi-k2.7-code "You have full tool access
+(Read, Write, Edit, Bash, Grep, Glob). CWD is $(pwd). If a tool returns
+✗, read the error and retry — do NOT conclude you have no tools.
+
+Task: <self-contained, with absolute paths to every file the
+delegate or its sub-delegates will need>. Spawn at most 2-3
+sub-delegates in parallel; serialize dependent steps.
+
+Output: write the final JSONL to /abs/path/to/output.jsonl when done."
+```
+
 ## Parallel delegates
 
 For independent plan steps, launch several `claudim -p` calls in parallel

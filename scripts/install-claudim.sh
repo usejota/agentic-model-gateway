@@ -13,8 +13,12 @@ set -eu
 
 REPO_RAW="https://raw.githubusercontent.com/usejota/agentic-model-gateway/main"
 SRC="${CLAUDIM_SRC:-${REPO_RAW}/deploy/claudim}"
+# Renderer is the sibling of the launcher (claudim finds it next to itself at
+# runtime). Installing them together keeps `claudim upgrade` consistent.
+RENDER_SRC="${CLAUDIM_RENDER_SRC:-${REPO_RAW}/deploy/claudim-render.py}"
 BIN_DIR="${CLAUDIM_BIN_DIR:-${HOME}/.local/bin}"
 DEST="${BIN_DIR}/claudim"
+RENDER_DEST="${BIN_DIR}/claudim-render.py"
 # The claudim-delegate skill (orchestrator recipe + kill switch). Installed
 # globally so it loads in any Claude Code session, not just this repo.
 SKILL_SRC="${CLAUDIM_SKILL_SRC:-${REPO_RAW}/.claude/skills/claudim-delegate/SKILL.md}"
@@ -43,6 +47,9 @@ say "Installing claudim to ${DEST}"
 mkdir -p "${BIN_DIR}"
 fetch "${SRC}" "${DEST}" || fail "download failed from ${SRC}"
 chmod +x "${DEST}"
+say "Installing renderer to ${RENDER_DEST}"
+fetch "${RENDER_SRC}" "${RENDER_DEST}" || fail "download failed from ${RENDER_SRC}"
+chmod +x "${RENDER_DEST}"
 say "Installed."
 
 # Install the claudim-delegate skill globally so an Opus/Fable orchestrator

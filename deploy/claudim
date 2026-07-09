@@ -163,14 +163,17 @@ run_in_tmux() {
 
   # Pane experience: `claude -p` prints stdout only at the very end and draws
   # nothing in print mode — a mute pane. So the delegate actually runs with
-  # `--output-format stream-json --verbose`, and a small renderer turns the
-  # event stream into a per-turn feed on the pane: assistant text + tool calls
-  # shown when each turn completes (not char-by-char — the renderer handles
-  # `assistant`/`user`/`result` events, not raw `stream_event` deltas), tool
-  # results as "✓"/"✗". The renderer extracts the final result and writes it
-  # to the log in the format the CALLER asked for (text by default, the raw
-  # result object for --output-format json), so the orchestrator's captured
-  # stdout is unchanged by the live view.
+  # `--output-format stream-json --verbose`, and a renderer (the sibling
+  # `claudim-render.py`, installed alongside the launcher) turns the event
+  # stream into a compact Claude-Code-style per-turn feed: `● Read <path>`,
+  # `● Edit <path> (-A/+B)`, `● Bash $ <cmd> → exit 0 (first line)`, tool
+  # results with first line + size, `✗` always surfacing the error text (this
+  # is the bug fix — the previous bare `✗` was a debugging black box), thinking
+  # blocks dimmed, a per-turn separator with elapsed time. The renderer
+  # extracts the final result and writes it to the log in the format the
+  # CALLER asked for (text by default, the raw result object for
+  # --output-format json), so the orchestrator's captured stdout is unchanged
+  # by the live view.
   local caller_fmt="text"
   local strip=() _skip=0
   for _a in "$@"; do
@@ -184,44 +187,18 @@ run_in_tmux() {
   local scmd=""
   for _a in "${strip[@]}"; do scmd+=$(printf '%q ' "$_a"); done
 
-  local renderer="$tmpdir/render.py"
-  cat > "$renderer" <<'RENDER_EOF'
-import json, sys
-out_path, fmt = sys.argv[1], sys.argv[2]
-result_payload = ""
-def say(s=""):
-    sys.stdout.write(s + "\n"); sys.stdout.flush()
-for line in sys.stdin:
-    line = line.strip()
-    if not line:
-        continue
-    try:
-        ev = json.loads(line)
-    except ValueError:
-        continue
-    t = ev.get("type")
-    if t == "system" and ev.get("subtype") == "init":
-        say(f"· session started (model: {ev.get('model', '?')})")
-    elif t == "assistant":
-        for block in (ev.get("message") or {}).get("content", []):
-            bt = block.get("type")
-            if bt == "text" and block.get("text"):
-                say(block["text"])
-            elif bt == "tool_use":
-                arg = json.dumps(block.get("input", {}), ensure_ascii=False)
-                if len(arg) > 160:
-                    arg = arg[:160] + "…"
-                say(f"\033[36m⚡ {block.get('name', '?')}\033[0m {arg}")
-    elif t == "user":
-        for block in (ev.get("message") or {}).get("content", []):
-            if isinstance(block, dict) and block.get("type") == "tool_result":
-                mark = "\033[31m✗\033[0m" if block.get("is_error") else "\033[32m✓\033[0m"
-                say(f"  {mark} tool result")
-    elif t == "result":
-        result_payload = json.dumps(ev, ensure_ascii=False) if fmt == "json" else (ev.get("result") or "")
-with open(out_path, "w") as f:
-    f.write(result_payload)
-RENDER_EOF
+  # Renderer lives next to the launcher (installed together by
+  # install-claudim.sh). Falling back to a CWD lookup keeps `bash
+  # deploy/claudim` from a git clone working for dev.
+  local launcher_dir renderer
+  launcher_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+  if [ -x "${launcher_dir}/claudim-render.py" ]; then
+    renderer="${launcher_dir}/claudim-render.py"
+  elif command -v claudim-render.py >/dev/null 2>&1; then
+    renderer="$(command -v claudim-render.py)"
+  else
+    die "claudim-render.py not found next to launcher (${launcher_dir}) and not on PATH. Re-run scripts/install-claudim.sh."
+  fi
 
   local taskprev=""
   for _a in "$@"; do case "$_a" in -*) ;; *) taskprev="$_a"; break ;; esac; done
@@ -275,7 +252,7 @@ RENDER_EOF
   done
   rm -f "$done"
   cat "$out" 2>/dev/null
-  rm -f "$out" "$renderer"
+  rm -f "$out"
   if [ "$in_session" -eq 1 ]; then
     # The delegate pane closed itself when its command exited; re-balance the
     # remaining delegate slices (no-op if the orchestrator pane is alone).
