@@ -106,6 +106,18 @@ JSONL
   python3 "$RENDERER" "$out" text < "$fx3" >/dev/null || rc=$?
   rm -f "$fx3" "$out"
   if [ $rc -ne 0 ]; then ok "renderer exited non-zero (no result event)"; else bad "renderer exited 0 despite no result event"; fi
+
+  step "renderer: is_error result event exits non-zero (delegate failed)"
+  out="$(mktemp)"; fx4="$(mktemp)"
+  cat > "$fx4" <<'JSONL'
+{"type":"system","subtype":"init","model":"claude-test"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"trying"}]}}
+{"type":"result","result":"provider 500","is_error":true}
+JSONL
+  rc=0
+  python3 "$RENDERER" "$out" text < "$fx4" >/dev/null || rc=$?
+  rm -f "$fx4" "$out"
+  if [ $rc -ne 0 ]; then ok "renderer exited non-zero on is_error result"; else bad "renderer exited 0 despite is_error result"; fi
 else
   skip "renderer script not found (deploy/claudim-render.py)"
 fi

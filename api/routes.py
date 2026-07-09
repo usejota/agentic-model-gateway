@@ -297,7 +297,10 @@ US_CLOSED_VENDORS = frozenset(
         "google",
         "x-ai",
         "amazon",
+        # nvidia_nim direct refs (nvidia_nim/<model>) expose vendor
+        # "nvidia_nim"; 3-segment nvidia_nim/nvidia/<model> exposes "nvidia".
         "nvidia",
+        "nvidia_nim",
         "ibm-granite",
         "liquid",
         "rekaai",

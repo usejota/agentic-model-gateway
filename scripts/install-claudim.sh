@@ -46,13 +46,20 @@ fetch() {
   return 1
 }
 
-say "Installing claudim to ${DEST}"
 mkdir -p "${BIN_DIR}"
-fetch "${SRC}" "${DEST}" || fail "download failed from ${SRC}"
-chmod +x "${DEST}"
+# Install the renderer BEFORE the launcher: the new launcher depends on the
+# renderer for tmux observation, so a flaky renderer download must abort BEFORE
+# the (working) old launcher is replaced — leaving the old launcher + old
+# renderer paired and functional. If the launcher download then fails, the old
+# launcher still runs (inline path, no renderer dependency) with the new
+# renderer sitting unused. Reversing this order would leave a new launcher
+# pointing at an absent/old renderer and break every --tmux run.
 say "Installing renderer to ${RENDER_DEST}"
 fetch "${RENDER_SRC}" "${RENDER_DEST}" || fail "download failed from ${RENDER_SRC}"
 chmod +x "${RENDER_DEST}"
+say "Installing claudim to ${DEST}"
+fetch "${SRC}" "${DEST}" || fail "download failed from ${SRC}"
+chmod +x "${DEST}"
 say "Installed."
 
 # Install the claudim-delegate skill globally so an Opus/Fable orchestrator

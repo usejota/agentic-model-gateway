@@ -21,6 +21,7 @@ from core.trace import api_messages_request_snapshot, trace_event, traced_async_
 from providers.base import BaseProvider
 from providers.exceptions import InvalidRequestError, OverloadedError, ProviderError
 
+from .gateway_model_ids import ONE_M_SUFFIX, decode_gateway_model_id
 from .model_router import ModelRouter, RoutedMessagesRequest
 from .models.anthropic import MessagesRequest, TokenCountRequest
 from .models.responses import TokenCountResponse
@@ -123,6 +124,42 @@ def _is_main_loop_request(request: MessagesRequest) -> bool:
     )
 
 
+def _normalize_model_ref(ref: str) -> str:
+    """Reduce a gateway model id (or bare ref) to its canonical provider/model ref.
+
+    Both thinking (``anthropic/...``) and no-thinking
+    (``claude-3-freecc-no-thinking/...``) advertised ids, with or without the
+    ``[1m]`` suffix, reduce to the same ``provider/model`` form. A subagent
+    can't escape an exclusion by picking the thinking variant of an excluded
+    model: both variants normalize identically, so an exclusion written against
+    one matches the other.
+    """
+    decoded = decode_gateway_model_id(ref)
+    if decoded is not None:
+        return f"{decoded.provider_id}/{decoded.provider_model}"
+    if ref.endswith(ONE_M_SUFFIX):
+        ref = ref[: -len(ONE_M_SUFFIX)]
+    return ref
+
+
+def _ref_matches_exclusions(settings: Settings, provider_model_ref: str) -> bool:
+    """True if ``provider_model_ref`` matches any ``MODEL_DELEGATE_EXCLUSIONS`` glob.
+
+    Both the ref and each pattern are normalized first, so a pattern written as
+    a full advertised id (e.g. ``claude-3-freecc-no-thinking/gemini/*``) matches
+    the thinking variant (``anthropic/gemini/...``) after both reduce to
+    ``gemini/...``.
+    """
+    exclusions = settings.model_delegate_exclusions
+    if not exclusions:
+        return False
+    ref = _normalize_model_ref(provider_model_ref)
+    return any(
+        fnmatch.fnmatchcase(ref, _normalize_model_ref(pattern))
+        for pattern in exclusions
+    )
+
+
 def _enforce_delegate_exclusions(
     settings: Settings, request: MessagesRequest, provider_model_ref: str
 ) -> None:
@@ -134,21 +171,14 @@ def _enforce_delegate_exclusions(
     marker) — i.e. the human /model picker keeps working; Agent-tool subagents
     (and any other side-channel request) cannot use excluded models.
     """
-    exclusions = settings.model_delegate_exclusions
-    if not exclusions:
-        return
-    ref = provider_model_ref.removeprefix("anthropic/").removeprefix(
-        "claude-3-freecc-no-thinking/"
-    )
-    if ref.endswith("[1m]"):
-        ref = ref[: -len("[1m]")]
-    if not any(fnmatch.fnmatchcase(ref, pattern) for pattern in exclusions):
+    if not _ref_matches_exclusions(settings, provider_model_ref):
         return
     if _is_main_loop_request(request):
         return
     raise InvalidRequestError(
-        f"model '{ref}' is excluded for subagents by MODEL_DELEGATE_EXCLUSIONS; "
-        "pick a delegate model from /v1/models/delegates"
+        f"model '{_normalize_model_ref(provider_model_ref)}' is excluded for "
+        "subagents by MODEL_DELEGATE_EXCLUSIONS; pick a delegate model from "
+        "/v1/models/delegates"
     )
 
 
@@ -311,6 +341,13 @@ class ClaudeProxyService:
         """
         candidates: list[RoutedMessagesRequest] = []
         image_route_target = self._settings.image_route_parts
+        # A subagent request must not escape MODEL_DELEGATE_EXCLUSIONS via a
+        # fallback: if the primary overloads/5xxes, an excluded fallback would
+        # run anyway. Drop excluded candidates up front (the main loop is
+        # exempt — the human /model picker can use any model).
+        enforce_exclusions = bool(
+            self._settings.model_delegate_exclusions
+        ) and not _is_main_loop_request(request_data)
         for ref in self._settings.fallback_models:
             resolved = self._model_router.resolve(ref)
             routed = request_data.model_copy(deep=True)
@@ -323,6 +360,10 @@ class ClaudeProxyService:
                 has_images(routed.messages)
                 and image_route_target is not None
                 and resolved.provider_id != image_route_target[0]
+            ):
+                continue
+            if enforce_exclusions and _ref_matches_exclusions(
+                self._settings, resolved.provider_model_ref
             ):
                 continue
             candidates.append(RoutedMessagesRequest(request=routed, resolved=resolved))

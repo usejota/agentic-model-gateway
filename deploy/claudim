@@ -135,7 +135,15 @@ run_in_tmux() {
   # the wait loop below.
   local tmpdir
   tmpdir="$(mktemp -d 2>/dev/null || mktemp -d -t claudim)"
-  trap 'rm -rf "$tmpdir"' EXIT INT TERM
+  # Traps: EXIT cleans up on die() (the script exits while still inside this
+  # function, so $tmpdir is in scope). INT/TERM (Ctrl+C during the wait loop)
+  # clean up AND exit — without `exit`, the trap returns into the wait loop
+  # and keeps spinning on the dead sentinel. Normal return does explicit
+  # cleanup below and clears the traps so EXIT can't fire later with $tmpdir
+  # out of scope (which would be a no-op and leak the temp dir).
+  trap 'rm -rf "$tmpdir"' EXIT
+  trap 'rm -rf "$tmpdir"; exit 130' INT
+  trap 'rm -rf "$tmpdir"; exit 143' TERM
   local out="$tmpdir/out.log"
   local done="$tmpdir/done"
   local status="$tmpdir/status"
@@ -273,6 +281,8 @@ run_in_tmux() {
   else
     tmux kill-window -t "${new_win:-$sess:$title}" 2>/dev/null || true
   fi
+  rm -rf "$tmpdir"
+  trap - EXIT INT TERM
   return "$rc"
 }
 

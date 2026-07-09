@@ -119,6 +119,9 @@ def render(out_path: str, fmt: str) -> None:
     last_tool_names: dict[str, str] = {}
     result_payload = ""
     saw_result = False
+    # A `result` event with is_error:true is a delegate failure (provider 4xx/5xx
+    # surfaced as the final result) — the orchestrator must NOT see exit 0 for it.
+    saw_error_result = False
     # stream-json callers expect the full event sequence on stdout, not just
     # the final result text — buffer every raw line and replay it verbatim so
     # the orchestrator's stream-json parser sees the same events it would have
@@ -179,6 +182,8 @@ def render(out_path: str, fmt: str) -> None:
                     _say(_compact_result(name, content, block.get("is_error", False)))
         elif t == "result":
             saw_result = True
+            if ev.get("is_error"):
+                saw_error_result = True
             if fmt == "stream-json":
                 # Full replay happens after the loop; nothing to set here.
                 pass
@@ -195,9 +200,10 @@ def render(out_path: str, fmt: str) -> None:
 
     # If claude died (OOM, CLAUDIM_MAX_WAIT timeout, network drop) before
     # emitting a final `result` event, the orchestrator must NOT see exit 0 —
-    # otherwise `claudim -p ... && next` proceeds on empty output. Surface the
-    # failure via non-zero exit so the launcher propagates it.
-    if not saw_result:
+    # otherwise `claudim -p ... && next` proceeds on empty output. A `result`
+    # event with is_error:true is equally a failure. Surface both via non-zero
+    # exit so the launcher propagates it.
+    if not saw_result or saw_error_result:
         sys.exit(1)
 
 

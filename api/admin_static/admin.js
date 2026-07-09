@@ -305,6 +305,11 @@ function renderField(field) {
   const input = element.dataset.exclusionPicker === "true"
     ? element.querySelector("input[data-exclusion-value]")
     : element;
+  // Persist the lock on the widget so refreshOptions()/render (which rebuilds
+  // the checkbox list after a config reload) can re-disable the new controls —
+  // otherwise they come back enabled while the hidden input stays disabled and
+  // Apply silently drops the toggles.
+  element.dataset.locked = field.locked ? "true" : "false";
   input.id = `field-${field.key}`;
   input.dataset.key = field.key;
   // Original must mirror what readFieldValue() will report: checkboxes map to
@@ -626,6 +631,7 @@ function buildExclusionPicker(currentValue) {
       const checkbox = document.createElement("input");
       checkbox.type = "checkbox";
       checkbox.checked = selected.has(ref);
+      if (container.dataset.locked === "true") checkbox.disabled = true;
       checkbox.addEventListener("change", () => {
         if (checkbox.checked) selected.add(ref);
         else selected.delete(ref);

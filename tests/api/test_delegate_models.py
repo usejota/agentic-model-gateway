@@ -72,6 +72,9 @@ def test_delegates_excludes_us_closed_vendors():
     )
     registry.cache_model_ids("openai", {"gpt-4"})
     registry.cache_model_ids("gemini", {"gemini-2.5-pro"})
+    registry.cache_model_ids(
+        "nvidia_nim", {"nvidia/nemotron-3-super-120b", "llama-3-70b"}
+    )
     registry.cache_model_ids("deepseek", {"deepseek-chat"})
 
     ids = _delegates(app, settings, registry=registry)
@@ -84,6 +87,12 @@ def test_delegates_excludes_us_closed_vendors():
     # gemini id leaked because the set only had "google", not "gemini".
     assert f"{PREFIX}gemini/gemini-2.5-pro" not in ids
     assert f"{PREFIX}open_router/google/gemini-2.5-pro" not in ids
+    # NVIDIA: direct nvidia_nim refs expose vendor "nvidia_nim" (the provider
+    # id) for both nvidia_nim/<model> and nvidia_nim/nvidia/<model>; the set
+    # needs "nvidia_nim" (previously only "nvidia", which never matched a
+    # direct ref and let NVIDIA's own models leak).
+    assert f"{PREFIX}nvidia_nim/nvidia/nemotron-3-super-120b" not in ids
+    assert f"{PREFIX}nvidia_nim/llama-3-70b" not in ids
     # Non-US vendors are present.
     assert f"{PREFIX}deepseek/deepseek-chat" in ids
     assert f"{PREFIX}open_router/z-ai/glm-5.2" in ids
@@ -198,6 +207,25 @@ def test_enforce_blocks_no_thinking_and_one_m_variants():
     ):
         with pytest.raises(InvalidRequestError):
             _enforce(settings, model, system=None)
+
+
+def test_enforce_pattern_as_advertised_id_matches_thinking_variant():
+    """An exclusion written as a FULL advertised id (carrying the
+    ``claude-3-freecc-no-thinking/`` prefix) must still match the thinking
+    (``anthropic/``) variant — both reduce to the same canonical ref, so a
+    subagent can't escape an exclusion by selecting the thinking variant of an
+    excluded model. Without ref+pattern normalization this is a bypass."""
+    settings = _settings(
+        model_delegate_exclusions=[
+            "claude-3-freecc-no-thinking/open_router/openai/gpt-oss-120b"
+        ]
+    )
+    with pytest.raises(InvalidRequestError):
+        _enforce(
+            settings,
+            "anthropic/open_router/openai/gpt-oss-120b",
+            system="You are a delegate subagent running a task.",
+        )
 
 
 def test_enforce_allows_main_loop_requests():
