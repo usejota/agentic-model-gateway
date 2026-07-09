@@ -536,7 +536,7 @@ if [ "${need_rebuild}" -eq 1 ]; then
   # to pick the cheapest competent one per subtask.
   if [ -n "${AGENTS_JSON}" ]; then
     args+=("--agents" "${AGENTS_JSON}")
-    args+=("--append-system-prompt" "You are inside claudim (gateway session). Your agent list includes delegate-* subagents, one per gateway model. When delegating subtasks, pick the cheapest competent delegate per task; escalate only when the task demands it. Use claudim models --all to see the full list.")
+    args+=("--append-system-prompt" "You are inside claudim (gateway session). Your agent list includes delegate-* subagents, one per gateway model. EVERY subagent you spawn — Agent tool, Workflow tool, fan-out, multi-agent — must run on a delegate-* agent (or a full delegate model id in Workflow model params); never spawn subagents on haiku/sonnet/opus/fable or let them inherit the session model. Pick the cheapest competent delegate per task; escalate only when the task demands it. Use claudim models --all to see the full list.")
   fi
 
   # Observation: tmux window per delegate. If the orchestrator session already
