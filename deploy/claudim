@@ -138,6 +138,7 @@ run_in_tmux() {
   trap 'rm -rf "$tmpdir"' EXIT INT TERM
   local out="$tmpdir/out.log"
   local done="$tmpdir/done"
+  local status="$tmpdir/status"
   local max_wait="${CLAUDIM_MAX_WAIT:-3600}"
   case "$max_wait" in
     ''|*[!0-9]*) die "CLAUDIM_MAX_WAIT must be a non-negative integer (seconds)" ;;
@@ -212,7 +213,11 @@ run_in_tmux() {
   # from its own startup env (e.g. the user's shell rc), and `env VAR=...`
   # below only overrides — it doesn't unset. Without this, a delegate pane
   # could auth with the parent subscription key instead of the gateway token.
-  local shellcmd="unset ANTHROPIC_API_KEY; printf '\\033[1m[%s]\\033[0m %s\\n\\n' $(printf '%q' "${model:-delegate}") $(printf '%q' "$taskprev"); $envp claude $scmd --output-format stream-json --verbose | python3 $(printf '%q' "$renderer") $(printf '%q' "$out") $(printf '%q' "$caller_fmt"); printf 1 > $(printf '%q' "$done"); echo; echo '[claudim] delegate done — pane closes in 8s'; sleep 8"
+  # `rc=$?` after the pipe captures the RENDERER's exit status (the pipe's
+  # last command). The renderer exits non-zero when claude died before emitting
+  # a final `result` event (OOM/timeout/network drop), so the launcher can
+  # propagate that failure instead of hiding it behind `cat "$out"` + exit 0.
+  local shellcmd="unset ANTHROPIC_API_KEY; printf '\\033[1m[%s]\\033[0m %s\\n\\n' $(printf '%q' "${model:-delegate}") $(printf '%q' "$taskprev"); $envp claude $scmd --output-format stream-json --verbose | python3 $(printf '%q' "$renderer") $(printf '%q' "$out") $(printf '%q' "$caller_fmt"); rc=$?; printf '%s' \"\$rc\" > $(printf '%q' "$status"); printf 1 > $(printf '%q' "$done"); echo; echo '[claudim] delegate done — pane closes in 8s'; sleep 8"
 
   rm -f "$done"
   local orig_win="" orig_pane="" new_pane="" new_win=""
@@ -258,6 +263,9 @@ run_in_tmux() {
   rm -f "$done"
   cat "$out" 2>/dev/null
   rm -f "$out"
+  local rc=0
+  [ -f "$status" ] && rc=$(cat "$status" 2>/dev/null)
+  rc="${rc:-0}"
   if [ "$in_session" -eq 1 ]; then
     # The delegate pane closed itself when its command exited; re-balance the
     # remaining delegate slices (no-op if the orchestrator pane is alone).
@@ -265,6 +273,7 @@ run_in_tmux() {
   else
     tmux kill-window -t "${new_win:-$sess:$title}" 2>/dev/null || true
   fi
+  return "$rc"
 }
 
 # Self-update of the claudim launcher ONLY, and the `models` cheat-sheet. Both are
@@ -549,7 +558,7 @@ if [ "${need_rebuild}" -eq 1 ]; then
         say "tmux: delegate in detached session (tmux attach -t claudim)"
       fi
       run_in_tmux "${args[@]}"
-      exit 0
+      exit $?
     fi
     say "tmux not found; running delegate inline (brew install tmux to observe)"
   elif [ "${has_tmux}" -eq 1 ]; then

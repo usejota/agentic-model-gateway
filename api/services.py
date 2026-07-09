@@ -173,10 +173,14 @@ class ClaudeProxyService:
             _require_non_empty_messages(request_data.messages)
 
             routed = self._model_router.resolve_messages_request(request_data)
+            # Reroute image-bearing requests to the vision model BEFORE
+            # enforcing delegate exclusions: a subagent image turn whose
+            # primary model is excluded would otherwise be rejected (400)
+            # instead of rerouted to the non-excluded IMAGE_ROUTE.
+            routed = self._maybe_reroute_for_images(routed)
             _enforce_delegate_exclusions(
                 self._settings, request_data, routed.resolved.provider_model_ref
             )
-            routed = self._maybe_reroute_for_images(routed)
             if routed.resolved.provider_id in _OPENAI_CHAT_UPSTREAM_IDS:
                 tool_err = openai_chat_upstream_server_tool_error(
                     routed.request,

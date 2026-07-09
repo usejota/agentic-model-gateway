@@ -30,17 +30,20 @@ warn() { printf 'warning: %s\n' "$*" >&2; }
 fail() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
 # fetch URL DEST — curl or wget, picked once. Returns 0 on success, 1 on failure
-# without exiting, so callers can decide whether to fail or warn.
+# without exiting, so callers can decide whether to fail or warn. Downloads to a
+# sibling temp file and atomically moves on success, so a mid-stream failure
+# (flaky link, transient 404) leaves any existing destination intact instead of
+# truncating it to a partial/empty file — a corrupt launcher or renderer would
+# break every later claudim -p / upgrade run.
 fetch() {
+  _ftmp="$2.tmp.$$"
   if command -v curl >/dev/null 2>&1; then
-    curl -fsSL "$1" -o "$2" && return 0
-    return 1
+    if curl -fsSL "$1" -o "$_ftmp"; then mv -f "$_ftmp" "$2"; return 0; fi
   elif command -v wget >/dev/null 2>&1; then
-    wget -qO "$2" "$1" && return 0
-    return 1
-  else
-    return 1
+    if wget -qO "$_ftmp" "$1"; then mv -f "$_ftmp" "$2"; return 0; fi
   fi
+  rm -f "$_ftmp"
+  return 1
 }
 
 say "Installing claudim to ${DEST}"

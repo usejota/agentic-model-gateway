@@ -67,8 +67,11 @@ def test_delegates_excludes_us_closed_vendors():
     app = create_app(lifespan_enabled=False)
     settings = _settings()
     registry = ProviderRegistry()
-    registry.cache_model_ids("open_router", {"openai/gpt-oss-120b", "z-ai/glm-5.2"})
+    registry.cache_model_ids(
+        "open_router", {"openai/gpt-oss-120b", "z-ai/glm-5.2", "google/gemini-2.5-pro"}
+    )
     registry.cache_model_ids("openai", {"gpt-4"})
+    registry.cache_model_ids("gemini", {"gemini-2.5-pro"})
     registry.cache_model_ids("deepseek", {"deepseek-chat"})
 
     ids = _delegates(app, settings, registry=registry)
@@ -76,6 +79,11 @@ def test_delegates_excludes_us_closed_vendors():
     # US-closed vendors are absent.
     assert f"{PREFIX}open_router/openai/gpt-oss-120b" not in ids
     assert f"{PREFIX}openai/gpt-4" not in ids
+    # Google: direct gemini provider (vendor "gemini") AND open_router-routed
+    # google models (vendor "google") are both excluded — previously the direct
+    # gemini id leaked because the set only had "google", not "gemini".
+    assert f"{PREFIX}gemini/gemini-2.5-pro" not in ids
+    assert f"{PREFIX}open_router/google/gemini-2.5-pro" not in ids
     # Non-US vendors are present.
     assert f"{PREFIX}deepseek/deepseek-chat" in ids
     assert f"{PREFIX}open_router/z-ai/glm-5.2" in ids

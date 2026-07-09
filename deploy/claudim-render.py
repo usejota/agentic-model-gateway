@@ -118,11 +118,19 @@ def render(out_path: str, fmt: str) -> None:
     turn = 0
     last_tool_names: dict[str, str] = {}
     result_payload = ""
+    saw_result = False
+    # stream-json callers expect the full event sequence on stdout, not just
+    # the final result text — buffer every raw line and replay it verbatim so
+    # the orchestrator's stream-json parser sees the same events it would have
+    # without the live-view renderer in the pipe.
+    raw_lines: list[str] = []
 
     for line in sys.stdin:
         line = line.strip()
         if not line:
             continue
+        if fmt == "stream-json":
+            raw_lines.append(line)
         try:
             ev = json.loads(line)
         except ValueError:
@@ -170,14 +178,27 @@ def render(out_path: str, fmt: str) -> None:
                         content = raw or ""
                     _say(_compact_result(name, content, block.get("is_error", False)))
         elif t == "result":
-            result_payload = (
-                json.dumps(ev, ensure_ascii=False)
-                if fmt == "json"
-                else (ev.get("result") or "")
-            )
+            saw_result = True
+            if fmt == "stream-json":
+                # Full replay happens after the loop; nothing to set here.
+                pass
+            elif fmt == "json":
+                result_payload = json.dumps(ev, ensure_ascii=False)
+            else:
+                result_payload = ev.get("result") or ""
+
+    if fmt == "stream-json":
+        result_payload = "\n".join(raw_lines)
 
     with open(out_path, "w") as f:
         f.write(result_payload)
+
+    # If claude died (OOM, CLAUDIM_MAX_WAIT timeout, network drop) before
+    # emitting a final `result` event, the orchestrator must NOT see exit 0 —
+    # otherwise `claudim -p ... && next` proceeds on empty output. Surface the
+    # failure via non-zero exit so the launcher propagates it.
+    if not saw_result:
+        sys.exit(1)
 
 
 if __name__ == "__main__":

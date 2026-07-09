@@ -322,6 +322,18 @@ function renderField(field) {
   input.dataset.secret = field.secret ? "true" : "false";
   input.dataset.configured = field.configured ? "true" : "false";
   input.disabled = field.locked;
+  // Composite widgets (the exclusion picker) carry their value in a hidden
+  // input but expose checkboxes / search / select-all buttons that stay
+  // interactive when only the hidden input is disabled. Toggles then update
+  // the chips as if changed, but changedValues() skips the disabled hidden
+  // input, so Apply silently drops them and reverts to the env value. Disable
+  // every interactive control inside the widget when locked so the UI matches
+  // what Apply will actually send.
+  if (field.locked && element.dataset.exclusionPicker === "true") {
+    element
+      .querySelectorAll("input, button")
+      .forEach((el) => (el.disabled = true));
+  }
   input.addEventListener("input", updateDirtyState);
   input.addEventListener("change", updateDirtyState);
 

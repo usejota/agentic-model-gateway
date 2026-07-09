@@ -240,7 +240,7 @@ models — even if the session model passes an explicit `model` param or writes
 its own `.claude/agents/*.md`. Caveat: the marker is a heuristic — a client
 that forges a main-loop system prompt bypasses it, and if a future Claude Code
 release changes its system-prompt opening, the main loop would start being
-blocked too (fix: update `_CLAUDE_CODE_MAIN_LOOP_PREFIX` in `api/services.py`).
+blocked too (fix: update `_MAIN_LOOP_MARKERS` in `api/services.py`).
 
 ## Troubleshooting
 

@@ -77,6 +77,35 @@ JSONL
     if [ "$captured" = "391" ]; then ok "result extraction unchanged (caller gets plain text)"; else bad "result extraction broken: [$captured]"; fi
   fi
   rm -f "$out"
+
+  step "renderer: stream-json fmt replays the full event stream"
+  out="$(mktemp)"; fx2="$(mktemp)"
+  cat > "$fx2" <<'JSONL'
+{"type":"system","subtype":"init","model":"claude-test"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"hi"}]}}
+{"type":"result","result":"done"}
+JSONL
+  rc=0
+  python3 "$RENDERER" "$out" stream-json < "$fx2" >/dev/null || rc=$?
+  captured="$(cat "$out" 2>/dev/null || true)"
+  rm -f "$fx2" "$out"
+  if [ $rc -ne 0 ]; then bad "renderer exited $rc for stream-json"
+  elif echo "$captured" | grep -q '"type":"system"'; then ok "stream-json replays system event"
+  else bad "stream-json did not replay events: [$captured]"; fi
+  if echo "$captured" | grep -q '"type":"result"'; then ok "stream-json replays result event"; else bad "stream-json missing result event"; fi
+
+  step "renderer: exits non-zero when no result event (delegate died)"
+  out="$(mktemp)"; fx3="$(mktemp)"
+  cat > "$fx3" <<'JSONL'
+{"type":"system","subtype":"init","model":"claude-test"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"partial"}]}}
+JSONL
+  # `|| rc=$?` so set -e doesn't abort the script on the renderer's intentional
+  # non-zero exit before we can assert on it.
+  rc=0
+  python3 "$RENDERER" "$out" text < "$fx3" >/dev/null || rc=$?
+  rm -f "$fx3" "$out"
+  if [ $rc -ne 0 ]; then ok "renderer exited non-zero (no result event)"; else bad "renderer exited 0 despite no result event"; fi
 else
   skip "renderer script not found (deploy/claudim-render.py)"
 fi

@@ -290,6 +290,10 @@ US_CLOSED_VENDORS = frozenset(
     {
         "openai",
         "anthropic",
+        # Google: "gemini" matches direct refs (gemini/gemini-*) and
+        # gateway-routed (claude-3-freecc-no-thinking/gemini/...); "google"
+        # matches open_router-routed google models (open_router/google/...).
+        "gemini",
         "google",
         "x-ai",
         "amazon",
@@ -298,7 +302,6 @@ US_CLOSED_VENDORS = frozenset(
         "liquid",
         "rekaai",
         "relace",
-        "openrouter",
     }
 )
 
