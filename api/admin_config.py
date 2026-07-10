@@ -1006,14 +1006,19 @@ def explicit_env_path() -> Path | None:
 
 
 def configured_env_files() -> tuple[tuple[SourceType, Path], ...]:
-    """Return dotenv files in low-to-high precedence order."""
+    """Return dotenv files in low-to-high precedence order.
 
-    files: list[tuple[SourceType, Path]] = [
-        ("repo_env", repo_env_path()),
-        ("managed_env", managed_env_path()),
-    ]
-    if explicit := explicit_env_path():
+    Mirrors config.settings._env_files(): repo .env → FCC_ENV_FILE (explicit
+    bootstrap) → managed env (admin UI writes, highest so admin edits stick).
+    When FCC_ENV_FILE resolves to the same file as the managed env, it is
+    listed once as managed_env — otherwise every field in it would be
+    misclassified as explicit_env_file.
+    """
+    files: list[tuple[SourceType, Path]] = [("repo_env", repo_env_path())]
+    managed = managed_env_path()
+    if (explicit := explicit_env_path()) and explicit.resolve() != managed.resolve():
         files.append(("explicit_env_file", explicit))
+    files.append(("managed_env", managed))
     return tuple(files)
 
 
@@ -1063,7 +1068,10 @@ def _field_input_key(field: ConfigFieldSpec) -> str | None:
 
 
 def _is_locked_source(source: SourceType) -> bool:
-    return source in {"process", "explicit_env_file"}
+    # Only process env is truly immutable from the admin UI. Values from
+    # FCC_ENV_FILE are overridable: the managed env has higher runtime
+    # precedence (config.settings._env_files), so an admin write sticks.
+    return source == "process"
 
 
 def _normalize_for_env(value: Any) -> str:
