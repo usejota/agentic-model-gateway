@@ -462,6 +462,19 @@ FIELDS: tuple[ConfigFieldSpec, ...] = (
         ),
     ),
     ConfigFieldSpec(
+        "MODEL_DELEGATE_APPROVAL",
+        "Delegate Approval",
+        "models",
+        settings_attr="model_delegate_approval",
+        description=(
+            "Comma-separated provider/model refs (fnmatch globs, same format as "
+            "exclusions) that require PER-SPAWN HUMAN APPROVAL. These become "
+            "approval-* agents — the enforce hook asks the human to confirm each "
+            "spawn. Premium models (e.g. anthropic/*, openai/*, google/*, x-ai/*) "
+            "are the intended target. Empty = nothing requires approval."
+        ),
+    ),
+    ConfigFieldSpec(
         "IMAGE_ROUTE",
         "Image Route",
         "models",

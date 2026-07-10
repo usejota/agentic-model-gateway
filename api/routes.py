@@ -21,7 +21,7 @@ from .gateway_model_ids import (
 )
 from .models.anthropic import MessagesRequest, TokenCountRequest
 from .models.responses import ModelResponse, ModelsListResponse
-from .services import ClaudeProxyService
+from .services import ClaudeProxyService, _normalize_model_ref
 
 router = APIRouter()
 
@@ -318,7 +318,7 @@ def _delegate_vendor(ref: str) -> str:
 
 def _build_delegate_model_ids(
     settings: Settings, provider_registry: ProviderRegistry | None
-) -> list[str]:
+) -> dict[str, list[str]]:
     """Build the flat list of no-thinking gateway ids available for claudim delegates.
 
     Sources match ``_build_models_list_response`` (configured refs + discovered
@@ -340,14 +340,25 @@ def _build_delegate_model_ids(
                 refs.append(model_info.model_id)
 
     exclusions = settings.model_delegate_exclusions
-    ids: list[str] = []
+    approvals = settings.model_delegate_approval
+    free: list[str] = []
+    approval: list[str] = []
     for ref in refs:
         if _delegate_vendor(ref) in US_CLOSED_VENDORS:
             continue
         if any(fnmatch.fnmatchcase(ref, pattern) for pattern in exclusions):
             continue
-        ids.append(no_thinking_gateway_model_id(ref))
-    return ids
+        nid = no_thinking_gateway_model_id(ref)
+        if any(
+            fnmatch.fnmatchcase(
+                _normalize_model_ref(ref), _normalize_model_ref(pattern)
+            )
+            for pattern in approvals
+        ):
+            approval.append(nid)
+        else:
+            free.append(nid)
+    return {"data": free, "approval": approval}
 
 
 @router.get("/v1/models/delegates")
@@ -365,7 +376,7 @@ async def list_delegate_models(
     trace_event(stage="ingress", event="api.models.delegates", source="api")
     registry = getattr(request.app.state, "provider_registry", None)
     provider_registry = registry if isinstance(registry, ProviderRegistry) else None
-    return {"data": _build_delegate_model_ids(settings, provider_registry)}
+    return _build_delegate_model_ids(settings, provider_registry)
 
 
 @router.post("/stop")

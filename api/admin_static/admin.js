@@ -51,9 +51,6 @@ function sourceText(field) {
   if (label) {
     parts.push(label);
   }
-  if (field.locked) {
-    parts.push("locked");
-  }
   return parts.join(" ");
 }
 
@@ -305,11 +302,6 @@ function renderField(field) {
   const input = element.dataset.exclusionPicker === "true"
     ? element.querySelector("input[data-exclusion-value]")
     : element;
-  // Persist the lock on the widget so refreshOptions()/render (which rebuilds
-  // the checkbox list after a config reload) can re-disable the new controls —
-  // otherwise they come back enabled while the hidden input stays disabled and
-  // Apply silently drops the toggles.
-  element.dataset.locked = field.locked ? "true" : "false";
   input.id = `field-${field.key}`;
   input.dataset.key = field.key;
   // Original must mirror what readFieldValue() will report: checkboxes map to
@@ -326,19 +318,11 @@ function renderField(field) {
         : field.value || "";
   input.dataset.secret = field.secret ? "true" : "false";
   input.dataset.configured = field.configured ? "true" : "false";
-  input.disabled = field.locked;
-  // Composite widgets (the exclusion picker) carry their value in a hidden
-  // input but expose checkboxes / search / select-all buttons that stay
-  // interactive when only the hidden input is disabled. Toggles then update
-  // the chips as if changed, but changedValues() skips the disabled hidden
-  // input, so Apply silently drops them and reverts to the env value. Disable
-  // every interactive control inside the widget when locked so the UI matches
-  // what Apply will actually send.
-  if (field.locked && element.dataset.exclusionPicker === "true") {
-    element
-      .querySelectorAll("input, button")
-      .forEach((el) => (el.disabled = true));
-  }
+  // No input.disabled = field.locked: every field is always editable. The
+  // precedence swap in config/settings.py (_env_files) makes the managed env
+  // win over FCC_ENV_FILE, so admin edits STICK over the bootstrap .env
+  // instead of being silently overwritten on reload (which is what "locked"
+  // was papering over).
   input.addEventListener("input", updateDirtyState);
   input.addEventListener("change", updateDirtyState);
 
@@ -379,7 +363,7 @@ function inputForField(field) {
     return select;
   }
 
-  if (field.key === "MODEL_DELEGATE_EXCLUSIONS") {
+  if (field.key === "MODEL_DELEGATE_EXCLUSIONS" || field.key === "MODEL_DELEGATE_APPROVAL") {
     // Checkbox picker with search: filter models (e.g. "openai"), tick
     // individually or "select all shown", selections accumulate across
     // searches. Stored as a comma-separated list in a hidden input; custom
@@ -631,7 +615,6 @@ function buildExclusionPicker(currentValue) {
       const checkbox = document.createElement("input");
       checkbox.type = "checkbox";
       checkbox.checked = selected.has(ref);
-      if (container.dataset.locked === "true") checkbox.disabled = true;
       checkbox.addEventListener("change", () => {
         if (checkbox.checked) selected.add(ref);
         else selected.delete(ref);

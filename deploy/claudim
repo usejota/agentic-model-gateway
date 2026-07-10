@@ -438,6 +438,11 @@ export CLAUDE_CODE_AUTO_COMPACT_WINDOW="${CLAUDE_CODE_AUTO_COMPACT_WINDOW:-10000
 # gateway with the wrong credential and 401/hang. Drop it so the gateway token
 # above is the sole auth source.
 unset ANTHROPIC_API_KEY
+# A parent Claude Code session may export CLAUDE_CODE_SUBAGENT_MODEL to force
+# every sub-agent onto a specific model. That would override the per-agent
+# delegate-* model routing and make all fan-out/Workflow agents use the same
+# model — defeating the whole point of delegate orchestration. Drop it.
+unset CLAUDE_CODE_SUBAGENT_MODEL
 export CLAUDIM=1
 
 say "gateway ${BASE_URL} — launching claude"
@@ -448,12 +453,13 @@ say "gateway ${BASE_URL} — launching claude"
 # applies to print mode). Rebuild args only when one of claudim's own flags is
 # present; otherwise pass through untouched (avoids empty-array expansion under
 # `set -u` on bash 3.2).
-has_model=0; has_unrestricted=0; has_tmux=0; has_print=0
+has_model=0; has_unrestricted=0; has_tmux=0; has_print=0; has_delegate=0
 for _a in "$@"; do
   case "$_a" in
     --model|--model=*) has_model=1 ;;
     --unrestricted) has_unrestricted=1 ;;
     --tmux) has_tmux=1 ;;
+    --delegate) has_delegate=1 ;;
     -p|--print) has_print=1 ;;
   esac
 done
@@ -483,7 +489,8 @@ try:
 except Exception:
     sys.exit(0)
 PREFIX = "claude-3-freecc-no-thinking/"
-ids = [i for i in d.get("data", []) if i]
+free_ids = [i for i in d.get("data", []) if i]
+approval_ids = [i for i in d.get("approval", []) if i]
 # Curated one-line strengths keyed by the tail segment (last path segment of the
 # ref after stripping the no-thinking prefix). Non-curated models get a generic
 # description. Curated ones are listed first, then the rest in gateway order.
@@ -506,34 +513,38 @@ def vendor(i):
     return parts[1] if len(parts) >= 3 else (parts[0] if len(parts) >= 2 else "x")
 def slug(s):
     return re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-")
-curated = [i for i in ids if tail(i) in STRENGTHS]
-rest = [i for i in ids if tail(i) not in STRENGTHS]
-ordered = curated + rest
-try:
-    cap = int(os.environ.get("CLAUDIM_MAX_AGENTS", "30"))
-except ValueError:
-    cap = 30
-ordered = ordered[:cap]
-seen = {}
+def build_agents(ids, prefix, extra_desc):
+    curated = [i for i in ids if tail(i) in STRENGTHS]
+    rest = [i for i in ids if tail(i) not in STRENGTHS]
+    ordered = curated + rest
+    try:
+        cap = int(os.environ.get("CLAUDIM_MAX_AGENTS", "30"))
+    except ValueError:
+        cap = 30
+    ordered = ordered[:cap]
+    seen = {}
+    agents = {}
+    for i in ordered:
+        t = tail(i)
+        name = prefix + slug(t)
+        if name in seen:
+            name = prefix + slug(vendor(i)) + "-" + slug(t)
+        base = name
+        n = 2
+        while name in seen:
+            name = "%s-%d" % (base, n)
+            n += 1
+        seen[name] = 1
+        agents[name] = {
+            "description": STRENGTHS.get(t, "delegate subagent") + extra_desc,
+            "prompt": "You are a delegate subagent running " + i
+                      + ". Complete the task exactly as scoped and report concisely.",
+            "model": i,
+        }
+    return agents
 agents = {}
-for i in ordered:
-    t = tail(i)
-    name = "delegate-" + slug(t)
-    if name in seen:
-        # Collision (same tail under different routes): vendor-prefix it.
-        name = "delegate-" + slug(vendor(i)) + "-" + slug(t)
-    base = name
-    n = 2
-    while name in seen:
-        name = "%s-%d" % (base, n)
-        n += 1
-    seen[name] = 1
-    agents[name] = {
-        "description": STRENGTHS.get(t, "delegate subagent"),
-        "prompt": "You are a delegate subagent running " + i
-                  + ". Complete the task exactly as scoped and report concisely.",
-        "model": i,
-    }
+agents.update(build_agents(free_ids, "delegate-", ""))
+agents.update(build_agents(approval_ids, "approval-", " [PREMIUM — requires human approval]"))
 if agents:
     print(json.dumps(agents, ensure_ascii=False))
 AGENTS_EOF
@@ -545,7 +556,7 @@ AGENTS_EOF
 fi
 
 need_rebuild=0
-if [ "${has_model}" -eq 1 ] || [ "${has_unrestricted}" -eq 1 ] || [ "${has_tmux}" -eq 1 ] || [ -n "${AGENTS_JSON}" ]; then
+if [ "${has_model}" -eq 1 ] || [ "${has_unrestricted}" -eq 1 ] || [ "${has_tmux}" -eq 1 ] || [ "${has_delegate}" -eq 1 ] || [ -n "${AGENTS_JSON}" ]; then
   need_rebuild=1
 fi
 
@@ -558,7 +569,7 @@ if [ "${need_rebuild}" -eq 1 ]; then
   fi
   while [ "$#" -gt 0 ]; do
     case "$1" in
-      --unrestricted|--tmux) shift ;;                 # claudim-only, stripped
+      --unrestricted|--tmux|--delegate) shift ;;     # claudim-only, stripped
       --model=*) args+=("--model=$(resolve_model_alias "${1#--model=}")"); shift ;;
       --model)
         args+=("--model"); shift
@@ -573,7 +584,50 @@ if [ "${need_rebuild}" -eq 1 ]; then
   # to pick the cheapest competent one per subtask.
   if [ -n "${AGENTS_JSON}" ]; then
     args+=("--agents" "${AGENTS_JSON}")
-    args+=("--append-system-prompt" "You are inside the model gateway session. Your agent list includes delegate-* subagents, one per gateway model. EVERY subagent you spawn — Agent tool, Workflow tool, fan-out, multi-agent — must run on a delegate-* agent (or a full delegate model id in Workflow model params); never spawn subagents on haiku/sonnet/opus/fable or let them inherit the session model. Pick the cheapest competent delegate per task; escalate only when the task demands it. Use ${SELF} models --all to see the full list.")
+    if [ "${has_delegate}" -eq 1 ]; then
+      # --delegate mode: stronger prompt + load the enforce hook via --settings.
+      # The hook DENIES any subagent_type that isn't delegate-*/approval-*/allowlist
+      # and blocks run_in_background on the Workflow tool. Strong prompt is
+      # important for weak orchestrators that would otherwise try custom agents
+      # and get denied with a confusing reason — telling them the hook is
+      # active and which names to use up front makes them route correctly.
+      args+=("--append-system-prompt" "You are inside the model gateway session with the --delegate ENFORCE HOOK ACTIVE. Your agent list includes delegate-* (free) and approval-* (premium, per-spawn human approval) subagents. EVERY subagent you spawn — Agent tool, Workflow tool, fan-out, multi-agent — MUST use a delegate-* or approval-* subagent_type; the hook DENIES any other. NEVER pass run_in_background to the Workflow tool (it does not accept that param and will be denied with a clear reason); run_in_background works on the Agent tool only. To permit a custom agent, add it to ~/.claude/claudim-allowlist.json. Pick the cheapest competent delegate-* per task; escalate to approval-* only when the task truly needs a premium model. Use ${SELF} models --all to see the full list.")
+      # Locate the enforce hook script next to the launcher (renameable:
+      # <SELF>-enforce-hook.py preferred, legacy claudim-enforce-hook.py fallback).
+      _ldir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+      _hname="${SELF}-enforce-hook.py"
+      if [ -x "${_ldir}/${_hname}" ]; then
+        _hook="${_ldir}/${_hname}"
+      elif [ -x "${_ldir}/claudim-enforce-hook.py" ]; then
+        _hook="${_ldir}/claudim-enforce-hook.py"
+      else
+        die "enforce hook not found next to launcher (${_ldir}). Re-run scripts/install-claudim.sh."
+      fi
+      # Generate the --settings JSON (PreToolUse on Agent|Task|Workflow → the
+      # hook). Temp file; cleaned up when the session exits (uvicorn/claude
+      # reads it once at startup).
+      _settings="$(mktemp 2>/dev/null || mktemp -t "${SELF}-settings")"
+      python3 - "$_hook" "$_settings" <<'SETTINGS_EOF'
+import json, sys
+json.dump(
+    {"hooks": {"PreToolUse": [
+        {"matcher": "Agent|Task|Workflow", "hooks": [
+            {"type": "command", "command": f"python3 {sys.argv[1]}"}
+        ]}
+    ]}},
+    open(sys.argv[2], "w"),
+)
+SETTINGS_EOF
+      args+=("--settings" "$_settings")
+    else
+      args+=("--append-system-prompt" "You are inside the model gateway session. Your agent list includes delegate-* subagents, one per gateway model. EVERY subagent you spawn — Agent tool, Workflow tool, fan-out, multi-agent — must run on a delegate-* agent (or a full delegate model id in Workflow model params); never spawn subagents on haiku/sonnet/opus/fable or let them inherit the session model. Pick the cheapest competent delegate per task; escalate only when the task demands it. Use ${SELF} models --all to see the full list.")
+    fi
+  elif [ "${has_delegate}" -eq 1 ]; then
+    # --delegate requested but gateway served no delegates (e.g. /v1/models/delegates
+    # empty, gateway down, or all delegates excluded). Loading the enforce hook
+    # with zero delegates would block EVERY subagent_type (deny everything) and
+    # brick the session, so we refuse to load it and warn instead.
+    say "--delegate: no delegate agents available (gateway /v1/models/delegates empty); enforce hook NOT loaded (session runs without routing enforcement)"
   fi
 
   # Observation: tmux window per delegate. If the orchestrator session already

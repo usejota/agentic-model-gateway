@@ -29,13 +29,23 @@ class ConfiguredChatModelRef:
 
 
 def _env_files() -> tuple[Path, ...]:
-    """Return env file paths in priority order (later overrides earlier)."""
+    """Return env file paths in priority order (later overrides earlier).
+
+    Precedence (lowest → highest): ``.env`` (cwd) → ``FCC_ENV_FILE`` (explicit
+    bootstrap, e.g. ``~/.fcc/.env``) → managed env (admin UI writes). The
+    managed env is highest so admin UI edits STICK over the bootstrap
+    ``FCC_ENV_FILE`` — without this, ``FCC_ENV_FILE`` always wins on reload
+    and admin edits get silently overwritten, making the UI useless for any
+    field the bootstrap file sets. ``FCC_ENV_FILE`` still seeds the initial
+    config (fresh install, restart) and provides defaults; admin overrides
+    via the managed env.
+    """
     files: list[Path] = [
         Path(".env"),
-        managed_env_path(),
     ]
     if explicit := os.environ.get("FCC_ENV_FILE"):
         files.append(Path(explicit))
+    files.append(managed_env_path())
     return tuple(files)
 
 
@@ -175,6 +185,15 @@ class Settings(BaseSettings):
     # subagents; does NOT filter /v1/models; empty = nothing excluded.
     model_delegate_exclusions: Annotated[list[str], NoDecode] = Field(
         default_factory=list, validation_alias="MODEL_DELEGATE_EXCLUSIONS"
+    )
+
+    # Premium models that require per-spawn human approval. fnmatch patterns
+    # (applied to the same no-thinking gateway refs as exclusions). These
+    # models appear as ``approval-*`` agents in ``--agents`` — the enforce
+    # hook issues ``ASK`` (not ``ALLOW``) so the human must approve each spawn.
+    # Empty = nothing requires approval (all delegates are free).
+    model_delegate_approval: Annotated[list[str], NoDecode] = Field(
+        default_factory=list, validation_alias="MODEL_DELEGATE_APPROVAL"
     )
 
     # Optional image reroute. When a request has image content (top-level user
@@ -450,7 +469,12 @@ class Settings(BaseSettings):
             result[name] = token
         return result
 
-    @field_validator("fallback_models", "model_delegate_exclusions", mode="before")
+    @field_validator(
+        "fallback_models",
+        "model_delegate_exclusions",
+        "model_delegate_approval",
+        mode="before",
+    )
     @classmethod
     def parse_fallback_models(cls, v: Any) -> Any:
         """Parse the fallback model chain from a comma-separated string.
