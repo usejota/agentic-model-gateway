@@ -1,19 +1,22 @@
 #!/usr/bin/env python3
 """claudim-enforce-hook.py — PreToolUse hook for claudim --delegate mode.
 
-Enforces delegate routing for Agent / Task / Workflow sub-agent spawns when
-the session is in claudim --delegate mode. Without this hook, weak
-orchestrators (e.g. a cheap model mapped to Opus) ignore the system prompt's
-delegate instructions and spawn sub-agents on the session model, defeating
-claudim's whole point: every sub-agent should be a cheap delegate (or a
-premium approval-gated one), not the session model.
+Two operating modes, controlled by the CLAUDIM_ENFORCE env var:
 
-This hook is OPT-IN: it is only loaded when the user runs `claudim --delegate`
-(or `loclaudim`, which wraps it). Normal `claudim` sessions are unaffected
-— the user's life stays clean.
+Transparent mode (default, CLAUDIM_ENFORCE unset or != "1"):
+  - Gate only approval-* agents (ASK) — the rest of the ecosystem passes freely.
+  - Workflow ``run_in_background`` is denied unconditionally (the tool rejects it).
+  - Native agents (Explore, general-purpose, custom, etc.) are ALLOWED.
+  - This is the default: the hook is loaded but does not interfere with
+    normal Claude Code usage.
 
-Decisions
----------
+Strict mode (CLAUDIM_ENFORCE=1):
+  - Only session-generated agents (delegate-*, approval-*) or user-allowlisted
+    agents may spawn. Everything else is DENIED.
+  - Activated by the launcher in ``--delegate`` mode.
+
+Decisions (strict mode)
+-----------------------
 Agent / Task tool:
   - subagent_type starts with ``delegate-``: ALLOW (free delegate).
   - subagent_type starts with ``approval-``: ASK (premium model, per-spawn
@@ -25,9 +28,9 @@ Agent / Task tool:
     and the allowlist escape hatch.
 
 Workflow tool:
-  - ``run_in_background`` in tool_input: DENY (the Workflow tool rejects this
-    param with an InputValidationError; deny early with a clear reason so
-    the orchestrator retries without it — saves a confusing 400 in chat).
+  - ``run_in_background`` in tool_input: DENY (unconditional — the Workflow
+    tool rejects this param with an InputValidationError; deny early with a
+    clear reason so the orchestrator retries without it).
   - Any sub-agent whose type is not delegate-*/approval-*/allowlist: DENY.
 
 I/O
@@ -46,6 +49,12 @@ import json
 import os
 import sys
 from pathlib import Path
+
+
+def enforce_mode() -> bool:
+    """Strict mode: only session-generated delegate/approval agents may spawn."""
+    return os.environ.get("CLAUDIM_ENFORCE", "") == "1"
+
 
 ALLOWLIST_PATH = Path(
     os.environ.get("CLAUDIM_ALLOWLIST_PATH")
@@ -77,14 +86,16 @@ def load_agent_names() -> set[str]:
 
 
 def decide_agent(
-    subagent_type: object, agent_names: set[str], allowlist: set[str]
+    subagent_type: object, agent_names: set[str], allowlist: set[str], *, strict: bool
 ) -> tuple[str, str]:
     if not isinstance(subagent_type, str) or not subagent_type:
-        return "deny", (
-            "Agent/Task called without a subagent_type. In claudim --delegate "
-            "mode, specify a delegate-* (free) or approval-* (premium, "
-            "approval-required) agent. Run `claudim models --all` for the list."
-        )
+        if strict:
+            return "deny", (
+                "Agent/Task called without a subagent_type. In claudim --delegate "
+                "mode, specify a delegate-* (free) or approval-* (premium, "
+                "approval-required) agent. Run `claudim models --all` for the list."
+            )
+        return "allow", ""
     if subagent_type in agent_names:
         if subagent_type.startswith("approval-"):
             return "ask", (
@@ -95,17 +106,19 @@ def decide_agent(
         return "allow", ""
     if subagent_type in allowlist:
         return "allow", ""
-    return "deny", (
-        f"Subagent '{subagent_type}' is not a recognized delegate-* or "
-        "approval-* agent. In claudim --delegate mode only the agents "
-        "generated for this session or agents listed in "
-        "~/.claude/claudim-allowlist.json are allowed. Run "
-        "`claudim models --all` to see available delegates."
-    )
+    if strict:
+        return "deny", (
+            f"Subagent '{subagent_type}' is not a recognized delegate-* or "
+            "approval-* agent. In claudim --delegate mode only the agents "
+            "generated for this session or agents listed in "
+            "~/.claude/claudim-allowlist.json are allowed. Run "
+            "`claudim models --all` to see available delegates."
+        )
+    return "allow", ""
 
 
 def decide_workflow(
-    tool_input: dict, agent_names: set[str], allowlist: set[str]
+    tool_input: dict, agent_names: set[str], allowlist: set[str], *, strict: bool
 ) -> tuple[str, str]:
     if "run_in_background" in tool_input:
         return "deny", (
@@ -133,12 +146,14 @@ def decide_workflow(
             continue
         bad.append(atype or "<unnamed>")
     if bad:
-        return "deny", (
-            f"Workflow sub-agent(s) not allowed in --delegate mode: {bad}. "
-            "Each must be a recognized agent from this session or in "
-            "~/.claude/claudim-allowlist.json. Run "
-            "`claudim models --all` for the delegate list."
-        )
+        if strict:
+            return "deny", (
+                f"Workflow sub-agent(s) not allowed in --delegate mode: {bad}. "
+                "Each must be a recognized agent from this session or in "
+                "~/.claude/claudim-allowlist.json. Run "
+                "`claudim models --all` for the delegate list."
+            )
+        return "allow", ""
     if has_approval:
         return "ask", (
             "Workflow contains approval-* sub-agent(s) that use a premium "
@@ -161,13 +176,16 @@ def main() -> int:
         tool_input = {}
     allowlist = load_allowlist()
     agent_names = load_agent_names()
+    strict = enforce_mode()
 
     if tool_name in ("Agent", "Task"):
         decision, reason = decide_agent(
-            tool_input.get("subagent_type"), agent_names, allowlist
+            tool_input.get("subagent_type"), agent_names, allowlist, strict=strict
         )
     elif tool_name == "Workflow":
-        decision, reason = decide_workflow(tool_input, agent_names, allowlist)
+        decision, reason = decide_workflow(
+            tool_input, agent_names, allowlist, strict=strict
+        )
     else:
         return 0  # not a tool we enforce; pass through
 

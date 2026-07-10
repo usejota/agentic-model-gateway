@@ -1,6 +1,6 @@
 ---
 name: claudim-delegate
-description: REQUIRED whenever you spawn ANY subagent (Agent tool, Workflow tool, fan-out, multi-agent) OR the user mentions claudim / cheap-model delegation — load this skill FIRST to decide which models the subagents run on. TWO MODES by environment. (1) INSIDE a claudim session (env CLAUDIM=1 or delegate-* agents in the agent list): EVERY multi-agent mechanism — fan-out, workflows, single subagents, Agent tool, Workflow tool — runs on delegate-* gateway models (or their full no-thinking ids in Workflow model params); NEVER spawn subagents on anthropic-tier models (haiku/sonnet/opus/fable/inherit) there, and `claudim -p` subprocess delegation is a fallback only. (2) OUTSIDE claudim (plain claude session): fan-out / workflows / subagents use the NORMAL Anthropic models — do NOT reach for claudim there; only use `claudim -p --model <alias>` when the user explicitly asks for claudim/cheap/non-American models via the trigger phrases. Auto-triggers (any language): "claudim", "do claudim", "pelo claudim", "agentes claudim", "delegate to claudim", "use claudim", "delega pros modelos baratos do claudim", "delega pro claudim", "delegar com claudim", "delegue a execução para agentes claudim", "delegar para o claudim", "delegue pros modelos chineses", "use modelos chineses baratos", "use modelos não americanos", "modelos baratos não americanos", "orchestrate with cheap models", "claudim-delegate" — plus ANY subagent/workflow/fan-out spawn while inside a claudim session.
+description: When spawning subagents/workflows INSIDE a claudim session, or when the user mentions claudim / cheap-model delegation — guidance on WHICH gateway model runs each subagent. Delegates never change WHETHER to spawn agents; inline work stays inline. TWO MODES by environment. (1) INSIDE a claudim session (env CLAUDIM=1 or delegate-* agents in the agent list): when you decide to spawn subagents or workflows, pick the best-fit delegate-* agent per task. (2) OUTSIDE claudim (plain claude session): fan-out / workflows / subagents use the NORMAL Anthropic models — do NOT reach for claudim there; only use `claudim -p --model <alias>` when the user explicitly asks for claudim/cheap/non-American models via the trigger phrases. Auto-triggers (any language): "claudim", "do claudim", "pelo claudim", "agentes claudim", "delegate to claudim", "use claudim", "delega pros modelos baratos do claudim", "delega pro claudim", "delegar com claudim", "delegue a execução para agentes claudim", "delegar para o claudim", "delegue pros modelos chineses", "use modelos chineses baratos", "use modelos não americanos", "modelos baratos não americanos", "orchestrate with cheap models", "claudim-delegate" — plus ANY subagent/workflow/fan-out spawn while inside a claudim session.
 ---
 
 # claudim-delegate
@@ -15,25 +15,32 @@ description: REQUIRED whenever you spawn ANY subagent (Agent tool, Workflow tool
 
 **Step 2 — apply the mode.**
 
-### MODE A: inside claudim — delegates for EVERYTHING, no exceptions
+### MODE A: inside claudim — delegates are ADDITIVE
 
-Every multi-agent mechanism routes through the delegate pool:
+Delegates change WHICH model runs a subagent, never WHETHER you spawn one. The
+native decision of when to use agents or workflows is unchanged — this skill
+only helps pick the right delegate model per task.
 
-- **Agent tool** (single subagent, fan-out, parallel spawns) -> use the
-  `delegate-*` agents. Pick per task (see the model table below).
-- **Workflow tool** -> pass a full delegate id as each `agent()` call's
-  `model` param (e.g. `claude-3-freecc-no-thinking/open_router/deepseek/deepseek-v4-flash`).
-  Never leave `model` to inherit.
-- **Generic agents** (Explore, general-purpose, Plan, ...) -> give them a
-  delegate model override; never let them inherit the session model.
+- **Agent tool** (single subagent, fan-out, parallel spawns) -> pick the best-fit
+  `delegate-*` agent by its description (strength) for each task. Use the model
+  table below as a starting shortcut, not a boundary.
+- **Workflow tool** -> pass `agentType: "delegate-..."` in each `agent()` call.
+  Do NOT pass raw `model` ids unless the model has no corresponding agent (check
+  `claudim models --all` for the full pool).
+- **Generic agents** (Explore, general-purpose, Plan, ...) -> these are native
+  Claude Code agents and are NOT blocked. The hook (transparent mode) lets them
+  through. If you want them on a delegate model instead, spawn a `delegate-*`
+  agent with the appropriate task.
+- **`approval-*` agents** -> premium models (anthropic/openai). Spawning one
+  triggers a human approval prompt per spawn. If denied, pick a `delegate-*`
+  alternative.
+- **Strict mode** (`claudim --delegate`, env `CLAUDIM_ENFORCE=1`) -> the hook
+  DENIES non-delegate agents. Only use this when the user explicitly opts into
+  strict enforcement.
 
-**NEVER spawn a subagent on `haiku`/`sonnet`/`opus`/`fable`/inherit inside
-claudim.** The session model (you) is the only expensive brain; everything you
-spawn is a cheap delegate. "fan out subagents", "workflow", "multi-agent" are
-NOT exceptions — inside claudim they all mean "fan out on delegates".
-`claudim -p` subprocess delegation exists only as the fallback (see below).
-The gateway hard-rejects excluded models for subagents (MODEL_DELEGATE_EXCLUSIONS)
-— if a spawn fails with "excluded for subagents", pick another delegate.
+**Do NOT delegate work you would do inline.** The delegate pool is a model
+choice, not a delegation mandate. Keep your normal judgment about what to
+spawn.
 
 ### MODE B: outside claudim (plain claude session)
 
@@ -404,7 +411,9 @@ comando `gcloud ...` explícito e scope restrito no prompt.
 
 ## KILL SWITCH — when to stand down
 
-**"workflow", "fan-out", "multi-agent" are NO LONGER a stand-down signal.**
+The default mode is non-coercive — delegate agents are an additive model
+choice, not a mandate. Use them when they fit the task; native agents work
+alongside.
 Native orchestration via `delegate-*` agents IS the claudim path — use them
 for fan-out and multi-agent tasks.
 

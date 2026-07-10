@@ -33,9 +33,13 @@ HOOK_DEST="${BIN_DIR}/${NAME}-enforce-hook.py"
 # The claudim-delegate skill (orchestrator recipe + kill switch). Installed
 # globally so it loads in any Claude Code session, not just this repo. Installed
 # under ${NAME}-delegate so a renamed launcher gets its own skill slot.
-SKILL_SRC="${CLAUDIM_SKILL_SRC:-${REPO_RAW}/.claude/skills/claudim-delegate/SKILL.md}"
-SKILL_DIR="${HOME}/.claude/skills/${NAME}-delegate"
-SKILL_DEST="${SKILL_DIR}/SKILL.md"
+# Skills installed globally so they load in any Claude Code session, not just this
+# repo. Installed under ${NAME}-<name> so a renamed launcher gets its own skill slots.
+# Each skill is templated: every `claudim` reference is replaced with the installed
+# NAME so a renameable install (CLAUDIM_NAME=loclaudim) gets matching skills that
+# reference the correct binary.
+SKILL_DELEGATE_SRC="${CLAUDIM_SKILL_SRC:-${REPO_RAW}/.claude/skills/claudim-delegate/SKILL.md}"
+SKILL_PANEL_SRC="${CLAUDIM_PANEL_SKILL_SRC:-${REPO_RAW}/.claude/skills/claudim-panel/SKILL.md}"
 
 say()  { printf '==> %s\n' "$*"; }
 warn() { printf 'warning: %s\n' "$*" >&2; }
@@ -77,24 +81,27 @@ fetch "${SRC}" "${DEST}" || fail "download failed from ${SRC}"
 chmod +x "${DEST}"
 say "Installed."
 
-# Install the claudim-delegate skill globally so an Opus/Fable orchestrator
-# picks it up in any session (when to delegate, model picks, parallelism, tmux
-# observation, the unrestricted/gcloud path, and the workflow kill switch).
-# Non-fatal: claudim works without the skill; it's just the orchestration recipe.
-# The skill is templated: every `claudim` reference is replaced with the
-# installed NAME so a renameable install (CLAUDIM_NAME=loclaudim) gets a
-# matching skill that references the correct binary.
-say "Installing ${NAME}-delegate skill to ${SKILL_DEST}"
-mkdir -p "${SKILL_DIR}"
-_skill_tmp="${SKILL_DEST}.tmp.$$"
-if fetch "${SKILL_SRC}" "${_skill_tmp}"; then
-  sed "s/claudim/${NAME}/g" "${_skill_tmp}" > "${SKILL_DEST}"
-  rm -f "${_skill_tmp}"
-  say "Skill installed."
-else
-  rm -f "${_skill_tmp}"
-  warn "could not install ${NAME}-delegate skill from ${SKILL_SRC}"
-fi
+# Install skills globally. Non-fatal: claudim works without them.
+# Each skill is templated: every `claudim` reference → installed NAME.
+for _sk in delegate panel; do
+  case "$_sk" in
+    delegate) _src="${SKILL_DELEGATE_SRC}" ;;
+    panel)    _src="${SKILL_PANEL_SRC}" ;;
+  esac
+  _dir="${HOME}/.claude/skills/${NAME}-${_sk}"
+  _dest="${_dir}/SKILL.md"
+  say "Installing ${NAME}-${_sk} skill to ${_dest}"
+  mkdir -p "${_dir}"
+  _tmp="${_dest}.tmp.$$"
+  if fetch "${_src}" "${_tmp}"; then
+    sed "s/claudim/${NAME}/g" "${_tmp}" > "${_dest}"
+    rm -f "${_tmp}"
+    say "Skill ${NAME}-${_sk} installed."
+  else
+    rm -f "${_tmp}"
+    warn "could not install ${NAME}-${_sk} skill from ${_src}"
+  fi
+done
 
 # PATH check.
 case ":${PATH}:" in
@@ -120,7 +127,7 @@ ${NAME} installed. Next:
        ${NAME} "explain this repo"
   Args pass straight through to Claude Code. Override the gateway host/tailnet
   with CLAUDIM_HOST / CLAUDIM_TAILNET if needed (see \`${NAME}\` header comments).
-  The ${NAME}-delegate skill was installed to ~/.claude/skills/ — it teaches an
+  The ${NAME}-delegate and ${NAME}-panel skills were installed to ~/.claude/skills/ — they teach an
   Opus/Fable orchestrator when/how to delegate to the cheap non-American models
   (and defers to native workflows if you say "workflow"/"fan out subagents").
   Update ${NAME} later with: ${NAME} upgrade

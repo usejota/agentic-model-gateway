@@ -536,7 +536,8 @@ def build_agents(ids, prefix, extra_desc, budget):
             n += 1
         seen[name] = 1
         agents[name] = {
-            "description": STRENGTHS.get(t, "delegate subagent") + extra_desc,
+            "description": STRENGTHS.get(t, "general delegate") + extra_desc
+              + ". Alternative-model subagent: pick when spawning agents anyway and this profile fits the task; never a reason to delegate work you would do inline.",
             "prompt": "You are a delegate subagent running " + i
                       + ". Complete the task exactly as scoped and report concisely.",
             "model": i,
@@ -586,33 +587,34 @@ if [ "${need_rebuild}" -eq 1 ]; then
     esac
   done
 
-  # Inject the delegate agents built above (interactive mode only). Gives the
-  # session model one native Agent-tool subagent per gateway model, plus a steer
-  # to pick the cheapest competent one per subtask.
+  # Inject the delegate agents built above (interactive mode only). Two modes:
+  # - Transparent (default): agents available, hook loaded for approval-gating
+  #   only (neutral prompt — the session model keeps its normal judgment).
+  # - Strict (--delegate): CLAUDIM_ENFORCE=1, strong prompt instructing the
+  #   session model to ALWAYS use delegate-*/approval-* subagents, and the hook
+  #   enforces that routing with deny-on-violation.
   if [ -n "${AGENTS_JSON}" ]; then
     args+=("--agents" "${AGENTS_JSON}")
     if [ "${has_delegate}" -eq 1 ]; then
-      # --delegate mode: stronger prompt + load the enforce hook via --settings.
-      # The hook DENIES any subagent_type that isn't delegate-*/approval-*/allowlist
-      # and blocks run_in_background on the Workflow tool. Strong prompt is
-      # important for weak orchestrators that would otherwise try custom agents
-      # and get denied with a confusing reason — telling them the hook is
-      # active and which names to use up front makes them route correctly.
+      export CLAUDIM_ENFORCE=1
       args+=("--append-system-prompt" "You are inside the model gateway session with the --delegate ENFORCE HOOK ACTIVE. Your agent list includes delegate-* (free) and approval-* (premium, per-spawn human approval) subagents. EVERY subagent you spawn — Agent tool, Workflow tool, fan-out, multi-agent — MUST use a delegate-* or approval-* subagent_type; the hook DENIES any other. NEVER pass run_in_background to the Workflow tool (it does not accept that param and will be denied with a clear reason); run_in_background works on the Agent tool only. To permit a custom agent, add it to ~/.claude/claudim-allowlist.json. Pick the cheapest competent delegate-* per task; escalate to approval-* only when the task truly needs a premium model. Use ${SELF} models --all to see the full list.")
-      # Locate the enforce hook script next to the launcher (renameable:
-      # <SELF>-enforce-hook.py preferred, legacy claudim-enforce-hook.py fallback).
-      _ldir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
-      _hname="${SELF}-enforce-hook.py"
-      if [ -x "${_ldir}/${_hname}" ]; then
-        _hook="${_ldir}/${_hname}"
-      elif [ -x "${_ldir}/claudim-enforce-hook.py" ]; then
-        _hook="${_ldir}/claudim-enforce-hook.py"
-      else
-        die "enforce hook not found next to launcher (${_ldir}). Re-run scripts/install-claudim.sh."
-      fi
-      # Generate the --settings JSON (PreToolUse on Agent|Task|Workflow → the
-      # hook). Temp file; cleaned up when the session exits (uvicorn/claude
-      # reads it once at startup).
+    else
+      args+=("--append-system-prompt" "You are inside the model gateway session. Your agent list includes delegate-* subagents (one per gateway model; description = the model's strength) and possibly approval-* subagents (premium, per-spawn human approval). These delegates change WHICH model runs a subagent, never WHETHER you spawn one: keep doing inline work inline and keep your normal judgment about when to use agents or workflows. When you DO spawn subagents — your own decision, an explicit user request to fan out, or a Workflow — pick the delegate-* agent whose strength best fits each task (Workflow agent() calls: pass agentType with the delegate agent name). If an approval-* spawn is denied by the human, pick a delegate-* alternative. Use ${SELF} models --all for the full model list.")
+    fi
+    # === HOOK: carregado sempre que há agentes (transparente ou estrito) ===
+    # Localizar o enforce hook script (renameable: <SELF>-enforce-hook.py)
+    _ldir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+    _hname="${SELF}-enforce-hook.py"
+    if [ -x "${_ldir}/${_hname}" ]; then
+      _hook="${_ldir}/${_hname}"
+    elif [ -x "${_ldir}/claudim-enforce-hook.py" ]; then
+      _hook="${_ldir}/claudim-enforce-hook.py"
+    elif [ "${has_delegate}" -eq 1 ]; then
+      die "enforce hook not found next to launcher (${_ldir}). Re-run scripts/install-claudim.sh."
+    else
+      _hook=""
+    fi
+    if [ -n "${_hook}" ]; then
       _settings="$(mktemp 2>/dev/null || mktemp -t "${SELF}-settings")"
       python3 - "$_hook" "$_settings" <<'SETTINGS_EOF'
 import json, sys
@@ -627,13 +629,9 @@ json.dump(
 SETTINGS_EOF
       args+=("--settings" "$_settings")
     else
-      args+=("--append-system-prompt" "You are inside the model gateway session. Your agent list includes delegate-* subagents, one per gateway model. EVERY subagent you spawn — Agent tool, Workflow tool, fan-out, multi-agent — must run on a delegate-* agent (or a full delegate model id in Workflow model params); never spawn subagents on haiku/sonnet/opus/fable or let them inherit the session model. Pick the cheapest competent delegate per task; escalate only when the task demands it. Use ${SELF} models --all to see the full list.")
+      say "warning: enforce hook not found; launching without approval gating"
     fi
   elif [ "${has_delegate}" -eq 1 ]; then
-    # --delegate requested but gateway served no delegates (e.g. /v1/models/delegates
-    # empty, gateway down, or all delegates excluded). Loading the enforce hook
-    # with zero delegates would block EVERY subagent_type (deny everything) and
-    # brick the session, so we refuse to load it and warn instead.
     say "--delegate: no delegate agents available (gateway /v1/models/delegates empty); enforce hook NOT loaded (session runs without routing enforcement)"
   fi
 
@@ -648,7 +646,7 @@ SETTINGS_EOF
       else
         say "tmux: delegate in detached session (tmux attach -t ${SELF//[.:]/_})"
       fi
-      run_in_tmux "${args[@]}"
+      run_in_tmux "${args[@]+"${args[@]}"}"
       exit $?
     fi
     say "tmux not found; running delegate inline (brew install tmux to observe)"
@@ -656,7 +654,7 @@ SETTINGS_EOF
     say "--tmux is for -p delegates only; ignoring"
   fi
 
-  exec claude "${args[@]}"
+  exec claude "${args[@]+"${args[@]}"}"
 fi
 
 exec claude "$@"
