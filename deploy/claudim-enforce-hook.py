@@ -55,40 +55,58 @@ ALLOWLIST_PATH = Path(
 
 def load_allowlist() -> set[str]:
     try:
-        data = json.loads(ALLOWLIST_PATH.read_text(encoding="utf-8"))
-    except OSError, json.JSONDecodeError:
+        raw_text = ALLOWLIST_PATH.read_text(encoding="utf-8")
+    except OSError:
+        return set()
+    try:
+        data = json.loads(raw_text)
+    except json.JSONDecodeError:
+        return set()
+    if not isinstance(data, dict):
         return set()
     raw = data.get("custom_agents", [])
     return {str(x) for x in raw} if isinstance(raw, list) else set()
 
 
-def decide_agent(subagent_type: object, allowlist: set[str]) -> tuple[str, str]:
+def load_agent_names() -> set[str]:
+    """Return the exact set of agent names the launcher generated for this session."""
+    raw = os.environ.get("CLAUDIM_DELEGATE_AGENT_NAMES", "")
+    if not raw:
+        return set()
+    return {name.strip() for name in raw.split(",") if name.strip()}
+
+
+def decide_agent(
+    subagent_type: object, agent_names: set[str], allowlist: set[str]
+) -> tuple[str, str]:
     if not isinstance(subagent_type, str) or not subagent_type:
         return "deny", (
             "Agent/Task called without a subagent_type. In claudim --delegate "
             "mode, specify a delegate-* (free) or approval-* (premium, "
             "approval-required) agent. Run `claudim models --all` for the list."
         )
-    if subagent_type.startswith("delegate-"):
+    if subagent_type in agent_names:
+        if subagent_type.startswith("approval-"):
+            return "ask", (
+                f"Subagent '{subagent_type}' uses a premium model that requires "
+                "per-spawn approval. Approve to let it run, or deny and pick a "
+                "cheaper delegate-* instead."
+            )
         return "allow", ""
-    if subagent_type.startswith("approval-"):
-        return "ask", (
-            f"Subagent '{subagent_type}' uses a premium model that requires "
-            "per-spawn approval. Approve to let it run, or deny and pick a "
-            "cheaper delegate-* instead."
-        )
     if subagent_type in allowlist:
         return "allow", ""
     return "deny", (
-        f"Subagent '{subagent_type}' is not a delegate-* or approval-* agent. "
-        "In claudim --delegate mode only delegate-* (free), approval-* "
-        "(premium, approval-required), or agents listed in "
+        f"Subagent '{subagent_type}' is not a recognized delegate-* or "
+        "approval-* agent. In claudim --delegate mode only the agents "
+        "generated for this session or agents listed in "
         "~/.claude/claudim-allowlist.json are allowed. Run "
         "`claudim models --all` to see available delegates."
     )
 
 
-def decide_workflow(tool_input: dict, allowlist: set[str]) -> tuple[str, str]:
+def decide_workflow(
+    tool_input: dict, agent_names: set[str], allowlist: set[str]
+) -> tuple[str, str]:
     if "run_in_background" in tool_input:
         return "deny", (
             "The Workflow tool does NOT accept the 'run_in_background' "
@@ -109,17 +127,16 @@ def decide_workflow(tool_input: dict, allowlist: set[str]) -> tuple[str, str]:
         )
         if not isinstance(atype, str):
             continue
-        if atype.startswith("delegate-") or atype in allowlist:
-            continue
-        if atype.startswith("approval-"):
-            has_approval = True
+        if atype in agent_names or atype in allowlist:
+            if atype.startswith("approval-"):
+                has_approval = True
             continue
         bad.append(atype or "<unnamed>")
     if bad:
         return "deny", (
             f"Workflow sub-agent(s) not allowed in --delegate mode: {bad}. "
-            "Each must be delegate-* (free), approval-* (premium, approval-"
-            "required), or in ~/.claude/claudim-allowlist.json. Run "
+            "Each must be a recognized agent from this session or in "
+            "~/.claude/claudim-allowlist.json. Run "
             "`claudim models --all` for the delegate list."
         )
     if has_approval:
@@ -136,16 +153,21 @@ def main() -> int:
         payload = json.load(sys.stdin)
     except json.JSONDecodeError:
         return 0  # malformed input: pass through, don't break the session
+    if not isinstance(payload, dict):
+        return 0  # non-object JSON: pass through, don't break the session
     tool_name = payload.get("tool_name", "")
     tool_input = payload.get("tool_input")
     if not isinstance(tool_input, dict):
         tool_input = {}
     allowlist = load_allowlist()
+    agent_names = load_agent_names()
 
     if tool_name in ("Agent", "Task"):
-        decision, reason = decide_agent(tool_input.get("subagent_type"), allowlist)
+        decision, reason = decide_agent(
+            tool_input.get("subagent_type"), agent_names, allowlist
+        )
     elif tool_name == "Workflow":
-        decision, reason = decide_workflow(tool_input, allowlist)
+        decision, reason = decide_workflow(tool_input, agent_names, allowlist)
     else:
         return 0  # not a tool we enforce; pass through
 

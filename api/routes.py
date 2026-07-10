@@ -360,7 +360,8 @@ def _build_delegate_model_ids(
             continue
         nid = no_thinking_gateway_model_id(ref)
         if any(
-            fnmatch.fnmatchcase(
+            fnmatch.fnmatchcase(ref, pattern)
+            or fnmatch.fnmatchcase(
                 _normalize_approval_ref(_normalize_model_ref(ref)),
                 _normalize_approval_ref(_normalize_model_ref(pattern)),
             )

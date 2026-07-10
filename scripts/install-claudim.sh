@@ -16,6 +16,9 @@ SRC="${CLAUDIM_SRC:-${REPO_RAW}/deploy/claudim}"
 # Renderer is the sibling of the launcher (claudim finds it next to itself at
 # runtime). Installing them together keeps `claudim upgrade` consistent.
 RENDER_SRC="${CLAUDIM_RENDER_SRC:-${REPO_RAW}/deploy/claudim-render.py}"
+# Enforce hook — PreToolUse hook for --delegate mode. Installed alongside the
+# launcher and renderer so `claudim upgrade` keeps all three in sync.
+HOOK_SRC="${CLAUDIM_HOOK_SRC:-${REPO_RAW}/deploy/claudim-enforce-hook.py}"
 BIN_DIR="${CLAUDIM_BIN_DIR:-${HOME}/.local/bin}"
 # Install NAME — parameterizes the launcher so it is renameable. Defaults to
 # `claudim` (retro-compat: unchanged behavior). Set CLAUDIM_NAME=loclaudim (or
@@ -26,6 +29,7 @@ BIN_DIR="${CLAUDIM_BIN_DIR:-${HOME}/.local/bin}"
 NAME="${CLAUDIM_NAME:-claudim}"
 DEST="${BIN_DIR}/${NAME}"
 RENDER_DEST="${BIN_DIR}/${NAME}-render.py"
+HOOK_DEST="${BIN_DIR}/${NAME}-enforce-hook.py"
 # The claudim-delegate skill (orchestrator recipe + kill switch). Installed
 # globally so it loads in any Claude Code session, not just this repo. Installed
 # under ${NAME}-delegate so a renamed launcher gets its own skill slot.
@@ -65,6 +69,9 @@ mkdir -p "${BIN_DIR}"
 say "Installing renderer to ${RENDER_DEST}"
 fetch "${RENDER_SRC}" "${RENDER_DEST}" || fail "download failed from ${RENDER_SRC}"
 chmod +x "${RENDER_DEST}"
+say "Installing enforce hook to ${HOOK_DEST}"
+fetch "${HOOK_SRC}" "${HOOK_DEST}" || fail "download failed from ${HOOK_SRC}"
+chmod +x "${HOOK_DEST}"
 say "Installing ${NAME} to ${DEST}"
 fetch "${SRC}" "${DEST}" || fail "download failed from ${SRC}"
 chmod +x "${DEST}"
@@ -74,11 +81,18 @@ say "Installed."
 # picks it up in any session (when to delegate, model picks, parallelism, tmux
 # observation, the unrestricted/gcloud path, and the workflow kill switch).
 # Non-fatal: claudim works without the skill; it's just the orchestration recipe.
+# The skill is templated: every `claudim` reference is replaced with the
+# installed NAME so a renameable install (CLAUDIM_NAME=loclaudim) gets a
+# matching skill that references the correct binary.
 say "Installing ${NAME}-delegate skill to ${SKILL_DEST}"
 mkdir -p "${SKILL_DIR}"
-if fetch "${SKILL_SRC}" "${SKILL_DEST}"; then
+_skill_tmp="${SKILL_DEST}.tmp.$$"
+if fetch "${SKILL_SRC}" "${_skill_tmp}"; then
+  sed "s/claudim/${NAME}/g" "${_skill_tmp}" > "${SKILL_DEST}"
+  rm -f "${_skill_tmp}"
   say "Skill installed."
 else
+  rm -f "${_skill_tmp}"
   warn "could not install ${NAME}-delegate skill from ${SKILL_SRC}"
 fi
 

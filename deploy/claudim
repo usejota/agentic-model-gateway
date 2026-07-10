@@ -513,15 +513,15 @@ def vendor(i):
     return parts[1] if len(parts) >= 3 else (parts[0] if len(parts) >= 2 else "x")
 def slug(s):
     return re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-")
-def build_agents(ids, prefix, extra_desc):
+try:
+    cap = int(os.environ.get("CLAUDIM_MAX_AGENTS", "30"))
+except ValueError:
+    cap = 30
+def build_agents(ids, prefix, extra_desc, budget):
     curated = [i for i in ids if tail(i) in STRENGTHS]
     rest = [i for i in ids if tail(i) not in STRENGTHS]
     ordered = curated + rest
-    try:
-        cap = int(os.environ.get("CLAUDIM_MAX_AGENTS", "30"))
-    except ValueError:
-        cap = 30
-    ordered = ordered[:cap]
+    ordered = ordered[:budget]
     seen = {}
     agents = {}
     for i in ordered:
@@ -543,13 +543,20 @@ def build_agents(ids, prefix, extra_desc):
         }
     return agents
 agents = {}
-agents.update(build_agents(free_ids, "delegate-", ""))
-agents.update(build_agents(approval_ids, "approval-", " [PREMIUM — requires human approval]"))
+agents.update(build_agents(free_ids, "delegate-", "", cap))
+agents.update(build_agents(approval_ids, "approval-", " [PREMIUM — requires human approval]", max(0, cap - len(agents))))
 if agents:
-    print(json.dumps(agents, ensure_ascii=False))
+    print(json.dumps({"agents": agents, "names": sorted(agents.keys())}, ensure_ascii=False))
 AGENTS_EOF
-  AGENTS_JSON="$(curl -s -m 10 "${BASE_URL}/v1/models/delegates" -H "x-api-key: ${TOKEN}" 2>/dev/null | python3 "$_agents_py" || true)"
+  _agents_result="$(curl -s -m 10 "${BASE_URL}/v1/models/delegates" -H "x-api-key: ${TOKEN}" 2>/dev/null | python3 "$_agents_py" || true)"
   rm -f "$_agents_py"
+  AGENTS_JSON=""
+  CLAUDIM_DELEGATE_AGENT_NAMES=""
+  if [ -n "${_agents_result:-}" ]; then
+    AGENTS_JSON="$(echo "${_agents_result}" | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["agents"]))' 2>/dev/null || true)"
+    CLAUDIM_DELEGATE_AGENT_NAMES="$(echo "${_agents_result}" | python3 -c 'import json,sys; print(",".join(json.load(sys.stdin)["names"]))' 2>/dev/null || true)"
+  fi
+  export CLAUDIM_DELEGATE_AGENT_NAMES
   if [ -z "${AGENTS_JSON:-}" ]; then
     say "warning: delegate agents unavailable (gateway list failed); launching without them"
   fi

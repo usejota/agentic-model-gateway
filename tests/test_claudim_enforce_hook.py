@@ -20,13 +20,18 @@ def _run_hook(
     payload: dict[str, Any] | str,
     *,
     env: dict[str, str] | None = None,
+    agent_names: str = "",
 ) -> subprocess.CompletedProcess[str]:
     """Run the hook script with the given stdin payload.
 
     If payload is a dict, it is JSON-serialized. If it's a str, it's passed raw.
+    The ``agent_names`` param sets ``CLAUDIM_DELEGATE_AGENT_NAMES`` — the
+    comma-separated list of agent names the launcher generated for this session.
     """
     stdin = json.dumps(payload) if isinstance(payload, dict) else payload
     full_env = {**os.environ, **(env or {})}
+    if agent_names:
+        full_env["CLAUDIM_DELEGATE_AGENT_NAMES"] = agent_names
     return subprocess.run(
         [sys.executable, str(HOOK_PATH)],
         input=stdin,
@@ -99,51 +104,63 @@ def _workflow_payload(agents: object, **extra: Any) -> dict[str, Any]:
 class TestAgentTool:
     def test_delegate_subagent_allowed(self):
         """delegate-* subagent_type -> ALLOW (no output, exit 0)."""
-        _assert_allow(_run_hook(_agent_payload("delegate-sonnet")))
+        _assert_allow(
+            _run_hook(_agent_payload("delegate-sonnet"), agent_names="delegate-sonnet")
+        )
 
     def test_delegate_subagent_with_suffix_allowed(self):
         """delegate-haiku-v2 -> ALLOW."""
-        _assert_allow(_run_hook(_agent_payload("delegate-haiku-v2")))
+        _assert_allow(
+            _run_hook(
+                _agent_payload("delegate-haiku-v2"), agent_names="delegate-haiku-v2"
+            )
+        )
 
     def test_approval_subagent_ask(self):
         """approval-* subagent_type -> ASK."""
         _assert_ask(
-            _run_hook(_agent_payload("approval-sonnet")),
+            _run_hook(_agent_payload("approval-sonnet"), agent_names="approval-sonnet"),
             reason_contains="premium model",
         )
 
     def test_random_subagent_deny(self):
         """Random/custom subagent_type -> DENY."""
         _assert_deny(
-            _run_hook(_agent_payload("random-agent")),
-            reason_contains="not a delegate-* or approval-*",
+            _run_hook(
+                _agent_payload("random-agent"),
+                agent_names="delegate-deepseek-v4-flash,delegate-glm-5-2",
+            ),
+            reason_contains="not a recognized",
         )
 
     def test_empty_subagent_type_deny(self):
         """Empty subagent_type -> DENY."""
         _assert_deny(
-            _run_hook(_agent_payload("")),
+            _run_hook(_agent_payload(""), agent_names="delegate-deepseek-v4-flash"),
             reason_contains="without a subagent_type",
         )
 
     def test_missing_subagent_type_deny(self):
         """Missing subagent_type -> DENY."""
         _assert_deny(
-            _run_hook({"tool_name": "Agent", "tool_input": {}}),
+            _run_hook(
+                {"tool_name": "Agent", "tool_input": {}},
+                agent_names="delegate-deepseek-v4-flash",
+            ),
             reason_contains="without a subagent_type",
         )
 
     def test_subagent_type_none_deny(self):
         """None subagent_type -> DENY."""
         _assert_deny(
-            _run_hook(_agent_payload(None)),
+            _run_hook(_agent_payload(None), agent_names="delegate-deepseek-v4-flash"),
             reason_contains="without a subagent_type",
         )
 
     def test_subagent_type_int_deny(self):
         """Non-string subagent_type (int) -> DENY."""
         _assert_deny(
-            _run_hook(_agent_payload(42)),
+            _run_hook(_agent_payload(42), agent_names="delegate-deepseek-v4-flash"),
             reason_contains="without a subagent_type",
         )
 
@@ -151,26 +168,34 @@ class TestAgentTool:
 class TestTaskTool:
     def test_delegate_subagent_allowed(self):
         """Task tool with delegate-* -> ALLOW."""
-        _assert_allow(_run_hook(_task_payload("delegate-opus")))
+        _assert_allow(
+            _run_hook(_task_payload("delegate-opus"), agent_names="delegate-opus")
+        )
 
     def test_approval_subagent_ask(self):
         """Task tool with approval-* -> ASK."""
         _assert_ask(
-            _run_hook(_task_payload("approval-opus")),
+            _run_hook(_task_payload("approval-opus"), agent_names="approval-opus"),
             reason_contains="premium model",
         )
 
     def test_random_subagent_deny(self):
         """Task tool with random subagent_type -> DENY."""
         _assert_deny(
-            _run_hook(_task_payload("custom-thing")),
-            reason_contains="not a delegate-* or approval-*",
+            _run_hook(
+                _task_payload("custom-thing"),
+                agent_names="delegate-deepseek-v4-flash",
+            ),
+            reason_contains="not a recognized",
         )
 
     def test_missing_subagent_type_deny(self):
         """Task tool without subagent_type -> DENY."""
         _assert_deny(
-            _run_hook({"tool_name": "Task", "tool_input": {}}),
+            _run_hook(
+                {"tool_name": "Task", "tool_input": {}},
+                agent_names="delegate-deepseek-v4-flash",
+            ),
             reason_contains="without a subagent_type",
         )
 
@@ -181,6 +206,8 @@ class TestTaskTool:
 
 
 class TestWorkflowTool:
+    _NAMES = "delegate-sonnet,delegate-haiku,approval-sonnet"
+
     def test_run_in_background_deny(self):
         """Workflow with run_in_background -> DENY."""
         _assert_deny(
@@ -199,7 +226,8 @@ class TestWorkflowTool:
                         {"type": "delegate-sonnet", "prompt": "do X"},
                         {"type": "delegate-haiku", "prompt": "do Y"},
                     ]
-                )
+                ),
+                agent_names=self._NAMES,
             )
         )
 
@@ -212,19 +240,28 @@ class TestWorkflowTool:
                         {"type": "delegate-sonnet", "prompt": "ok"},
                         {"type": "random-agent", "prompt": "bad"},
                     ]
-                )
+                ),
+                agent_names=self._NAMES,
             ),
             reason_contains="random-agent",
         )
 
     def test_without_agents_field_allow(self):
         """Workflow without agents field -> ALLOW."""
-        _assert_allow(_run_hook({"tool_name": "Workflow", "tool_input": {}}))
+        _assert_allow(
+            _run_hook(
+                {"tool_name": "Workflow", "tool_input": {}},
+                agent_names=self._NAMES,
+            )
+        )
 
     def test_agents_not_a_list_allow(self):
         """Workflow where agents is not a list -> ALLOW."""
         _assert_allow(
-            _run_hook({"tool_name": "Workflow", "tool_input": {"agents": "not-a-list"}})
+            _run_hook(
+                {"tool_name": "Workflow", "tool_input": {"agents": "not-a-list"}},
+                agent_names=self._NAMES,
+            )
         )
 
     def test_approval_agents_ask(self):
@@ -233,7 +270,8 @@ class TestWorkflowTool:
             _run_hook(
                 _workflow_payload(
                     [{"type": "approval-sonnet", "prompt": "needs approval"}]
-                )
+                ),
+                agent_names=self._NAMES,
             ),
             reason_contains="approval",
         )
@@ -247,7 +285,8 @@ class TestWorkflowTool:
                         {"type": "delegate-haiku", "prompt": "cheap"},
                         {"type": "approval-sonnet", "prompt": "premium"},
                     ]
-                )
+                ),
+                agent_names=self._NAMES,
             )
         )
 
@@ -257,14 +296,18 @@ class TestWorkflowTool:
             _run_hook(
                 _workflow_payload(
                     [{"subagent_type": "delegate-sonnet", "prompt": "ok"}]
-                )
+                ),
+                agent_names=self._NAMES,
             )
         )
 
     def test_workflow_agents_by_name_key(self):
         """Workflow agents identified by name key."""
         _assert_allow(
-            _run_hook(_workflow_payload([{"name": "delegate-haiku", "prompt": "ok"}]))
+            _run_hook(
+                _workflow_payload([{"name": "delegate-haiku", "prompt": "ok"}]),
+                agent_names=self._NAMES,
+            )
         )
 
     def test_workflow_entry_not_dict_skipped(self):
@@ -276,18 +319,22 @@ class TestWorkflowTool:
                         {"type": "delegate-sonnet", "prompt": "ok"},
                         "not-a-dict",
                     ]
-                )
+                ),
+                agent_names=self._NAMES,
             )
         )
 
     def test_empty_agents_list_allow(self):
         """Empty agents list -> ALLOW."""
-        _assert_allow(_run_hook(_workflow_payload([])))
+        _assert_allow(_run_hook(_workflow_payload([]), agent_names=self._NAMES))
 
     def test_workflow_unnamed_agent_deny(self):
         """Agent with no type/name fields ends up as <unnamed> -> DENY."""
         _assert_deny(
-            _run_hook(_workflow_payload([{"prompt": "no type here"}])),
+            _run_hook(
+                _workflow_payload([{"prompt": "no type here"}]),
+                agent_names=self._NAMES,
+            ),
             reason_contains="<unnamed>",
         )
 
@@ -413,6 +460,7 @@ class TestCustomAllowlist:
         _assert_allow(
             _run_hook(
                 _agent_payload("delegate-sonnet"),
+                agent_names="delegate-sonnet",
                 env={"CLAUDIM_ALLOWLIST_PATH": str(allowlist_path)},
             )
         )
@@ -426,7 +474,9 @@ class TestCustomAllowlist:
 class TestDenyReasonContent:
     def test_agent_deny_reason_mentions_claudim_models(self):
         """DENY reason mentions `claudim models --all`."""
-        proc = _run_hook(_agent_payload("bad-agent"))
+        proc = _run_hook(
+            _agent_payload("bad-agent"), agent_names="delegate-deepseek-v4-flash"
+        )
         reason = json.loads(proc.stdout)["hookSpecificOutput"][
             "permissionDecisionReason"
         ]
@@ -434,7 +484,9 @@ class TestDenyReasonContent:
 
     def test_agent_deny_reason_mentions_allowlist(self):
         """DENY reason mentions the allowlist file."""
-        proc = _run_hook(_agent_payload("bad-agent"))
+        proc = _run_hook(
+            _agent_payload("bad-agent"), agent_names="delegate-deepseek-v4-flash"
+        )
         reason = json.loads(proc.stdout)["hookSpecificOutput"][
             "permissionDecisionReason"
         ]
@@ -448,7 +500,8 @@ class TestDenyReasonContent:
                     {"type": "evil-agent", "prompt": "x"},
                     {"type": "bad-agent", "prompt": "y"},
                 ]
-            )
+            ),
+            agent_names="delegate-deepseek-v4-flash",
         )
         reason = json.loads(proc.stdout)["hookSpecificOutput"][
             "permissionDecisionReason"
@@ -458,7 +511,10 @@ class TestDenyReasonContent:
 
     def test_workflow_deny_uses_unnamed_for_blank(self):
         """DENY reason uses <unnamed> for agents with blank type."""
-        proc = _run_hook(_workflow_payload([{"type": "", "prompt": "x"}]))
+        proc = _run_hook(
+            _workflow_payload([{"type": "", "prompt": "x"}]),
+            agent_names="delegate-deepseek-v4-flash",
+        )
         reason = json.loads(proc.stdout)["hookSpecificOutput"][
             "permissionDecisionReason"
         ]
@@ -473,7 +529,9 @@ class TestDenyReasonContent:
 class TestOutputStructure:
     def test_deny_output_has_required_fields(self):
         """DENY output has hookSpecificOutput with all required fields."""
-        proc = _run_hook(_agent_payload("bad-agent"))
+        proc = _run_hook(
+            _agent_payload("bad-agent"), agent_names="delegate-deepseek-v4-flash"
+        )
         output = json.loads(proc.stdout)
         hso = output["hookSpecificOutput"]
         assert hso["hookEventName"] == "PreToolUse"
@@ -483,7 +541,9 @@ class TestOutputStructure:
 
     def test_ask_output_has_required_fields(self):
         """ASK output has hookSpecificOutput with all required fields."""
-        proc = _run_hook(_agent_payload("approval-sonnet"))
+        proc = _run_hook(
+            _agent_payload("approval-sonnet"), agent_names="approval-sonnet"
+        )
         output = json.loads(proc.stdout)
         hso = output["hookSpecificOutput"]
         assert hso["hookEventName"] == "PreToolUse"
@@ -493,5 +553,5 @@ class TestOutputStructure:
 
     def test_allow_output_is_empty(self):
         """ALLOW decision produces no stdout output."""
-        proc = _run_hook(_agent_payload("delegate-haiku"))
+        proc = _run_hook(_agent_payload("delegate-haiku"), agent_names="delegate-haiku")
         assert proc.stdout.strip() == ""
