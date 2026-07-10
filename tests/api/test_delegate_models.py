@@ -242,8 +242,25 @@ def test_enforce_allows_main_loop_requests():
         "anthropic/open_router/openai/gpt-oss-120b",
         system=[{"type": "text", "text": "You are Claude Code, official CLI."}],
     )
-    # Output styles REPLACE the CLI prompt, but the claudim launcher's
+    # Output styles REPLACE the CLI prompt, but the launcher's
     # append-system-prompt sentinel lands in a later block — still main loop.
+    # The name-agnostic sentinel is the primary marker (renameable launcher);
+    # the legacy claudim-bearing one is kept for retro-compat.
+    _enforce(
+        settings,
+        "anthropic/open_router/openai/gpt-oss-120b",
+        system=[
+            {"type": "text", "text": "Respond terse like smart caveman."},
+            {
+                "type": "text",
+                "text": "You are inside the model gateway session. Your agent "
+                "list includes delegate-* subagents.",
+            },
+        ],
+    )
+    # Already-deployed launchers that still emit the legacy (name-bearing)
+    # sentinel must keep matching after the gateway adds the name-agnostic
+    # marker — retro-compat.
     _enforce(
         settings,
         "anthropic/open_router/openai/gpt-oss-120b",

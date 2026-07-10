@@ -17,12 +17,20 @@ SRC="${CLAUDIM_SRC:-${REPO_RAW}/deploy/claudim}"
 # runtime). Installing them together keeps `claudim upgrade` consistent.
 RENDER_SRC="${CLAUDIM_RENDER_SRC:-${REPO_RAW}/deploy/claudim-render.py}"
 BIN_DIR="${CLAUDIM_BIN_DIR:-${HOME}/.local/bin}"
-DEST="${BIN_DIR}/claudim"
-RENDER_DEST="${BIN_DIR}/claudim-render.py"
+# Install NAME — parameterizes the launcher so it is renameable. Defaults to
+# `claudim` (retro-compat: unchanged behavior). Set CLAUDIM_NAME=loclaudim (or
+# any name) to install side-by-side under that name; the launcher derives its
+# own name from $0 at runtime, so a different install name just works. The repo
+# SOURCE files keep their canonical filenames (deploy/claudim,
+# deploy/claudim-render.py); only the installed binary/renderer/skill take NAME.
+NAME="${CLAUDIM_NAME:-claudim}"
+DEST="${BIN_DIR}/${NAME}"
+RENDER_DEST="${BIN_DIR}/${NAME}-render.py"
 # The claudim-delegate skill (orchestrator recipe + kill switch). Installed
-# globally so it loads in any Claude Code session, not just this repo.
+# globally so it loads in any Claude Code session, not just this repo. Installed
+# under ${NAME}-delegate so a renamed launcher gets its own skill slot.
 SKILL_SRC="${CLAUDIM_SKILL_SRC:-${REPO_RAW}/.claude/skills/claudim-delegate/SKILL.md}"
-SKILL_DIR="${HOME}/.claude/skills/claudim-delegate"
+SKILL_DIR="${HOME}/.claude/skills/${NAME}-delegate"
 SKILL_DEST="${SKILL_DIR}/SKILL.md"
 
 say()  { printf '==> %s\n' "$*"; }
@@ -57,7 +65,7 @@ mkdir -p "${BIN_DIR}"
 say "Installing renderer to ${RENDER_DEST}"
 fetch "${RENDER_SRC}" "${RENDER_DEST}" || fail "download failed from ${RENDER_SRC}"
 chmod +x "${RENDER_DEST}"
-say "Installing claudim to ${DEST}"
+say "Installing ${NAME} to ${DEST}"
 fetch "${SRC}" "${DEST}" || fail "download failed from ${SRC}"
 chmod +x "${DEST}"
 say "Installed."
@@ -66,12 +74,12 @@ say "Installed."
 # picks it up in any session (when to delegate, model picks, parallelism, tmux
 # observation, the unrestricted/gcloud path, and the workflow kill switch).
 # Non-fatal: claudim works without the skill; it's just the orchestration recipe.
-say "Installing claudim-delegate skill to ${SKILL_DEST}"
+say "Installing ${NAME}-delegate skill to ${SKILL_DEST}"
 mkdir -p "${SKILL_DIR}"
 if fetch "${SKILL_SRC}" "${SKILL_DEST}"; then
   say "Skill installed."
 else
-  warn "could not install claudim-delegate skill from ${SKILL_SRC}"
+  warn "could not install ${NAME}-delegate skill from ${SKILL_SRC}"
 fi
 
 # PATH check.
@@ -88,18 +96,18 @@ esac
 command -v tailscale >/dev/null 2>&1 || warn "tailscale not found — install it and log in to the jota.ai tailnet."
 command -v claude    >/dev/null 2>&1 || warn "claude not found — install: npm install -g @anthropic-ai/claude-code"
 
-cat <<'NEXT'
+cat <<NEXT
 
-claudim installed. Next:
+${NAME} installed. Next:
   1. Be on the company tailnet (Tailscale app logged in with @jota.ai) and
      permitted by the tailnet ACL to reach the gateway (ask an admin if unsure).
   2. Run it from any project directory:
-       claudim
-       claudim "explain this repo"
+       ${NAME}
+       ${NAME} "explain this repo"
   Args pass straight through to Claude Code. Override the gateway host/tailnet
-  with CLAUDIM_HOST / CLAUDIM_TAILNET if needed (see `claudim` header comments).
-  The claudim-delegate skill was installed to ~/.claude/skills/ — it teaches an
+  with CLAUDIM_HOST / CLAUDIM_TAILNET if needed (see \`${NAME}\` header comments).
+  The ${NAME}-delegate skill was installed to ~/.claude/skills/ — it teaches an
   Opus/Fable orchestrator when/how to delegate to the cheap non-American models
   (and defers to native workflows if you say "workflow"/"fan out subagents").
-  Update claudim later with: claudim upgrade
+  Update ${NAME} later with: ${NAME} upgrade
 NEXT

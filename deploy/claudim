@@ -58,6 +58,14 @@
 #
 set -euo pipefail
 
+# Invocation name — drives the tmux session name, renderer lookup, user-facing
+# messages, and `upgrade` target. Derived from $0 so the launcher is renameable:
+# install it as `claudim` (default), `loclaudim`, or any other name and every
+# self-reference follows. "claudim" is the default install name, NOT a hard
+# dependency. (CLAUDIM_* env vars stay the stable public interface regardless of
+# the binary name — retro-compat for existing shell configs.)
+SELF="${0##*/}"
+
 HOST="${CLAUDIM_HOST:-fcc-proxy}"
 TAILNET="${CLAUDIM_TAILNET:-tail576af6.ts.net}"
 PORT="${CLAUDIM_PORT:-8082}"
@@ -67,8 +75,8 @@ WAIT="${CLAUDIM_WAIT:-30}"
 FQDN="${HOST}.${TAILNET}"
 BASE_URL="${CLAUDIM_BASE_URL:-http://${FQDN}:${PORT}}"
 
-say()  { echo "[claudim] $*" >&2; }
-die()  { echo "[claudim] error: $*" >&2; exit 1; }
+say()  { echo "[${SELF}] $*" >&2; }
+die()  { echo "[${SELF}] error: $*" >&2; exit 1; }
 
 # Map a friendly delegate alias to the gateway's no-thinking model id.
 # The no-thinking variant is MANDATORY for `claude -p` delegates: reasoning
@@ -104,8 +112,8 @@ resolve_model_alias() {
 # its pane closes and the layout re-balances.
 #
 # Outside tmux there is no pane to split, so delegates go to a window in a
-# detached session named "claudim" (tmux attach -t claudim from another
-# terminal).
+# detached session named after the launcher (tmux attach -t <name> from another
+# terminal). Sanitized: tmux session names can't contain '.' or ':'.
 #
 # stdout is teed to a log and returned on claudim's stdout so the orchestrator
 # captures it exactly like the inline path (--output-format json stays clean).
@@ -126,7 +134,7 @@ run_in_tmux() {
   fi
   if [ -z "${sess}" ]; then
     in_session=0
-    sess="claudim"
+    sess="${SELF//[.:]/_}"
     tmux has-session -t "$sess" 2>/dev/null || tmux new-session -d -s "$sess"
   fi
 
@@ -134,7 +142,7 @@ run_in_tmux() {
   # predictable sits in /tmp. Trap cleans it up on normal exit OR Ctrl+C during
   # the wait loop below.
   local tmpdir
-  tmpdir="$(mktemp -d 2>/dev/null || mktemp -d -t claudim)"
+  tmpdir="$(mktemp -d 2>/dev/null || mktemp -d -t "${SELF}")"
   # Traps: EXIT cleans up on die() (the script exits while still inside this
   # function, so $tmpdir is in scope). INT/TERM (Ctrl+C during the wait loop)
   # clean up AND exit — without `exit`, the trap returns into the wait loop
@@ -202,16 +210,24 @@ run_in_tmux() {
   for _a in "${strip[@]}"; do scmd+=$(printf '%q ' "$_a"); done
 
   # Renderer lives next to the launcher (installed together by
-  # install-claudim.sh). Falling back to a CWD lookup keeps `bash
-  # deploy/claudim` from a git clone working for dev.
-  local launcher_dir renderer
+  # install-claudim.sh as <name>-render.py). Looked up by the launcher's OWN
+  # name first (so a renamed install finds its matching renderer), falling back
+  # to the legacy `claudim-render.py` (retro-compat: an old renderer still
+  # serves a renamed launcher). A CWD/PATH lookup keeps `bash deploy/claudim`
+  # from a git clone working for dev.
+  local launcher_dir renderer render_name
+  render_name="${SELF}-render.py"
   launcher_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
-  if [ -x "${launcher_dir}/claudim-render.py" ]; then
+  if [ -x "${launcher_dir}/${render_name}" ]; then
+    renderer="${launcher_dir}/${render_name}"
+  elif [ -x "${launcher_dir}/claudim-render.py" ]; then
     renderer="${launcher_dir}/claudim-render.py"
+  elif command -v "${render_name}" >/dev/null 2>&1; then
+    renderer="$(command -v "${render_name}")"
   elif command -v claudim-render.py >/dev/null 2>&1; then
     renderer="$(command -v claudim-render.py)"
   else
-    die "claudim-render.py not found next to launcher (${launcher_dir}) and not on PATH. Re-run scripts/install-claudim.sh."
+    die "${render_name} (or legacy claudim-render.py) not found next to launcher (${launcher_dir}) and not on PATH. Re-run scripts/install-claudim.sh."
   fi
 
   local taskprev=""
@@ -225,7 +241,7 @@ run_in_tmux() {
   # last command). The renderer exits non-zero when claude died before emitting
   # a final `result` event (OOM/timeout/network drop), so the launcher can
   # propagate that failure instead of hiding it behind `cat "$out"` + exit 0.
-  local shellcmd="unset ANTHROPIC_API_KEY; printf '\\033[1m[%s]\\033[0m %s\\n\\n' $(printf '%q' "${model:-delegate}") $(printf '%q' "$taskprev"); $envp claude $scmd --output-format stream-json --verbose | python3 $(printf '%q' "$renderer") $(printf '%q' "$out") $(printf '%q' "$caller_fmt"); rc=$?; printf '%s' \"\$rc\" > $(printf '%q' "$status"); printf 1 > $(printf '%q' "$done"); echo; echo '[claudim] delegate done — pane closes in 8s'; sleep 8"
+  local shellcmd="unset ANTHROPIC_API_KEY; printf '\\033[1m[%s]\\033[0m %s\\n\\n' $(printf '%q' "${model:-delegate}") $(printf '%q' "$taskprev"); $envp claude $scmd --output-format stream-json --verbose | python3 $(printf '%q' "$renderer") $(printf '%q' "$out") $(printf '%q' "$caller_fmt"); rc=$?; printf '%s' \"\$rc\" > $(printf '%q' "$status"); printf 1 > $(printf '%q' "$done"); echo; echo '[${SELF}] delegate done — pane closes in 8s'; sleep 8"
 
   rm -f "$done"
   local orig_win="" orig_pane="" new_pane="" new_win=""
@@ -292,13 +308,17 @@ run_in_tmux() {
 case "${1:-}" in
   upgrade|--upgrade|self-update|--self-update)
     INSTALLER="${CLAUDIM_INSTALLER:-https://raw.githubusercontent.com/usejota/agentic-model-gateway/main/scripts/install-claudim.sh}"
-    say "upgrading claudim from ${INSTALLER}"
+    say "upgrading ${SELF} from ${INSTALLER}"
+    # Pass CLAUDIM_NAME so the installer reinstalls under the CURRENT binary
+    # name (e.g. `loclaudim upgrade` stays `loclaudim`, doesn't revert to the
+    # default `claudim`). The installer source filename is stable; the install
+    # name is what's parameterized.
     if command -v curl >/dev/null 2>&1; then
-      exec sh -c "curl -fsSL '${INSTALLER}' | sh"
+      exec sh -c "curl -fsSL '${INSTALLER}' | CLAUDIM_NAME='${SELF}' sh"
     elif command -v wget >/dev/null 2>&1; then
-      exec sh -c "wget -qO- '${INSTALLER}' | sh"
+      exec sh -c "wget -qO- '${INSTALLER}' | CLAUDIM_NAME='${SELF}' sh"
     fi
-    die "need curl or wget to upgrade claudim"
+    die "need curl or wget to upgrade ${SELF}"
     ;;
   models|--models)
     if [ "${2:-}" = "--all" ] || [ "${2:-}" = "all" ]; then
@@ -338,11 +358,11 @@ for v in sorted(g):
 ' || die "could not list models from ${BASE_URL} (tailscale up? gateway up?)"
       exit 0
     fi
-    cat <<'MODELS'
-claudim delegate aliases — curated best-in-class NON-AMERICAN (Chinese +
+    cat <<MODELS
+${SELF} delegate aliases — curated best-in-class NON-AMERICAN (Chinese +
 Mistral/France). US closed labs (openai, anthropic, google, x-ai, amazon,
 nvidia, ibm-granite, liquid, rekaai, relace) are NEVER called. All no-thinking
-(safe for `claude -p`).
+(safe for \`claude -p\`).
 
   deepseek-v4-pro     smartest: heavy reasoning, multi-step logic, algorithms
   kimi-k2.7-code      coding: implement, refactor, bug fix, write tests
@@ -357,11 +377,11 @@ Pick rule: use the CHEAPEST that can do the job; escalate to deepseek-v4-pro
 only when the task needs real reasoning. Chinese or Mistral — your call per
 task; both are cheap and non-American.
 
-Delegate:  claudim -p --model <alias> "<task>"
-JSON out:  claudim -p --output-format json --model <alias> "<task>"
-gcloud/net: claudim -p --unrestricted --model <alias> "<task>"  # bypass perms
-Watch live: CLAUDIM_TMUX=1 claudim -p --model <alias> "<task>"  # tmux window (in your session if you're inside tmux)
-All non-American models live:  claudim models --all
+Delegate:  ${SELF} -p --model <alias> "<task>"
+JSON out:  ${SELF} -p --output-format json --model <alias> "<task>"
+gcloud/net: ${SELF} -p --unrestricted --model <alias> "<task>"  # bypass perms
+Watch live: CLAUDIM_TMUX=1 ${SELF} -p --model <alias> "<task>"  # tmux window (in your session if you're inside tmux)
+All non-American models live:  ${SELF} models --all
 A full routed id (contains "/") or a Claude alias (haiku/sonnet/opus) is
 passed through unchanged.
 MODELS
@@ -455,7 +475,7 @@ if [ -n "${TMUX:-}" ] && [ "${CLAUDIM_TMUX:-}" != "0" ]; then has_tmux=1; fi
 # headless delegates keep using run_in_tmux below.
 AGENTS_JSON=""
 if [ "${has_print}" -eq 0 ]; then
-  _agents_py="$(mktemp 2>/dev/null || mktemp -t claudim)"
+  _agents_py="$(mktemp 2>/dev/null || mktemp -t "${SELF}")"
   cat > "$_agents_py" <<'AGENTS_EOF'
 import json, os, re, sys
 try:
@@ -553,7 +573,7 @@ if [ "${need_rebuild}" -eq 1 ]; then
   # to pick the cheapest competent one per subtask.
   if [ -n "${AGENTS_JSON}" ]; then
     args+=("--agents" "${AGENTS_JSON}")
-    args+=("--append-system-prompt" "You are inside claudim (gateway session). Your agent list includes delegate-* subagents, one per gateway model. EVERY subagent you spawn — Agent tool, Workflow tool, fan-out, multi-agent — must run on a delegate-* agent (or a full delegate model id in Workflow model params); never spawn subagents on haiku/sonnet/opus/fable or let them inherit the session model. Pick the cheapest competent delegate per task; escalate only when the task demands it. Use claudim models --all to see the full list.")
+    args+=("--append-system-prompt" "You are inside the model gateway session. Your agent list includes delegate-* subagents, one per gateway model. EVERY subagent you spawn — Agent tool, Workflow tool, fan-out, multi-agent — must run on a delegate-* agent (or a full delegate model id in Workflow model params); never spawn subagents on haiku/sonnet/opus/fable or let them inherit the session model. Pick the cheapest competent delegate per task; escalate only when the task demands it. Use ${SELF} models --all to see the full list.")
   fi
 
   # Observation: tmux window per delegate. If the orchestrator session already
@@ -565,7 +585,7 @@ if [ "${need_rebuild}" -eq 1 ]; then
       if [ -n "${TMUX:-}" ]; then
         say "tmux: delegate window opening in your current session (C-b n / C-b w)"
       else
-        say "tmux: delegate in detached session (tmux attach -t claudim)"
+        say "tmux: delegate in detached session (tmux attach -t ${SELF//[.:]/_})"
       fi
       run_in_tmux "${args[@]}"
       exit $?

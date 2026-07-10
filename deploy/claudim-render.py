@@ -32,6 +32,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 
@@ -211,4 +212,4 @@ if __name__ == "__main__":
     if len(sys.argv) >= 3:
         render(sys.argv[1], sys.argv[2])
     else:
-        sys.exit("usage: claudim-render.py <out_path> <text|json>")
+        sys.exit(f"usage: {os.path.basename(sys.argv[0])} <out_path> <text|json>")
