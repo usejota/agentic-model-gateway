@@ -181,6 +181,21 @@ def test_admin_exposes_image_route_field(monkeypatch, tmp_path):
     assert field["secret"] is False
 
 
+def test_admin_exposes_model_delegate_approval_field(monkeypatch, tmp_path):
+    _set_home(monkeypatch, tmp_path)
+    _clear_process_config(monkeypatch)
+    app = create_app(lifespan_enabled=False)
+
+    response = _local_client(app).get("/admin/api/config")
+
+    assert response.status_code == 200
+    body = response.json()
+    field = next(f for f in body["fields"] if f["key"] == "MODEL_DELEGATE_APPROVAL")
+    # Lives on the Model Routing screen alongside exclusions and fallbacks.
+    assert field["section"] == "models"
+    assert field["secret"] is False
+
+
 def test_admin_apply_round_trips_image_route(monkeypatch, tmp_path):
     _set_home(monkeypatch, tmp_path)
     _clear_process_config(monkeypatch)

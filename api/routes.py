@@ -309,6 +309,18 @@ US_CLOSED_VENDORS = frozenset(
 )
 
 
+def _normalize_approval_ref(ref: str) -> str:
+    """Strip the first segment (provider) so vendor patterns match.
+
+    ``open_router/google/gemini-2.5-pro`` → ``google/gemini-2.5-pro``.
+    ``openai/gpt-4`` → ``openai/gpt-4`` (unchanged, only 2 segments).
+    """
+    parts = ref.split("/")
+    if len(parts) >= 3:
+        return "/".join(parts[1:])
+    return ref
+
+
 def _delegate_vendor(ref: str) -> str:
     """Return the vendor segment of a ``provider/vendor/model`` (or ``vendor/model``) ref."""
     parts = ref.split("/")
@@ -344,19 +356,18 @@ def _build_delegate_model_ids(
     free: list[str] = []
     approval: list[str] = []
     for ref in refs:
-        if _delegate_vendor(ref) in US_CLOSED_VENDORS:
-            continue
         if any(fnmatch.fnmatchcase(ref, pattern) for pattern in exclusions):
             continue
         nid = no_thinking_gateway_model_id(ref)
         if any(
             fnmatch.fnmatchcase(
-                _normalize_model_ref(ref), _normalize_model_ref(pattern)
+                _normalize_approval_ref(_normalize_model_ref(ref)),
+                _normalize_approval_ref(_normalize_model_ref(pattern)),
             )
             for pattern in approvals
         ):
             approval.append(nid)
-        else:
+        elif _delegate_vendor(ref) not in US_CLOSED_VENDORS:
             free.append(nid)
     return {"data": free, "approval": approval}
 

@@ -3,9 +3,10 @@ from fastapi.testclient import TestClient
 
 from api.app import create_app
 from api.dependencies import get_settings
+from api.gateway_model_ids import ONE_M_SUFFIX
 from api.model_router import ModelRouter
 from api.models.anthropic import MessagesRequest
-from api.services import _enforce_delegate_exclusions
+from api.services import _enforce_delegate_exclusions, _normalize_model_ref
 from config.settings import Settings
 from providers.exceptions import InvalidRequestError
 from providers.registry import ProviderRegistry
@@ -18,6 +19,7 @@ def _settings(
     model: str = "deepseek/deepseek-chat",
     model_opus: str | None = None,
     model_delegate_exclusions: list[str] | None = None,
+    model_delegate_approval: list[str] | None = None,
 ) -> Settings:
     return Settings.model_construct(
         model=model,
@@ -25,6 +27,7 @@ def _settings(
         model_sonnet=None,
         model_haiku=None,
         model_delegate_exclusions=model_delegate_exclusions or [],
+        model_delegate_approval=model_delegate_approval or [],
         anthropic_auth_token="",
     )
 
@@ -40,6 +43,19 @@ def _delegates(app, settings, *, registry=None):
         app.dependency_overrides.clear()
     assert response.status_code == 200
     return response.json()["data"]
+
+
+def _delegates_full(app, settings, *, registry=None):
+    """Wire settings/registry into a throwaway app and return the full response."""
+    if registry is not None:
+        app.state.provider_registry = registry
+    app.dependency_overrides[get_settings] = lambda: settings
+    try:
+        response = TestClient(app).get("/v1/models/delegates")
+    finally:
+        app.dependency_overrides.clear()
+    assert response.status_code == 200
+    return response.json()
 
 
 def test_delegates_returns_only_no_thinking_ids():
@@ -287,3 +303,274 @@ def test_enforce_allows_non_excluded_models_for_subagents():
 def test_enforce_noop_when_no_exclusions():
     settings = _settings()
     _enforce(settings, "anthropic/open_router/openai/gpt-oss-120b", system=None)
+
+
+# =============================================================================
+# MODEL_DELEGATE_APPROVAL — /v1/models/delegates response shape
+# =============================================================================
+
+
+def test_delegates_response_has_data_and_approval_keys():
+    """The response includes both ``data`` and ``approval`` lists."""
+    app = create_app(lifespan_enabled=False)
+    settings = _settings()
+    registry = ProviderRegistry()
+    registry.cache_model_ids("deepseek", {"deepseek-v4-flash"})
+
+    body = _delegates_full(app, settings, registry=registry)
+
+    assert "data" in body
+    assert "approval" in body
+    assert isinstance(body["data"], list)
+    assert isinstance(body["approval"], list)
+
+
+def test_delegates_approval_empty_list_all_in_data():
+    """Empty approval list -> all non-excluded models in ``data``, none in ``approval``."""
+    app = create_app(lifespan_enabled=False)
+    settings = _settings(
+        model_opus="open_router/qwen/qwen-3.5",
+        model_delegate_approval=[],
+    )
+    registry = ProviderRegistry()
+    registry.cache_model_ids("deepseek", {"deepseek-v4-flash"})
+
+    body = _delegates_full(app, settings, registry=registry)
+
+    assert len(body["data"]) >= 3  # configured refs + discovered
+    assert body["approval"] == []
+    assert f"{PREFIX}deepseek/deepseek-chat" in body["data"]
+    assert f"{PREFIX}open_router/qwen/qwen-3.5" in body["data"]
+    assert f"{PREFIX}deepseek/deepseek-v4-flash" in body["data"]
+
+
+def test_delegates_approval_exact_match():
+    """An approval pattern that exactly matches a ref moves it to ``approval``."""
+    app = create_app(lifespan_enabled=False)
+    settings = _settings(
+        model_opus="open_router/qwen/qwen-3.5",
+        model_delegate_approval=["open_router/qwen/qwen-3.5"],
+    )
+    registry = ProviderRegistry()
+    registry.cache_model_ids("deepseek", {"deepseek-v4-flash"})
+    registry.cache_model_ids("open_router", {"qwen/qwen-4"})
+
+    body = _delegates_full(app, settings, registry=registry)
+
+    # The matched model is in approval, not in data.
+    assert f"{PREFIX}open_router/qwen/qwen-3.5" in body["approval"]
+    assert f"{PREFIX}open_router/qwen/qwen-3.5" not in body["data"]
+    # Non-matched models stay in data.
+    assert f"{PREFIX}deepseek/deepseek-chat" in body["data"]
+    assert f"{PREFIX}deepseek/deepseek-v4-flash" in body["data"]
+    assert f"{PREFIX}open_router/qwen/qwen-4" in body["data"]
+
+
+def test_delegates_approval_glob():
+    """fnmatch glob approval pattern matches multiple models."""
+    app = create_app(lifespan_enabled=False)
+    settings = _settings(
+        model_opus="open_router/qwen/qwen-3.5",
+        model_delegate_approval=["open_router/qwen/*"],
+    )
+    registry = ProviderRegistry()
+    registry.cache_model_ids("open_router", {"qwen/qwen-4", "deepseek/deepseek-v4-pro"})
+    registry.cache_model_ids("deepseek", {"deepseek-chat"})
+
+    body = _delegates_full(app, settings, registry=registry)
+
+    # All open_router/qwen/* models are in approval.
+    assert f"{PREFIX}open_router/qwen/qwen-3.5" in body["approval"]
+    assert f"{PREFIX}open_router/qwen/qwen-4" in body["approval"]
+    # Non-matching models stay in data.
+    assert f"{PREFIX}open_router/deepseek/deepseek-v4-pro" in body["data"]
+    assert f"{PREFIX}deepseek/deepseek-chat" in body["data"]
+    # No approval models leak into data.
+    assert f"{PREFIX}open_router/qwen/qwen-3.5" not in body["data"]
+    assert f"{PREFIX}open_router/qwen/qwen-4" not in body["data"]
+
+
+def test_delegates_approval_normalized_pattern_matches_thinking_variant():
+    """An approval pattern written as a full advertised gateway id normalizes and
+    matches the bare ref, just like exclusions do."""
+    app = create_app(lifespan_enabled=False)
+    settings = _settings(
+        model_opus="open_router/qwen/qwen-3.5",
+        model_delegate_approval=[f"{PREFIX}open_router/qwen/qwen-3.5"],
+    )
+    registry = ProviderRegistry()
+    registry.cache_model_ids("deepseek", {"deepseek-chat"})
+
+    body = _delegates_full(app, settings, registry=registry)
+
+    # The pattern ``claude-3-freecc-no-thinking/open_router/qwen/qwen-3.5``
+    # normalizes to ``open_router/qwen/qwen-3.5``, matching the bare ref.
+    assert f"{PREFIX}open_router/qwen/qwen-3.5" in body["approval"]
+    assert f"{PREFIX}open_router/qwen/qwen-3.5" not in body["data"]
+
+
+def test_delegates_approval_excluded_not_in_either():
+    """Excluded models (MODEL_DELEGATE_EXCLUSIONS) appear in neither list."""
+    app = create_app(lifespan_enabled=False)
+    settings = _settings(
+        model_opus="open_router/qwen/qwen-3.5",
+        model_delegate_exclusions=["open_router/qwen/qwen-3.5"],
+        model_delegate_approval=["open_router/qwen/*"],
+    )
+    registry = ProviderRegistry()
+    registry.cache_model_ids("deepseek", {"deepseek-chat"})
+
+    body = _delegates_full(app, settings, registry=registry)
+
+    # Excluded model is absent from both lists, even though it also matches
+    # an approval pattern (exclusion is checked first).
+    assert f"{PREFIX}open_router/qwen/qwen-3.5" not in body["data"]
+    assert f"{PREFIX}open_router/qwen/qwen-3.5" not in body["approval"]
+    # Non-excluded models are present.
+    assert f"{PREFIX}deepseek/deepseek-chat" in body["data"]
+
+
+def test_delegates_approval_us_closed_vendors_in_approval_when_matched():
+    """US_CLOSED_VENDORS models that match an approval pattern appear in ``approval``.
+
+    Previously US_CLOSED_VENDORS were stripped entirely (from both free and approval).
+    Now they go to the approval list when matched — the whole point of the approval
+    feature is to make premium models (anthropic, openai, google, x-ai) available
+    via per-spawn human approval."""
+    app = create_app(lifespan_enabled=False)
+    settings = _settings(
+        model_delegate_approval=["openai/*", "anthropic/*"],
+    )
+    registry = ProviderRegistry()
+    # openai as a vendor is routed through open_router (like anthropic). The
+    # vendor extracted by _delegate_vendor is "openai" (second segment of
+    # open_router/openai/gpt-oss-120b), matching US_CLOSED_VENDORS.
+    registry.cache_model_ids(
+        "open_router",
+        {
+            "openai/gpt-oss-120b",
+            "anthropic/claude-opus-4-8",
+            "deepseek/deepseek-v4-pro",
+        },
+    )
+    registry.cache_model_ids("deepseek", {"deepseek-chat"})
+
+    body = _delegates_full(app, settings, registry=registry)
+
+    # US-closed vendors that match approval patterns go to approval.
+    assert f"{PREFIX}open_router/openai/gpt-oss-120b" in body["approval"]
+    assert f"{PREFIX}open_router/anthropic/claude-opus-4-8" in body["approval"]
+    # They don't leak into free.
+    assert f"{PREFIX}open_router/openai/gpt-oss-120b" not in body["data"]
+    assert f"{PREFIX}open_router/anthropic/claude-opus-4-8" not in body["data"]
+    # Non-US vendors are still in free.
+    assert f"{PREFIX}deepseek/deepseek-chat" in body["data"]
+    assert f"{PREFIX}open_router/deepseek/deepseek-v4-pro" in body["data"]
+
+
+def test_delegates_approval_us_closed_vendors_excluded_when_not_matched():
+    """US_CLOSED_VENDORS that do NOT match an approval pattern are still excluded."""
+    app = create_app(lifespan_enabled=False)
+    settings = _settings(
+        model_delegate_approval=["google/*"],  # only google, not openai
+    )
+    registry = ProviderRegistry()
+    registry.cache_model_ids(
+        "open_router",
+        {
+            "openai/gpt-oss-120b",
+            "google/gemini-2.5-pro",
+        },
+    )
+    registry.cache_model_ids("deepseek", {"deepseek-chat"})
+
+    body = _delegates_full(app, settings, registry=registry)
+
+    # Google matches approval -> in approval.
+    assert f"{PREFIX}open_router/google/gemini-2.5-pro" in body["approval"]
+    # OpenAI doesn't match approval AND is US_CLOSED_VENDORS -> excluded entirely.
+    assert f"{PREFIX}open_router/openai/gpt-oss-120b" not in body["data"]
+    assert f"{PREFIX}open_router/openai/gpt-oss-120b" not in body["approval"]
+    # Non-US vendors are in free.
+    assert f"{PREFIX}deepseek/deepseek-chat" in body["data"]
+
+
+def test_delegates_approval_null_registry():
+    """Approval endpoint works with no provider registry (only configured refs)."""
+    app = create_app(lifespan_enabled=False)
+    settings = _settings(
+        model_opus="open_router/qwen/qwen-3.5",
+        model_delegate_approval=["open_router/qwen/*"],
+    )
+
+    body = _delegates_full(app, settings)
+
+    assert f"{PREFIX}open_router/qwen/qwen-3.5" in body["approval"]
+    assert f"{PREFIX}deepseek/deepseek-chat" in body["data"]
+    assert f"{PREFIX}open_router/qwen/qwen-3.5" not in body["data"]
+
+
+# =============================================================================
+# _normalize_model_ref
+# =============================================================================
+
+
+def test_normalize_model_ref_strips_thinking_prefix():
+    """``anthropic/provider/model`` normalizes to ``provider/model``."""
+    assert _normalize_model_ref("anthropic/open_router/deepseek/deepseek-chat") == (
+        "open_router/deepseek/deepseek-chat"
+    )
+
+
+def test_normalize_model_ref_strips_no_thinking_prefix():
+    """``claude-3-freecc-no-thinking/provider/model`` normalizes to ``provider/model``."""
+    assert (
+        _normalize_model_ref(
+            "claude-3-freecc-no-thinking/open_router/deepseek/deepseek-chat"
+        )
+        == "open_router/deepseek/deepseek-chat"
+    )
+
+
+def test_normalize_model_ref_strips_one_m_suffix():
+    """``[1m]`` suffix is stripped from non-gateway ids."""
+    assert (
+        _normalize_model_ref(f"open_router/deepseek/deepseek-chat{ONE_M_SUFFIX}")
+        == "open_router/deepseek/deepseek-chat"
+    )
+
+
+def test_normalize_model_ref_strips_thinking_prefix_and_one_m_suffix():
+    """Gateway prefix AND ``[1m]`` suffix are both stripped."""
+    assert (
+        _normalize_model_ref(
+            f"anthropic/open_router/deepseek/deepseek-chat{ONE_M_SUFFIX}"
+        )
+        == "open_router/deepseek/deepseek-chat"
+    )
+
+
+def test_normalize_model_ref_strips_no_thinking_prefix_and_one_m_suffix():
+    """No-thinking prefix AND ``[1m]`` suffix are both stripped."""
+    assert (
+        _normalize_model_ref(
+            f"claude-3-freecc-no-thinking/open_router/deepseek/deepseek-chat{ONE_M_SUFFIX}"
+        )
+        == "open_router/deepseek/deepseek-chat"
+    )
+
+
+def test_normalize_model_ref_leaves_bare_ref_unchanged():
+    """A bare ``provider/model`` ref without gateway prefix or suffix is unchanged."""
+    assert (
+        _normalize_model_ref("open_router/deepseek/deepseek-chat")
+        == "open_router/deepseek/deepseek-chat"
+    )
+
+
+def test_normalize_model_ref_leaves_non_gateway_prefix_unchanged():
+    """A ref whose prefix is not a gateway prefix is unchanged."""
+    assert (
+        _normalize_model_ref("some_other_prefix/deepseek/deepseek-chat")
+        == "some_other_prefix/deepseek/deepseek-chat"
+    )

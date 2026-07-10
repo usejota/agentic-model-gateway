@@ -43,10 +43,14 @@ Exit:   always 0 (the decision is in the stdout JSON).
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
-ALLOWLIST_PATH = Path.home() / ".claude" / "claudim-allowlist.json"
+ALLOWLIST_PATH = Path(
+    os.environ.get("CLAUDIM_ALLOWLIST_PATH")
+    or Path.home() / ".claude" / "claudim-allowlist.json"
+)
 
 
 def load_allowlist() -> set[str]:
@@ -96,6 +100,7 @@ def decide_workflow(tool_input: dict, allowlist: set[str]) -> tuple[str, str]:
     if not isinstance(agents, list):
         return "allow", ""
     bad: list[str] = []
+    has_approval = False
     for entry in agents:
         if not isinstance(entry, dict):
             continue
@@ -104,11 +109,10 @@ def decide_workflow(tool_input: dict, allowlist: set[str]) -> tuple[str, str]:
         )
         if not isinstance(atype, str):
             continue
-        if (
-            atype.startswith("delegate-")
-            or atype.startswith("approval-")
-            or atype in allowlist
-        ):
+        if atype.startswith("delegate-") or atype in allowlist:
+            continue
+        if atype.startswith("approval-"):
+            has_approval = True
             continue
         bad.append(atype or "<unnamed>")
     if bad:
@@ -117,6 +121,12 @@ def decide_workflow(tool_input: dict, allowlist: set[str]) -> tuple[str, str]:
             "Each must be delegate-* (free), approval-* (premium, approval-"
             "required), or in ~/.claude/claudim-allowlist.json. Run "
             "`claudim models --all` for the delegate list."
+        )
+    if has_approval:
+        return "ask", (
+            "Workflow contains approval-* sub-agent(s) that use a premium "
+            "model and require per-spawn approval. Approve to let them run, "
+            "or deny and pick cheaper delegate-* alternatives instead."
         )
     return "allow", ""
 
