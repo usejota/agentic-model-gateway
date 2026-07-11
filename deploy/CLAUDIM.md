@@ -197,6 +197,49 @@ export CLAUDIM_HOST=fcc-proxy-staging
 ```
 (The staging node is `fcc-proxy`, which is the default — no override needed.)
 
+## Renaming & local-test installs
+
+The wrapper is named **`claudim`** by default, but the name is **not a hard
+dependency** — the launcher derives its own name from `$0` at runtime, and the
+installer installs binary + renderer + hook + skills under the chosen name.
+
+**Config for renaming:** `CLAUDIM_NAME` at install time.
+
+```sh
+CLAUDIM_NAME=buxexa bash scripts/install-claudim.sh
+```
+
+This produces command `buxexa`, skills `buxexa-delegate` / `buxexa-panel`, and
+allowlist `~/.claude/buxexa-allowlist.json`. The installed binary calls itself
+`buxexa` in messages, tmux session names, and the `upgrade` command.
+
+**`loclaudim`** is the suggested **convention** for a second local-test install
+on the same machine — it is NOT "the new wrapper name". To install a local-test
+wrapper:
+
+```sh
+CLAUDIM_NAME=loclaudim CLAUDIM_DEFAULT_BASE_URL=http://localhost:8082 \
+  bash scripts/install-claudim.sh
+```
+
+The installed binary is born pointing at the local gateway (`localhost:8082`).
+`CLAUDIM_BASE_URL` in the environment still wins if set (see precedence below).
+
+### Gateway URL precedence
+
+The URL the launcher connects to is resolved in this order (first wins):
+
+1. `CLAUDIM_BASE_URL` (env) — override for any session, e.g. `CLAUDIM_BASE_URL=http://localhost:8082 claudim`
+2. Baked-in URL from `CLAUDIM_DEFAULT_BASE_URL` (stamped at install time) — points the binary at a specific gateway permanently
+3. `http://${CLAUDIM_HOST}.${CLAUDIM_TAILNET}:${CLAUDIM_PORT}` — the default tailnet-based construction
+
+### Env vars are stable
+
+All env vars keep the `CLAUDIM_` prefix regardless of the binary name. The
+`CLAUDIM_*` namespace is the stable public interface — existing shell configs
+and `.zshrc` exports don't need to change when you install under a different
+name.
+
 ## How it works
 
 `claudim` checks you're on the tailnet, waits for the gateway to be reachable at

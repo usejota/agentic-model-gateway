@@ -676,7 +676,7 @@ class TestCustomAllowlist:
 
 class TestDenyReasonContent:
     def test_agent_deny_reason_mentions_claudim_models(self):
-        """DENY reason mentions `claudim models --all` (strict mode)."""
+        """DENY reason mentions `claudim models --all` by default (retro-compat)."""
         proc = _run_hook(
             _agent_payload("bad-agent"),
             agent_names="delegate-deepseek-v4-flash",
@@ -698,6 +698,60 @@ class TestDenyReasonContent:
             "permissionDecisionReason"
         ]
         assert "claudim-allowlist.json" in reason
+
+    def test_agent_deny_reason_uses_launcher_name_when_set(self, tmp_path: Path):
+        """A renamed install (CLAUDIM_LAUNCHER_NAME) shows its own command name in
+        DENY reasons, never the literal `claudim` (the allowlist path follows the
+        name too, so no `claudim` token survives)."""
+        proc = _run_hook(
+            _agent_payload("bad-agent"),
+            agent_names="delegate-deepseek-v4-flash",
+            strict=True,
+            env={
+                "CLAUDIM_LAUNCHER_NAME": "buxexa",
+                "CLAUDIM_ALLOWLIST_PATH": str(tmp_path / "buxexa-allowlist.json"),
+            },
+        )
+        reason = json.loads(proc.stdout)["hookSpecificOutput"][
+            "permissionDecisionReason"
+        ]
+        assert "buxexa --delegate" in reason
+        assert "buxexa models --all" in reason
+        assert "claudim" not in reason
+
+    def test_agent_deny_reason_shows_effective_allowlist_path(self, tmp_path: Path):
+        """DENY reason surfaces the effective allowlist path (CLAUDIM_ALLOWLIST_PATH),
+        not a hardcoded filename."""
+        allowlist = tmp_path / "custom-allowlist.json"
+        proc = _run_hook(
+            _agent_payload("bad-agent"),
+            agent_names="delegate-deepseek-v4-flash",
+            strict=True,
+            env={"CLAUDIM_ALLOWLIST_PATH": str(allowlist)},
+        )
+        reason = json.loads(proc.stdout)["hookSpecificOutput"][
+            "permissionDecisionReason"
+        ]
+        assert str(allowlist) in reason
+
+    def test_workflow_deny_reason_uses_launcher_name_when_set(self, tmp_path: Path):
+        """A renamed install shows its own command name in Workflow DENY reasons
+        too — the decide_workflow path interpolates LAUNCHER_NAME the same way as
+        decide_agent, so a hardcode-'claudim' regression there must not pass."""
+        proc = _run_hook(
+            _workflow_payload([{"type": "evil-agent", "prompt": "x"}]),
+            agent_names="delegate-deepseek-v4-flash",
+            strict=True,
+            env={
+                "CLAUDIM_LAUNCHER_NAME": "buxexa",
+                "CLAUDIM_ALLOWLIST_PATH": str(tmp_path / "buxexa-allowlist.json"),
+            },
+        )
+        reason = json.loads(proc.stdout)["hookSpecificOutput"][
+            "permissionDecisionReason"
+        ]
+        assert "buxexa models --all" in reason
+        assert "claudim" not in reason
 
     def test_workflow_deny_lists_offending_agents(self):
         """DENY reason for Workflow lists the offending agent names (strict mode)."""

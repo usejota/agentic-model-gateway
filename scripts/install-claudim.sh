@@ -45,6 +45,14 @@ say()  { printf '==> %s\n' "$*"; }
 warn() { printf 'warning: %s\n' "$*" >&2; }
 fail() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
+# Validate NAME early: must be [A-Za-z0-9_-]+ so downstream sed "s/claudim/${NAME}/g"
+# never sees a metacharacter (/ & . etc.) that would break the expression or produce
+# an invalid filename / skill directory. Runs after fail() is defined so the clear
+# message prints (validation before any mkdir/fetch).
+case "${NAME}" in
+  *[!A-Za-z0-9_-]* | "" ) fail "CLAUDIM_NAME must match [A-Za-z0-9_-]+ (got: '${NAME}')" ;;
+esac
+
 # fetch URL DEST — curl or wget, picked once. Returns 0 on success, 1 on failure
 # without exiting, so callers can decide whether to fail or warn. Downloads to a
 # sibling temp file and atomically moves on success, so a mid-stream failure
@@ -78,6 +86,16 @@ fetch "${HOOK_SRC}" "${HOOK_DEST}" || fail "download failed from ${HOOK_SRC}"
 chmod +x "${HOOK_DEST}"
 say "Installing ${NAME} to ${DEST}"
 fetch "${SRC}" "${DEST}" || fail "download failed from ${SRC}"
+# Bake a default gateway URL into the installed launcher when
+# CLAUDIM_DEFAULT_BASE_URL is set. This lets a side-by-side local-test
+# wrapper (e.g. CLAUDIM_NAME=loclaudim) point at its own gateway without
+# env vars, while CLAUDIM_BASE_URL at runtime still wins if set.
+if [ -n "${CLAUDIM_DEFAULT_BASE_URL:-}" ]; then
+  say "Baking default gateway URL: ${CLAUDIM_DEFAULT_BASE_URL}"
+  _esc="$(printf '%s' "${CLAUDIM_DEFAULT_BASE_URL}" | sed 's/[&\\/]/\\&/g')"
+  sed -i.bak "s|^CLAUDIM_BAKED_BASE_URL=\"\"|CLAUDIM_BAKED_BASE_URL=\"${_esc}\"|" "${DEST}" && rm -f "${DEST}.bak"
+  grep -q "^CLAUDIM_BAKED_BASE_URL=\"${_esc}\"" "${DEST}" || fail "failed to bake CLAUDIM_DEFAULT_BASE_URL into ${DEST}"
+fi
 chmod +x "${DEST}"
 say "Installed."
 
@@ -94,6 +112,7 @@ for _sk in delegate panel; do
   mkdir -p "${_dir}"
   _tmp="${_dest}.tmp.$$"
   if fetch "${_src}" "${_tmp}"; then
+    # NAME is validated [A-Za-z0-9_-]+ above — no sed metachar risk.
     sed "s/claudim/${NAME}/g" "${_tmp}" > "${_dest}"
     rm -f "${_tmp}"
     say "Skill ${NAME}-${_sk} installed."
@@ -130,5 +149,8 @@ ${NAME} installed. Next:
   The ${NAME}-delegate and ${NAME}-panel skills were installed to ~/.claude/skills/ — they teach an
   Opus/Fable orchestrator when/how to delegate to the cheap non-American models
   (and defers to native workflows if you say "workflow"/"fan out subagents").
+  Local-test wrapper (side-by-side with prod): install a second copy under
+  another name pointing at your local gateway, e.g.:
+    CLAUDIM_NAME=loclaudim CLAUDIM_DEFAULT_BASE_URL=http://localhost:8082 bash scripts/install-claudim.sh
   Update ${NAME} later with: ${NAME} upgrade
 NEXT

@@ -66,6 +66,12 @@ set -euo pipefail
 # the binary name — retro-compat for existing shell configs.)
 SELF="${0##*/}"
 
+# Baked defaults — the installer may stamp these at install time so a named
+# install (e.g. a local-test wrapper) points at its own gateway without env
+# vars. Empty = use CLAUDIM_* env / built-in defaults. DO NOT rename these
+# variables or the marker comments; scripts/install-claudim.sh seds them.
+CLAUDIM_BAKED_BASE_URL=""
+
 HOST="${CLAUDIM_HOST:-fcc-proxy}"
 TAILNET="${CLAUDIM_TAILNET:-tail576af6.ts.net}"
 PORT="${CLAUDIM_PORT:-8082}"
@@ -73,7 +79,7 @@ TOKEN="${CLAUDIM_TOKEN:-freecc}"
 WAIT="${CLAUDIM_WAIT:-30}"
 
 FQDN="${HOST}.${TAILNET}"
-BASE_URL="${CLAUDIM_BASE_URL:-http://${FQDN}:${PORT}}"
+BASE_URL="${CLAUDIM_BASE_URL:-${CLAUDIM_BAKED_BASE_URL:-http://${FQDN}:${PORT}}}"
 
 say()  { echo "[${SELF}] $*" >&2; }
 die()  { echo "[${SELF}] error: $*" >&2; exit 1; }
@@ -313,10 +319,15 @@ case "${1:-}" in
     # name (e.g. `loclaudim upgrade` stays `loclaudim`, doesn't revert to the
     # default `claudim`). The installer source filename is stable; the install
     # name is what's parameterized.
+    # Extract any baked gateway URL from the current binary so re-install
+    # preserves it (e.g. a local-test wrapper keeps pointing at localhost).
+    _baked="$(sed -n 's/^CLAUDIM_BAKED_BASE_URL="\(.*\)"$/\1/p' "$0" | head -1)"
+    _baked_env=""
+    [ -n "${_baked}" ] && _baked_env="CLAUDIM_DEFAULT_BASE_URL='${_baked}'"
     if command -v curl >/dev/null 2>&1; then
-      exec sh -c "curl -fsSL '${INSTALLER}' | CLAUDIM_NAME='${SELF}' sh"
+      exec sh -c "curl -fsSL '${INSTALLER}' | ${_baked_env} CLAUDIM_NAME='${SELF}' sh"
     elif command -v wget >/dev/null 2>&1; then
-      exec sh -c "wget -qO- '${INSTALLER}' | CLAUDIM_NAME='${SELF}' sh"
+      exec sh -c "wget -qO- '${INSTALLER}' | ${_baked_env} CLAUDIM_NAME='${SELF}' sh"
     fi
     die "need curl or wget to upgrade ${SELF}"
     ;;
@@ -597,10 +608,18 @@ if [ "${need_rebuild}" -eq 1 ]; then
     args+=("--agents" "${AGENTS_JSON}")
     if [ "${has_delegate}" -eq 1 ]; then
       export CLAUDIM_ENFORCE=1
-      args+=("--append-system-prompt" "You are inside the model gateway session with the --delegate ENFORCE HOOK ACTIVE. Your agent list includes delegate-* (free) and approval-* (premium, per-spawn human approval) subagents. EVERY subagent you spawn — Agent tool, Workflow tool, fan-out, multi-agent — MUST use a delegate-* or approval-* subagent_type; the hook DENIES any other. NEVER pass run_in_background to the Workflow tool (it does not accept that param and will be denied with a clear reason); run_in_background works on the Agent tool only. To permit a custom agent, add it to ~/.claude/claudim-allowlist.json. Pick the cheapest competent delegate-* per task; escalate to approval-* only when the task truly needs a premium model. Use ${SELF} models --all to see the full list.")
+      args+=("--append-system-prompt" "You are inside the model gateway session with the --delegate ENFORCE HOOK ACTIVE. Your agent list includes delegate-* (free) and approval-* (premium, per-spawn human approval) subagents. EVERY subagent you spawn — Agent tool, Workflow tool, fan-out, multi-agent — MUST use a delegate-* or approval-* subagent_type; the hook DENIES any other. NEVER pass run_in_background to the Workflow tool (it does not accept that param and will be denied with a clear reason); run_in_background works on the Agent tool only. To permit a custom agent, add it to ~/.claude/${SELF}-allowlist.json. Pick the cheapest competent delegate-* per task; escalate to approval-* only when the task truly needs a premium model. Use ${SELF} models --all to see the full list.")
     else
       args+=("--append-system-prompt" "You are inside the model gateway session. Your agent list includes delegate-* subagents (one per gateway model; description = the model's strength) and possibly approval-* subagents (premium, per-spawn human approval). These delegates change WHICH model runs a subagent, never WHETHER you spawn one: keep doing inline work inline and keep your normal judgment about when to use agents or workflows. When you DO spawn subagents — your own decision, an explicit user request to fan out, or a Workflow — pick the delegate-* agent whose strength best fits each task (Workflow agent() calls: pass agentType with the delegate agent name). If an approval-* spawn is denied by the human, pick a delegate-* alternative. Use ${SELF} models --all for the full model list.")
     fi
+    # Allowlist path follows the install name so side-by-side installs (prod +
+    # local test wrapper) do not share/miss each other's allowlist. Explicit
+    # CLAUDIM_ALLOWLIST_PATH still wins (stable public interface).
+    export CLAUDIM_ALLOWLIST_PATH="${CLAUDIM_ALLOWLIST_PATH:-${HOME}/.claude/${SELF}-allowlist.json}"
+    # Hook has no access to $0 of the launcher — hand it the invocation name so
+    # user-facing deny messages show the right command.
+    export CLAUDIM_LAUNCHER_NAME="${SELF}"
+
     # === HOOK: carregado sempre que há agentes (transparente ou estrito) ===
     # Localizar o enforce hook script (renameable: <SELF>-enforce-hook.py)
     _ldir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"

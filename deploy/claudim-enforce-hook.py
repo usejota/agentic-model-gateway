@@ -61,6 +61,8 @@ ALLOWLIST_PATH = Path(
     or Path.home() / ".claude" / "claudim-allowlist.json"
 )
 
+LAUNCHER_NAME = os.environ.get("CLAUDIM_LAUNCHER_NAME") or "claudim"
+
 
 def load_allowlist() -> set[str]:
     try:
@@ -91,9 +93,9 @@ def decide_agent(
     if not isinstance(subagent_type, str) or not subagent_type:
         if strict:
             return "deny", (
-                "Agent/Task called without a subagent_type. In claudim --delegate "
+                f"Agent/Task called without a subagent_type. In {LAUNCHER_NAME} --delegate "
                 "mode, specify a delegate-* (free) or approval-* (premium, "
-                "approval-required) agent. Run `claudim models --all` for the list."
+                f"approval-required) agent. Run `{LAUNCHER_NAME} models --all` for the list."
             )
         return "allow", ""
     if subagent_type in agent_names:
@@ -109,10 +111,10 @@ def decide_agent(
     if strict:
         return "deny", (
             f"Subagent '{subagent_type}' is not a recognized delegate-* or "
-            "approval-* agent. In claudim --delegate mode only the agents "
+            f"approval-* agent. In {LAUNCHER_NAME} --delegate mode only the agents "
             "generated for this session or agents listed in "
-            "~/.claude/claudim-allowlist.json are allowed. Run "
-            "`claudim models --all` to see available delegates."
+            f"{ALLOWLIST_PATH} are allowed. Run "
+            f"`{LAUNCHER_NAME} models --all` to see available delegates."
         )
     return "allow", ""
 
@@ -150,8 +152,8 @@ def decide_workflow(
             return "deny", (
                 f"Workflow sub-agent(s) not allowed in --delegate mode: {bad}. "
                 "Each must be a recognized agent from this session or in "
-                "~/.claude/claudim-allowlist.json. Run "
-                "`claudim models --all` for the delegate list."
+                f"{ALLOWLIST_PATH}. Run "
+                f"`{LAUNCHER_NAME} models --all` for the delegate list."
             )
         return "allow", ""
     if has_approval:
