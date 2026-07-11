@@ -242,12 +242,28 @@ def _build_models_list_response(
         )
 
     for model in SUPPORTED_CLAUDE_MODELS:
+        # Fable is a fictional alias with no built-in Claude Code catalog entry.
+        # When the override can serve 1M, advertise the alias WITH the [1m]
+        # suffix (same "Fable" display name) so picking "Fable" just works —
+        # instead of listing a bare 200K row next to a separate 1M row.
+        if (
+            model.id == "claude-fable-5"
+            and settings.model_fable is not None
+            and _context_window_for_ref(settings.model_fable, provider_registry)
+            >= ONE_M_CONTEXT
+        ):
+            model = ModelResponse(
+                id=f"{model.id}{ONE_M_SUFFIX}",
+                display_name=model.display_name,
+                created_at=model.created_at,
+            )
         _append_unique_model(models, seen, model)
 
-    # When a Claude alias (Opus / Sonnet / Fable) is overridden to a 1M-capable
+    # When a Claude alias (Opus / Sonnet) is overridden to a 1M-capable
     # model, advertise a ``<alias>[1m]`` variant so the picker shows the
     # familiar Claude name with the 1M context signal intact. (Haiku is excluded
-    # by design: cheap model, no 1M window.)
+    # by design: cheap model, no 1M window. Fable is handled above — it
+    # substitutes the bare id in-place rather than adding a separate row.)
     _append_alias_1m_if_override_supports(
         models, seen, "claude-opus-4-20250514", settings.model_opus, provider_registry
     )
@@ -257,9 +273,6 @@ def _build_models_list_response(
         "claude-sonnet-4-20250514",
         settings.model_sonnet,
         provider_registry,
-    )
-    _append_alias_1m_if_override_supports(
-        models, seen, "claude-fable-5", settings.model_fable, provider_registry
     )
 
     return ModelsListResponse(
