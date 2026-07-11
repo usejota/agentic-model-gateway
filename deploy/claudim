@@ -322,12 +322,13 @@ case "${1:-}" in
     # Extract any baked gateway URL from the current binary so re-install
     # preserves it (e.g. a local-test wrapper keeps pointing at localhost).
     _baked="$(sed -n 's/^CLAUDIM_BAKED_BASE_URL="\(.*\)"$/\1/p' "$0" | head -1)"
-    _baked_env=""
-    [ -n "${_baked}" ] && _baked_env="CLAUDIM_DEFAULT_BASE_URL='${_baked}'"
+    export CLAUDIM_NAME="${SELF}"
+    [ -n "${_baked}" ] && export CLAUDIM_DEFAULT_BASE_URL="${_baked}"
+    _installer_q="$(printf '%q' "${INSTALLER}")"
     if command -v curl >/dev/null 2>&1; then
-      exec sh -c "curl -fsSL '${INSTALLER}' | ${_baked_env} CLAUDIM_NAME='${SELF}' sh"
+      exec sh -c "curl -fsSL ${_installer_q} | sh"
     elif command -v wget >/dev/null 2>&1; then
-      exec sh -c "wget -qO- '${INSTALLER}' | ${_baked_env} CLAUDIM_NAME='${SELF}' sh"
+      exec sh -c "wget -qO- ${_installer_q} | sh"
     fi
     die "need curl or wget to upgrade ${SELF}"
     ;;
