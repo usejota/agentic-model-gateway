@@ -15,6 +15,7 @@ from providers.registry import ProviderRegistry
 from . import dependencies
 from .dependencies import get_settings, require_api_key
 from .gateway_model_ids import (
+    ONE_M_SUFFIX,
     gateway_model_id,
     no_thinking_gateway_model_id,
     one_m_gateway_model_id,
@@ -63,6 +64,11 @@ SUPPORTED_CLAUDE_MODELS = [
         id="claude-3-5-haiku-20241022",
         display_name="Claude 3.5 Haiku",
         created_at="2024-10-22T00:00:00Z",
+    ),
+    ModelResponse(
+        id="claude-fable-5",
+        display_name="Fable",
+        created_at="2025-05-14T00:00:00Z",
     ),
 ]
 
@@ -158,6 +164,34 @@ def _append_provider_model_variants(
         )
 
 
+def _append_alias_1m_if_override_supports(
+    models: list[ModelResponse],
+    seen: set[str],
+    alias: str,
+    override_ref: str | None,
+    provider_registry: ProviderRegistry | None,
+) -> None:
+    """Advertise ``<alias>[1m]`` when the configured override has 1M context.
+
+    Lets the user pick the familiar Claude alias (Opus/Sonnet/Fable) with the
+    ``[1m]`` signal Claude Code's ``has1mContext()`` recognises, while the
+    override routes to a cheap 1M-capable provider/model under the hood.
+    Haiku is intentionally excluded upstream (the caller skips it).
+    """
+    if override_ref is None:
+        return
+    if _context_window_for_ref(override_ref, provider_registry) < ONE_M_CONTEXT:
+        return
+    _append_unique_model(
+        models,
+        seen,
+        _discovered_model_response(
+            f"{alias}{ONE_M_SUFFIX}",
+            display_name=f"{alias.replace('claude-', 'Claude ').replace('-20250514', '').replace('-5', ' 5').strip()} (1M context)",
+        ),
+    )
+
+
 def _build_models_list_response(
     settings: Settings, provider_registry: ProviderRegistry | None
 ) -> ModelsListResponse:
@@ -178,20 +212,55 @@ def _build_models_list_response(
             context_window=_context_window_for_ref(ref.model_ref, provider_registry),
         )
 
-    if provider_registry is not None:
-        for model_info in provider_registry.cached_prefixed_model_infos():
-            _append_provider_model_variants(
-                models,
-                seen,
-                model_info.model_id,
-                supports_thinking=model_info.supports_thinking,
-                context_window=_context_window_for_ref(
-                    model_info.model_id, provider_registry
-                ),
-            )
+    if provider_registry is None:
+        registry_infos: list = []
+    else:
+        registry_infos = list(provider_registry.cached_prefixed_model_infos())
+
+    # When the user has configured a Fable override, the bare ``claude-fable-5``
+    # is the fictional alias they pick in the picker (it routes through
+    # MODEL_FABLE in ModelRouter). The real ``open_router/anthropic/claude-fable-5``
+    # from the registry is the costly upstream — hide it so a casual pick
+    # doesn't bypass the override.
+    if settings.model_fable is not None:
+        registry_infos = [
+            info
+            for info in registry_infos
+            if not info.model_id.endswith("/anthropic/claude-fable-5")
+            and not info.model_id.endswith("~anthropic/claude-fable-latest")
+        ]
+
+    for model_info in registry_infos:
+        _append_provider_model_variants(
+            models,
+            seen,
+            model_info.model_id,
+            supports_thinking=model_info.supports_thinking,
+            context_window=_context_window_for_ref(
+                model_info.model_id, provider_registry
+            ),
+        )
 
     for model in SUPPORTED_CLAUDE_MODELS:
         _append_unique_model(models, seen, model)
+
+    # When a Claude alias (Opus / Sonnet / Fable) is overridden to a 1M-capable
+    # model, advertise a ``<alias>[1m]`` variant so the picker shows the
+    # familiar Claude name with the 1M context signal intact. (Haiku is excluded
+    # by design: cheap model, no 1M window.)
+    _append_alias_1m_if_override_supports(
+        models, seen, "claude-opus-4-20250514", settings.model_opus, provider_registry
+    )
+    _append_alias_1m_if_override_supports(
+        models,
+        seen,
+        "claude-sonnet-4-20250514",
+        settings.model_sonnet,
+        provider_registry,
+    )
+    _append_alias_1m_if_override_supports(
+        models, seen, "claude-fable-5", settings.model_fable, provider_registry
+    )
 
     return ModelsListResponse(
         data=models,
