@@ -24,8 +24,11 @@ only helps pick the right delegate model per task.
 - **Agent tool** (single subagent, fan-out, parallel spawns) -> pick the best-fit
   `delegate-*` agent by its description (strength) for each task. Use the model
   table below as a starting shortcut, not a boundary.
-- **Workflow tool** -> pass `agentType: "delegate-..."` in each `agent()` call.
-  Do NOT pass raw `model` ids unless the model has no corresponding agent (check
+- **Workflow tool** -> EVERY `agent()` call in the script MUST pass
+  `agentType: "delegate-..."` (see the mandatory example below). An `agent()`
+  call without `agentType` silently runs on the SESSION model — in a claudim
+  session that defeats the entire purpose of the delegate pool. Do NOT pass raw
+  `model` ids unless the model has no corresponding agent (check
   `claudim models --all` for the full pool).
 - **Generic agents** (Explore, general-purpose, Plan, ...) -> these are native
   Claude Code agents and are NOT blocked. The hook (transparent mode) lets them
@@ -41,6 +44,32 @@ only helps pick the right delegate model per task.
 **Do NOT delegate work you would do inline.** The delegate pool is a model
 choice, not a delegation mandate. Keep your normal judgment about what to
 spawn.
+
+#### Workflow scripts: agentType is MANDATORY on every agent() call
+
+The Workflow tool does NOT read the agent roster on its own. Omitting
+`agentType` runs that step on the session model (full price). In a claudim
+session, write every `agent()` call like this:
+
+```javascript
+// CORRECT — the step runs on the delegate model:
+const fix = await agent("Fix the lazy env bug in meta_api.py ...", {
+  label: "fix:meta_api",
+  agentType: "delegate-deepseek-v4-flash",   // <- REQUIRED in claudim sessions
+})
+
+// WRONG — silently burns session-model tokens:
+const fix = await agent("Fix the lazy env bug in meta_api.py ...", {
+  label: "fix:meta_api",
+})
+```
+
+Pick the `agentType` per step exactly as you would for the Agent tool: cheap
+triage/mechanical steps on the flash-class delegate, heavy reasoning steps on
+the pro-class delegate, code-heavy steps on the coding delegate. `pipeline()`
+and `parallel()` stages follow the same rule — the option rides on each
+inner `agent()` call. Before launching any workflow in a claudim session,
+scan the script: if any `agent()` call lacks `agentType`, add it.
 
 ### MODE B: outside claudim (plain claude session)
 
