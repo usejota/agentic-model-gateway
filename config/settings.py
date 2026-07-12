@@ -197,6 +197,12 @@ class Settings(BaseSettings):
         default_factory=list, validation_alias="MODEL_DELEGATE_APPROVAL"
     )
 
+    # Exact refs placed first in the deterministic delegate roster. Entries
+    # remain subject to exclusions and approval policy.
+    model_delegate_roster: Annotated[list[str], NoDecode] = Field(
+        default_factory=list, validation_alias="MODEL_DELEGATE_ROSTER"
+    )
+
     # Optional image reroute. When a request has image content (top-level user
     # message or nested in a tool_result) AND the resolved primary model
     # doesn't accept images, this provider+model handles just that turn.
@@ -479,6 +485,7 @@ class Settings(BaseSettings):
         "fallback_models",
         "model_delegate_exclusions",
         "model_delegate_approval",
+        "model_delegate_roster",
         mode="before",
     )
     @classmethod

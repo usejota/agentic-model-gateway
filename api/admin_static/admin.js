@@ -363,7 +363,7 @@ function inputForField(field) {
     return select;
   }
 
-  if (field.key === "MODEL_DELEGATE_EXCLUSIONS" || field.key === "MODEL_DELEGATE_APPROVAL") {
+  if (field.key === "MODEL_DELEGATE_EXCLUSIONS" || field.key === "MODEL_DELEGATE_APPROVAL" || field.key === "MODEL_DELEGATE_ROSTER") {
     // Checkbox picker with search: filter models (e.g. "openai"), tick
     // individually or "select all shown", selections accumulate across
     // searches. Stored as a comma-separated list in a hidden input; custom

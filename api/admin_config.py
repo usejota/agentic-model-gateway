@@ -482,6 +482,16 @@ FIELDS: tuple[ConfigFieldSpec, ...] = (
         ),
     ),
     ConfigFieldSpec(
+        "MODEL_DELEGATE_ROSTER",
+        "Delegate Roster",
+        "models",
+        settings_attr="model_delegate_roster",
+        description=(
+            "Comma-separated exact provider/model refs placed first in the "
+            "delegate roster. Exclusions and approval policy still take precedence."
+        ),
+    ),
+    ConfigFieldSpec(
         "IMAGE_ROUTE",
         "Image Route",
         "models",

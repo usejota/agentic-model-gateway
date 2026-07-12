@@ -1,6 +1,5 @@
 """FastAPI route handlers."""
 
-import fnmatch
 import inspect
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -9,6 +8,7 @@ from loguru import logger
 from config.provider_catalog import ONE_M_CONTEXT, resolve_context_window
 from config.settings import Settings
 from core.anthropic import get_token_count
+from core.delegates import build_delegate_catalog
 from core.trace import trace_event
 from providers.registry import ProviderRegistry
 
@@ -22,7 +22,7 @@ from .gateway_model_ids import (
 )
 from .models.anthropic import MessagesRequest, TokenCountRequest
 from .models.responses import ModelResponse, ModelsListResponse
-from .services import ClaudeProxyService, _normalize_model_ref
+from .services import ClaudeProxyService
 
 router = APIRouter()
 
@@ -365,96 +365,6 @@ async def list_models(
     return _build_models_list_response(settings, provider_registry)
 
 
-# Vendors whose models are excluded from claudim delegate discovery. Sourced
-# verbatim from the launcher's former US_CLOSED set (deploy/claudim) so the
-# gateway is the single source of truth for the non-American filter.
-US_CLOSED_VENDORS = frozenset(
-    {
-        "openai",
-        "anthropic",
-        # Google: "gemini" matches direct refs (gemini/gemini-*) and
-        # gateway-routed (claude-3-freecc-no-thinking/gemini/...); "google"
-        # matches open_router-routed google models (open_router/google/...).
-        "gemini",
-        "google",
-        "x-ai",
-        "amazon",
-        # nvidia_nim direct refs (nvidia_nim/<model>) expose vendor
-        # "nvidia_nim"; 3-segment nvidia_nim/nvidia/<model> exposes "nvidia".
-        "nvidia",
-        "nvidia_nim",
-        "ibm-granite",
-        "liquid",
-        "rekaai",
-        "relace",
-    }
-)
-
-
-def _normalize_approval_ref(ref: str) -> str:
-    """Strip the first segment (provider) so vendor patterns match.
-
-    ``open_router/google/gemini-2.5-pro`` → ``google/gemini-2.5-pro``.
-    ``openai/gpt-4`` → ``openai/gpt-4`` (unchanged, only 2 segments).
-    """
-    parts = ref.split("/")
-    if len(parts) >= 3:
-        return "/".join(parts[1:])
-    return ref
-
-
-def _delegate_vendor(ref: str) -> str:
-    """Return the vendor segment of a ``provider/vendor/model`` (or ``vendor/model``) ref."""
-    parts = ref.split("/")
-    vendor = parts[1] if len(parts) >= 3 else parts[0]
-    return vendor.lstrip("~")
-
-
-def _build_delegate_model_ids(
-    settings: Settings, provider_registry: ProviderRegistry | None
-) -> dict[str, list[str]]:
-    """Build the flat list of no-thinking gateway ids available for claudim delegates.
-
-    Sources match ``_build_models_list_response`` (configured refs + discovered
-    prefixed infos), deduped order-preserving. US-closed vendors and refs
-    matching ``settings.model_delegate_exclusions`` (fnmatch) are skipped.
-    """
-    refs: list[str] = []
-    seen: set[str] = set()
-
-    for ref in settings.configured_chat_model_refs():
-        if ref.model_ref not in seen:
-            seen.add(ref.model_ref)
-            refs.append(ref.model_ref)
-
-    if provider_registry is not None:
-        for model_info in provider_registry.cached_prefixed_model_infos():
-            if model_info.model_id not in seen:
-                seen.add(model_info.model_id)
-                refs.append(model_info.model_id)
-
-    exclusions = settings.model_delegate_exclusions
-    approvals = settings.model_delegate_approval
-    free: list[str] = []
-    approval: list[str] = []
-    for ref in refs:
-        if any(fnmatch.fnmatchcase(ref, pattern) for pattern in exclusions):
-            continue
-        nid = no_thinking_gateway_model_id(ref)
-        if any(
-            fnmatch.fnmatchcase(ref, pattern)
-            or fnmatch.fnmatchcase(
-                _normalize_approval_ref(_normalize_model_ref(ref)),
-                _normalize_approval_ref(_normalize_model_ref(pattern)),
-            )
-            for pattern in approvals
-        ):
-            approval.append(nid)
-        elif _delegate_vendor(ref) not in US_CLOSED_VENDORS:
-            free.append(nid)
-    return {"data": free, "approval": approval}
-
-
 @router.get("/v1/models/delegates")
 async def list_delegate_models(
     request: Request,
@@ -470,7 +380,23 @@ async def list_delegate_models(
     trace_event(stage="ingress", event="api.models.delegates", source="api")
     registry = getattr(request.app.state, "provider_registry", None)
     provider_registry = registry if isinstance(registry, ProviderRegistry) else None
-    return _build_delegate_model_ids(settings, provider_registry)
+    refs: list[str] = []
+    seen: set[str] = set()
+    for configured in settings.configured_chat_model_refs():
+        if configured.model_ref not in seen:
+            seen.add(configured.model_ref)
+            refs.append(configured.model_ref)
+    if provider_registry is not None:
+        for info in provider_registry.cached_prefixed_model_infos():
+            if info.model_id not in seen:
+                seen.add(info.model_id)
+                refs.append(info.model_id)
+    return build_delegate_catalog(
+        refs,
+        exclusions=settings.model_delegate_exclusions,
+        approvals=settings.model_delegate_approval,
+        preferred_refs=getattr(settings, "model_delegate_roster", []),
+    )
 
 
 @router.post("/stop")
