@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import json
 import os
 import subprocess
@@ -78,6 +79,24 @@ def decision(proc: subprocess.CompletedProcess[str]) -> str:
         "allow"
         if not proc.stdout
         else json.loads(proc.stdout)["hookSpecificOutput"]["permissionDecision"]
+    )
+
+
+def run_with_env(
+    raw_input: str,
+    *,
+    strict: bool,
+    env: dict[str, str],
+) -> subprocess.CompletedProcess[str]:
+    full_env = {**os.environ, **env}
+    if strict:
+        full_env["CLAUDIM_ENFORCE"] = "1"
+    return subprocess.run(
+        ["python3", str(HOOK)],
+        input=raw_input,
+        text=True,
+        capture_output=True,
+        env=full_env,
     )
 
 
@@ -170,6 +189,61 @@ def test_explicit_model_policy(tmp_path: Path, strict: bool) -> None:
     )
 
 
+@pytest.mark.parametrize("strict", [False, True])
+def test_explicit_model_cannot_bypass_approval(tmp_path: Path, strict: bool) -> None:
+    payload = {
+        "tool_name": "Agent",
+        "tool_input": {
+            "subagent_type": "delegate-free",
+            "model": "id/premium",
+        },
+    }
+    assert decision(run(payload, tmp_path, strict=strict)) == "ask"
+
+
+@pytest.mark.parametrize("strict", [False, True])
+def test_allowlist_cannot_bypass_explicit_model_policy(
+    tmp_path: Path, strict: bool
+) -> None:
+    allowlist = tmp_path / "allowlist.json"
+    allowlist.write_text(json.dumps({"custom_agents": ["custom-agent"]}))
+    extra = {"CLAUDIM_ALLOWLIST_PATH": str(allowlist)}
+    approval = {
+        "tool_name": "Agent",
+        "tool_input": {"subagent_type": "custom-agent", "model": "id/premium"},
+    }
+    unknown = {
+        "tool_name": "Agent",
+        "tool_input": {"subagent_type": "custom-agent", "model": "id/missing"},
+    }
+    assert decision(run(approval, tmp_path, strict=strict, extra=extra)) == "ask"
+    assert decision(run(unknown, tmp_path, strict=strict, extra=extra)) == "deny"
+
+
+@pytest.mark.parametrize("tool_name", ["Agent", "Task"])
+@pytest.mark.parametrize("strict", [False, True])
+def test_custom_allowlist_without_model_is_allowed(
+    tmp_path: Path, tool_name: str, strict: bool
+) -> None:
+    allowlist = tmp_path / "allowlist.json"
+    allowlist.write_text(json.dumps({"custom_agents": ["custom-agent"]}))
+    payload = {
+        "tool_name": tool_name,
+        "tool_input": {"subagent_type": "custom-agent"},
+    }
+    assert (
+        decision(
+            run(
+                payload,
+                tmp_path,
+                strict=strict,
+                extra={"CLAUDIM_ALLOWLIST_PATH": str(allowlist)},
+            )
+        )
+        == "allow"
+    )
+
+
 def test_transparent_escape_hatch(tmp_path: Path) -> None:
     payload = {"tool_name": "Agent", "tool_input": {"subagent_type": "general-purpose"}}
     assert (
@@ -209,6 +283,39 @@ def test_catalog_missing_fail_open_only_transparent(tmp_path: Path) -> None:
         env=env,
     )
     assert decision(strict) == "deny"
+
+
+@pytest.mark.parametrize("catalog_contents", [None, "{broken"])
+@pytest.mark.parametrize("subagent_type", ["delegate-free", "approval-premium"])
+def test_missing_or_corrupt_catalog_fails_open_before_prefix_validation(
+    tmp_path: Path, catalog_contents: str | None, subagent_type: str
+) -> None:
+    catalog = tmp_path / "catalog.json"
+    if catalog_contents is not None:
+        catalog.write_text(catalog_contents)
+    payload = {
+        "tool_name": "Agent",
+        "tool_input": {"subagent_type": subagent_type},
+    }
+    proc = run_with_env(
+        json.dumps(payload),
+        strict=False,
+        env={
+            "CLAUDIM_CATALOG_PATH": str(catalog),
+            "CLAUDIM_DELEGATE_AGENT_NAMES": "",
+        },
+    )
+    assert decision(proc) == "allow"
+
+
+@pytest.mark.parametrize("raw_input", ["{broken", "[]", "null"])
+def test_malformed_payload_denied_only_in_strict(raw_input: str) -> None:
+    assert decision(run_with_env(raw_input, strict=False, env={})) == "allow"
+    assert decision(run_with_env(raw_input, strict=True, env={})) == "deny"
+
+
+def test_hook_parses_as_python_39() -> None:
+    ast.parse(HOOK.read_text(), feature_version=(3, 9))
 
 
 def workflow(script: str, **extra: object) -> dict:
@@ -263,3 +370,40 @@ def test_workflow_matrix_from_captured_shape(tmp_path: Path, strict: bool) -> No
         )
         == "deny"
     )
+
+
+@pytest.mark.parametrize("strict", [False, True])
+@pytest.mark.parametrize(
+    "script",
+    [
+        "// agentType: 'delegate-free'\nreturn agent('x')",
+        "return agent(\"agentType: 'delegate-free'\")",
+        (
+            "const a = agent('a', {agentType: 'delegate-free', model: 'id/free'}); "
+            "const b = agent('b')"
+        ),
+    ],
+)
+def test_workflow_requires_route_on_each_call(
+    tmp_path: Path, strict: bool, script: str
+) -> None:
+    assert decision(run(workflow(script), tmp_path, strict=strict)) == "deny"
+
+
+@pytest.mark.parametrize("strict", [False, True])
+def test_workflow_effective_model_cannot_bypass_approval(
+    tmp_path: Path, strict: bool
+) -> None:
+    script = "return agent('x', {agentType: 'delegate-free', model: 'id/premium'})"
+    assert decision(run(workflow(script), tmp_path, strict=strict)) == "ask"
+
+
+@pytest.mark.parametrize("strict", [False, True])
+def test_workflow_invalid_route_wins_over_approval(
+    tmp_path: Path, strict: bool
+) -> None:
+    script = (
+        "const a = agent('a', {model: 'id/premium'}); "
+        "const b = agent('b', {agentType: 'delegate-missing'})"
+    )
+    assert decision(run(workflow(script), tmp_path, strict=strict)) == "deny"

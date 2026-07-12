@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 LAUNCHER_NAME = os.environ.get("CLAUDIM_LAUNCHER_NAME") or "claudim"
+ALLOWLIST_LOAD_ERRORS = (OSError, json.JSONDecodeError)
+CATALOG_LOAD_ERRORS = (OSError, json.JSONDecodeError, KeyError, TypeError)
 ALLOWLIST_PATH = Path(
     os.environ.get("CLAUDIM_ALLOWLIST_PATH")
     or Path.home() / ".claude" / "claudim-allowlist.json"
@@ -36,7 +38,7 @@ def route_subagents() -> bool:
 def load_allowlist() -> set[str]:
     try:
         data = json.loads(ALLOWLIST_PATH.read_text(encoding="utf-8"))
-    except OSError, json.JSONDecodeError:
+    except ALLOWLIST_LOAD_ERRORS:
         return set()
     raw = data.get("custom_agents", []) if isinstance(data, dict) else []
     return {str(value) for value in raw} if isinstance(raw, list) else set()
@@ -64,7 +66,7 @@ def load_catalog() -> Catalog:
                 if isinstance(model, dict)
             }
             return Catalog(by_name, by_id, capabilities, True)
-        except OSError, json.JSONDecodeError, KeyError, TypeError:
+        except CATALOG_LOAD_ERRORS:
             pass
     names = {
         name.strip()
@@ -124,28 +126,131 @@ def decide_agent(
 ) -> tuple[str, str]:
     subagent_type = tool_input.get("subagent_type")
     model = tool_input.get("model")
-    for value in (subagent_type, model):
-        policy = _policy(value, catalog)
+    if not catalog.loaded and not strict:
+        return "allow", ""
+
+    # Agent's explicit model overrides the model attached to subagent_type.
+    # Validate it first so neither a free agent nor the custom allowlist can
+    # bypass approval/unknown-model policy.
+    if isinstance(model, str):
+        policy = _policy(model, catalog)
         if policy == "approval":
-            return "ask", f"Subagent '{value}' requires per-spawn human approval."
+            return "ask", f"Subagent model '{model}' requires per-spawn human approval."
         if policy == "delegate":
             return "allow", ""
+        return "deny", f"Unknown or excluded delegate model '{model}'."
+
+    policy = _policy(subagent_type, catalog)
+    if policy == "approval":
+        return "ask", f"Subagent '{subagent_type}' requires per-spawn human approval."
+    if policy == "delegate":
+        return "allow", ""
     if isinstance(subagent_type, str) and subagent_type in allowlist:
         return "allow", ""
     if isinstance(subagent_type, str) and subagent_type.startswith(
         ("delegate-", "approval-")
     ):
         return "deny", f"Unknown or excluded delegate agent '{subagent_type}'."
-    if isinstance(model, str):
-        return "deny", f"Unknown or excluded delegate model '{model}'."
-    if not catalog.loaded and not strict:
-        return "allow", ""
     if not strict and not route_subagents():
         return "allow", ""
     return "deny", _routing_reason(catalog)
 
 
-ROUTING_VALUE_RE = re.compile(r"\b(agentType|model)\s*:\s*(['\"])([^'\"]+)\2")
+def _skip_quoted(script: str, start: int, quote: str) -> int:
+    index = start + 1
+    while index < len(script):
+        if script[index] == "\\":
+            index += 2
+            continue
+        if script[index] == quote:
+            return index + 1
+        index += 1
+    return len(script)
+
+
+def _skip_comment(script: str, start: int) -> int:
+    if script.startswith("//", start):
+        newline = script.find("\n", start + 2)
+        return len(script) if newline < 0 else newline + 1
+    if script.startswith("/*", start):
+        end = script.find("*/", start + 2)
+        return len(script) if end < 0 else end + 2
+    return start
+
+
+def _agent_calls(script: str) -> list[str] | None:
+    """Extract balanced agent(...) calls outside comments and string literals."""
+    calls: list[str] = []
+    index = 0
+    while index < len(script):
+        char = script[index]
+        if char in "'\"`":
+            index = _skip_quoted(script, index, char)
+            continue
+        comment_end = _skip_comment(script, index)
+        if comment_end != index:
+            index = comment_end
+            continue
+        match = re.match(r"agent\s*\(", script[index:])
+        previous = script[index - 1] if index else ""
+        if match is None or previous.isalnum() or previous in "_$":
+            index += 1
+            continue
+        call_start = index
+        index += match.end()
+        depth = 1
+        while index < len(script) and depth:
+            char = script[index]
+            if char in "'\"`":
+                index = _skip_quoted(script, index, char)
+                continue
+            comment_end = _skip_comment(script, index)
+            if comment_end != index:
+                index = comment_end
+                continue
+            if char == "(":
+                depth += 1
+            elif char == ")":
+                depth -= 1
+            index += 1
+        if depth:
+            return None
+        calls.append(script[call_start:index])
+    return calls
+
+
+def _routing_values(call: str) -> dict[str, str]:
+    values: dict[str, str] = {}
+    index = 0
+    while index < len(call):
+        char = call[index]
+        if char in "'\"`":
+            index = _skip_quoted(call, index, char)
+            continue
+        comment_end = _skip_comment(call, index)
+        if comment_end != index:
+            index = comment_end
+            continue
+        match = re.match(r"(agentType|model)\s*:\s*(['\"])", call[index:])
+        previous = call[index - 1] if index else ""
+        if match is None or previous.isalnum() or previous in "_$":
+            index += 1
+            continue
+        quote = match.group(2)
+        value_start = index + match.end()
+        value_end = value_start
+        while value_end < len(call):
+            if call[value_end] == "\\":
+                value_end += 2
+                continue
+            if call[value_end] == quote:
+                break
+            value_end += 1
+        if value_end >= len(call):
+            return {}
+        values[match.group(1)] = call[value_start:value_end]
+        index = value_end + 1
+    return values
 
 
 def decide_workflow(
@@ -155,7 +260,6 @@ def decide_workflow(
     *,
     strict: bool,
 ) -> tuple[str, str]:
-    del strict
     if "run_in_background" in tool_input:
         return (
             "deny",
@@ -167,24 +271,28 @@ def decide_workflow(
             "deny",
             "Workflow requires a readable canonical script for routing validation.",
         )
-    calls = len(re.findall(r"\bagent\s*\(", script))
-    matches = list(ROUTING_VALUE_RE.finditer(script))
-    if len(matches) < calls:
-        return "deny", (
-            "Regenerate the script: every agent() needs agentType (delegate-*) "
-            "or model (a catalog id)."
-        )
+    if not catalog.loaded and not strict:
+        return "allow", ""
+    calls = _agent_calls(script)
+    if calls is None:
+        return "deny", "Workflow contains an incomplete agent() call."
     approval = False
     invalid: list[str] = []
-    for match in matches:
-        value = match.group(3)
-        if value in allowlist:
-            continue
-        policy = _policy(value, catalog)
-        if policy == "approval":
-            approval = True
-        elif policy != "delegate":
-            invalid.append(value)
+    for call in calls:
+        values = _routing_values(call)
+        if not values:
+            return "deny", (
+                "Regenerate the script: every agent() needs agentType (delegate-*) "
+                "or model (a catalog id)."
+            )
+        for field, value in values.items():
+            policy = _policy(value, catalog)
+            if policy == "approval":
+                approval = True
+            elif policy == "delegate" or (field == "agentType" and value in allowlist):
+                continue
+            else:
+                invalid.append(value)
     if invalid:
         return "deny", f"Workflow contains unknown or excluded routes: {invalid}."
     if approval:
@@ -193,14 +301,19 @@ def decide_workflow(
 
 
 def main() -> int:
+    strict = enforce_mode()
     try:
         payload = json.load(sys.stdin)
     except json.JSONDecodeError:
-        return 0
+        if not strict:
+            return 0
+        payload = None
     if not isinstance(payload, dict):
-        return 0
+        if not strict:
+            return 0
+        decision, reason = "deny", "Malformed hook payload in strict routing mode."
+        return emit_decision(decision, reason)
     tool_input = payload.get("tool_input")
-    strict = enforce_mode()
     if not isinstance(tool_input, dict):
         if not strict:
             return 0
@@ -218,6 +331,10 @@ def main() -> int:
             )
         else:
             return 0
+    return emit_decision(decision, reason)
+
+
+def emit_decision(decision: str, reason: str) -> int:
     if decision != "allow":
         json.dump(
             {
