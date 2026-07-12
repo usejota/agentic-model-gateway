@@ -312,6 +312,7 @@ textarea {
   display: grid;
   gap: 7px;
   align-content: start;
+  min-width: 0;
 }
 
 .field label {
@@ -456,4 +457,91 @@ textarea {
   .action-buttons button {
     flex: 1;
   }
+}
+
+/* Delegate model multi-picker (allowlist / approval): search box + one flat
+   scrollable checkbox list, selected rows pinned to the top. */
+.model-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+}
+.field .model-picker-search {
+  width: 100%;
+  min-height: 38px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--input);
+  color: var(--text);
+  padding: 8px 10px;
+}
+.model-picker-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.model-picker-count {
+  font-size: 12px;
+  opacity: 0.85;
+  margin-right: auto;
+}
+.field .model-picker-toolbar button {
+  font-size: 12px;
+  padding: 3px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--input);
+  color: var(--text);
+  cursor: pointer;
+  width: auto;
+  min-height: 0;
+}
+.field .model-picker-toolbar button:hover {
+  border-color: var(--text);
+}
+.model-picker-list {
+  max-height: 300px;
+  overflow-y: auto;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--input);
+  padding: 4px;
+}
+/* Rows are <label>s: reset the bold/space-between rules from `.field label`. */
+.field .model-picker-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  font-weight: 400;
+  gap: 8px;
+  font-size: 13px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 6px;
+  margin: 0;
+  min-width: 0;
+}
+.field .model-picker-row:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+.field .model-picker-row.is-selected {
+  color: #c9c9ff;
+}
+.model-picker-ref {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Reset the global 100%-width/38px-height `.field input` rule for checkboxes. */
+.field .model-picker-row input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
+  min-height: 0;
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 0;
+  accent-color: #7a7aff;
 }

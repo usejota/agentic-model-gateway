@@ -181,6 +181,23 @@ class Settings(BaseSettings):
         default_factory=list, validation_alias="FALLBACK_MODELS"
     )
 
+    # Premium models that require per-spawn human approval. fnmatch patterns
+    # against provider/model refs. A match here ALWAYS classifies the model as
+    # approval (wins over allowlist). These appear as ``approval-*`` agents in
+    # ``--agents`` — the enforce hook issues ``ASK`` (not ``ALLOW``) so the
+    # human must approve each spawn.
+    model_delegate_approval: Annotated[list[str], NoDecode] = Field(
+        default_factory=list, validation_alias="MODEL_DELEGATE_APPROVAL"
+    )
+
+    # Closed-set catalog of free delegate models. fnmatch patterns against
+    # provider/model refs. A model matching ONLY the allowlist is a free
+    # delegate (no approval). Together with MODEL_DELEGATE_APPROVAL this defines
+    # the whole delegate catalog: both empty = no delegates at all.
+    model_delegate_allowlist: Annotated[list[str], NoDecode] = Field(
+        default_factory=list, validation_alias="MODEL_DELEGATE_ALLOWLIST"
+    )
+
     # Optional image reroute. When a request has image content (top-level user
     # message or nested in a tool_result) AND the resolved primary model
     # doesn't accept images, this provider+model handles just that turn.
@@ -470,7 +487,12 @@ class Settings(BaseSettings):
             result[name] = token
         return result
 
-    @field_validator("fallback_models", mode="before")
+    @field_validator(
+        "fallback_models",
+        "model_delegate_approval",
+        "model_delegate_allowlist",
+        mode="before",
+    )
     @classmethod
     def parse_fallback_models(cls, v: Any) -> Any:
         """Parse the fallback model chain from a comma-separated string.

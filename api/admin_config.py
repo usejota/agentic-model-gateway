@@ -457,6 +457,28 @@ FIELDS: tuple[ConfigFieldSpec, ...] = (
         ),
     ),
     ConfigFieldSpec(
+        "MODEL_DELEGATE_APPROVAL",
+        "Approval",
+        "models",
+        settings_attr="model_delegate_approval",
+        description=(
+            "Comma-separated provider/model refs (fnmatch globs) that subagents may "
+            "use only with per-spawn human approval. A model in both lists requires "
+            "approval (approval wins)."
+        ),
+    ),
+    ConfigFieldSpec(
+        "MODEL_DELEGATE_ALLOWLIST",
+        "Allowlist",
+        "models",
+        settings_attr="model_delegate_allowlist",
+        description=(
+            "Comma-separated provider/model refs (fnmatch globs) subagents may use "
+            "freely, without human approval. Together with Approval Delegates this "
+            "defines the whole delegate catalog — both empty = no delegates."
+        ),
+    ),
+    ConfigFieldSpec(
         "IMAGE_ROUTE",
         "Image Route",
         "models",

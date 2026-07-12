@@ -86,7 +86,7 @@ def test_admin_static_hides_managed_source_label():
 
     assert 'managed_env: "",' in script
     assert "hasOwnProperty.call(labels, source)" in script
-    assert 'parts.push("locked")' in script
+    assert 'parts.push("locked")' not in script
     assert "sourceEl.textContent = source" in script
 
 
@@ -177,6 +177,21 @@ def test_admin_exposes_image_route_field(monkeypatch, tmp_path):
     body = response.json()
     field = next(f for f in body["fields"] if f["key"] == "IMAGE_ROUTE")
     # Lives on the Model Routing screen alongside FALLBACK_MODELS.
+    assert field["section"] == "models"
+    assert field["secret"] is False
+
+
+def test_admin_exposes_model_delegate_approval_field(monkeypatch, tmp_path):
+    _set_home(monkeypatch, tmp_path)
+    _clear_process_config(monkeypatch)
+    app = create_app(lifespan_enabled=False)
+
+    response = _local_client(app).get("/admin/api/config")
+
+    assert response.status_code == 200
+    body = response.json()
+    field = next(f for f in body["fields"] if f["key"] == "MODEL_DELEGATE_APPROVAL")
+    # Lives on the Model Routing screen alongside the free-delegate allowlist.
     assert field["section"] == "models"
     assert field["secret"] is False
 
@@ -607,3 +622,93 @@ def test_admin_launch_url_uses_loopback_for_wildcard_host():
     settings = Settings.model_construct(host="0.0.0.0", port=8082)
 
     assert local_admin_url(settings) == "http://127.0.0.1:8082/admin"
+
+
+def test_admin_explicit_env_values_are_editable(monkeypatch, tmp_path):
+    _set_home(monkeypatch, tmp_path)
+    _clear_process_config(monkeypatch)
+    explicit_env = tmp_path / "explicit.env"
+    explicit_env.write_text("MODEL_DELEGATE_ALLOWLIST=a/b,c/d\n", encoding="utf-8")
+    monkeypatch.setenv("FCC_ENV_FILE", str(explicit_env))
+    app = create_app(lifespan_enabled=False)
+
+    config = _local_client(app).get("/admin/api/config").json()
+    field = next(
+        field
+        for field in config["fields"]
+        if field["key"] == "MODEL_DELEGATE_ALLOWLIST"
+    )
+    assert field["locked"] is False
+    assert field["source"] == "explicit_env_file"
+
+    response = _local_client(app).post(
+        "/admin/api/config/apply",
+        json={"values": {"MODEL_DELEGATE_ALLOWLIST": "a/b"}},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["applied"] is True
+    assert body["pending_fields"] == []
+
+    managed_text = (tmp_path / ".fcc" / ".env").read_text("utf-8")
+    assert "MODEL_DELEGATE_ALLOWLIST=a/b" in managed_text
+    assert "c/d" not in managed_text
+
+
+def test_admin_explicit_same_as_managed_not_locked(monkeypatch, tmp_path):
+    _set_home(monkeypatch, tmp_path)
+    _clear_process_config(monkeypatch)
+    (tmp_path / ".fcc").mkdir(parents=True, exist_ok=True)
+    managed_env_path = tmp_path / ".fcc" / ".env"
+    managed_env_path.write_text("MODEL_DELEGATE_ALLOWLIST=a/b,c/d\n", encoding="utf-8")
+    monkeypatch.setenv("FCC_ENV_FILE", str(managed_env_path))
+    app = create_app(lifespan_enabled=False)
+
+    config = _local_client(app).get("/admin/api/config").json()
+    field = next(
+        field
+        for field in config["fields"]
+        if field["key"] == "MODEL_DELEGATE_ALLOWLIST"
+    )
+    assert field["locked"] is False
+    assert field["source"] == "managed_env"
+
+    response = _local_client(app).post(
+        "/admin/api/config/apply",
+        json={"values": {"MODEL_DELEGATE_ALLOWLIST": "a/b"}},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["applied"] is True
+    assert body["pending_fields"] == []
+
+    text = managed_env_path.read_text("utf-8")
+    assert "MODEL_DELEGATE_ALLOWLIST=a/b" in text
+    assert "c/d" not in text
+
+
+def test_admin_process_env_still_locked(monkeypatch, tmp_path):
+    _set_home(monkeypatch, tmp_path)
+    _clear_process_config(monkeypatch)
+    monkeypatch.setenv("MODEL_DELEGATE_ALLOWLIST", "a/b,c/d")
+    app = create_app(lifespan_enabled=False)
+
+    config = _local_client(app).get("/admin/api/config").json()
+    field = next(
+        field
+        for field in config["fields"]
+        if field["key"] == "MODEL_DELEGATE_ALLOWLIST"
+    )
+    assert field["locked"] is True
+    assert field["source"] == "process"
+
+    response = _local_client(app).post(
+        "/admin/api/config/apply",
+        json={"values": {"MODEL_DELEGATE_ALLOWLIST": "a/b"}},
+    )
+    assert response.status_code == 200
+
+    managed_env = tmp_path / ".fcc" / ".env"
+    if managed_env.exists():
+        text = managed_env.read_text("utf-8")
+        assert "MODEL_DELEGATE_ALLOWLIST=a/b" not in text

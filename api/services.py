@@ -16,11 +16,13 @@ from core.anthropic import get_token_count, get_user_facing_error_message
 from core.anthropic.aggregate import aggregate_sse_to_message
 from core.anthropic.image_detection import has_images
 from core.anthropic.sse import ANTHROPIC_SSE_RESPONSE_HEADERS
+from core.delegates import ref_in_catalog_union
 from core.trace import api_messages_request_snapshot, trace_event, traced_async_stream
 from providers.base import BaseProvider
 from providers.exceptions import InvalidRequestError, OverloadedError, ProviderError
 
 from .detection import is_safety_classifier_request
+from .gateway_model_ids import ONE_M_SUFFIX, decode_gateway_model_id
 from .model_router import ModelRouter, RoutedMessagesRequest
 from .models.anthropic import MessagesRequest, TokenCountRequest
 from .models.responses import TokenCountResponse
@@ -87,6 +89,98 @@ def _require_non_empty_messages(messages: list[Any]) -> None:
         raise InvalidRequestError("messages cannot be empty")
 
 
+# Markers identifying Claude Code's MAIN conversation loop (the model the human
+# drives via /model). The main loop's system prompt opens with "You are Claude
+# Code, Anthropic's official CLI"; subagent (Agent tool) prompts open with
+# "You are an AGENT FOR Claude Code..." — which does NOT contain the substring
+# below — so enforcement applies to subagents but never to the main loop.
+# This also exempts plain-claude connections (fcc-connect, messaging bots)
+# that never pass through the launcher.
+#
+# The gateway sentinels are appended by the launcher's --append-system-prompt
+# (main loop only, survives output styles that replace the CLI prompt). The
+# name-agnostic one keeps the launcher renameable; the legacy claudim-bearing
+# one keeps already-deployed launchers matching.
+_MAIN_LOOP_MARKERS = (
+    "You are Claude Code",
+    "You are inside the model gateway session",
+    "You are inside claudim (gateway session)",
+)
+
+
+def _system_prompt_texts(system: Any) -> list[str]:
+    """Return every text block of an Anthropic ``system`` value."""
+    if isinstance(system, str):
+        return [system]
+    if isinstance(system, list):
+        texts = []
+        for block in system:
+            text = getattr(block, "text", None)
+            if text is None and isinstance(block, dict):
+                text = block.get("text")
+            if text:
+                texts.append(text)
+        return texts
+    return []
+
+
+def _is_main_loop_request(request: MessagesRequest) -> bool:
+    return any(
+        marker in text
+        for text in _system_prompt_texts(request.system)
+        for marker in _MAIN_LOOP_MARKERS
+    )
+
+
+def _normalize_model_ref(ref: str) -> str:
+    """Reduce a gateway model id (or bare ref) to its canonical provider/model ref.
+
+    Both thinking (``anthropic/...``) and no-thinking
+    (``claude-3-freecc-no-thinking/...``) advertised ids, with or without the
+    ``[1m]`` suffix, reduce to the same ``provider/model`` form. An allowlist or
+    approval pattern written against one advertised variant matches the other,
+    so a subagent can't dodge policy by picking the thinking variant of a model.
+    """
+    decoded = decode_gateway_model_id(ref)
+    if decoded is not None:
+        return f"{decoded.provider_id}/{decoded.provider_model}"
+    if ref.endswith(ONE_M_SUFFIX):
+        ref = ref[: -len(ONE_M_SUFFIX)]
+    return ref
+
+
+def _enforce_delegate_policy(
+    settings: Settings, request: MessagesRequest, provider_model_ref: str
+) -> None:
+    """Hard-block subagent models outside the delegate catalog.
+
+    Active only when at least one of ``MODEL_DELEGATE_ALLOWLIST`` /
+    ``MODEL_DELEGATE_APPROVAL`` is configured — an unconfigured gateway imposes
+    no subagent restrictions (plain Claude Code keeps working). When
+    configured, a non-main-loop request must target a model in the catalog
+    union (allowlist = free, approval = human-gated; the ASK gate lives in the
+    enforce hook, not here). Uses the same matching as
+    ``build_delegate_catalog`` so the gateway and the ``/v1/models/delegates``
+    endpoint never disagree. Main-loop requests are never blocked.
+    """
+    if not settings.model_delegate_allowlist and not settings.model_delegate_approval:
+        return
+    if _is_main_loop_request(request):
+        return
+    if ref_in_catalog_union(
+        _normalize_model_ref(provider_model_ref),
+        allowlist=settings.model_delegate_allowlist,
+        approvals=settings.model_delegate_approval,
+        normalize_ref=_normalize_model_ref,
+    ):
+        return
+    raise InvalidRequestError(
+        f"model '{_normalize_model_ref(provider_model_ref)}' is not in the "
+        "delegate catalog; add it to MODEL_DELEGATE_ALLOWLIST (free) or "
+        "MODEL_DELEGATE_APPROVAL (human-gated)"
+    )
+
+
 class ClaudeProxyService:
     """Coordinate request optimization, model routing, token count, and providers."""
 
@@ -109,7 +203,14 @@ class ClaudeProxyService:
 
             routed = self._model_router.resolve_messages_request(request_data)
             routed = self._maybe_reroute_for_classifier(routed)
+            # Reroute image-bearing requests to the vision model BEFORE
+            # enforcing delegate policy: a subagent image turn whose primary
+            # is outside the catalog would otherwise be rejected (400) instead
+            # of rerouted to the IMAGE_ROUTE.
             routed = self._maybe_reroute_for_images(routed)
+            _enforce_delegate_policy(
+                self._settings, request_data, routed.resolved.provider_model_ref
+            )
             if routed.resolved.provider_id in _OPENAI_CHAT_UPSTREAM_IDS:
                 tool_err = openai_chat_upstream_server_tool_error(
                     routed.request,
@@ -240,6 +341,14 @@ class ClaudeProxyService:
         """
         candidates: list[RoutedMessagesRequest] = []
         image_route_target = self._settings.image_route_parts
+        # A subagent request must not escape delegate policy via a fallback:
+        # if the primary overloads/5xxes, a fallback outside the catalog would
+        # run anyway. Drop out-of-catalog candidates up front (the main loop is
+        # exempt — the human /model picker can use any model).
+        enforce_policy = (
+            bool(self._settings.model_delegate_allowlist)
+            or bool(self._settings.model_delegate_approval)
+        ) and not _is_main_loop_request(request_data)
         for ref in self._settings.fallback_models:
             resolved = self._model_router.resolve(ref)
             routed = request_data.model_copy(deep=True)
@@ -252,6 +361,13 @@ class ClaudeProxyService:
                 has_images(routed.messages)
                 and image_route_target is not None
                 and resolved.provider_id != image_route_target[0]
+            ):
+                continue
+            if enforce_policy and not ref_in_catalog_union(
+                _normalize_model_ref(resolved.provider_model_ref),
+                allowlist=self._settings.model_delegate_allowlist,
+                approvals=self._settings.model_delegate_approval,
+                normalize_ref=_normalize_model_ref,
             ):
                 continue
             candidates.append(RoutedMessagesRequest(request=routed, resolved=resolved))

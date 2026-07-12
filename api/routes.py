@@ -8,6 +8,7 @@ from loguru import logger
 from config.provider_catalog import ONE_M_CONTEXT, resolve_context_window
 from config.settings import Settings
 from core.anthropic import get_token_count
+from core.delegates import build_delegate_catalog
 from core.trace import trace_event
 from providers.registry import ProviderRegistry
 
@@ -21,7 +22,7 @@ from .gateway_model_ids import (
 )
 from .models.anthropic import MessagesRequest, TokenCountRequest
 from .models.responses import ModelResponse, ModelsListResponse
-from .services import ClaudeProxyService
+from .services import ClaudeProxyService, _normalize_model_ref
 
 router = APIRouter()
 
@@ -362,6 +363,42 @@ async def list_models(
     registry = getattr(request.app.state, "provider_registry", None)
     provider_registry = registry if isinstance(registry, ProviderRegistry) else None
     return _build_models_list_response(settings, provider_registry)
+
+
+@router.get("/v1/models/delegates")
+async def list_delegate_models(
+    request: Request,
+    settings: Settings = Depends(get_settings),
+    _auth=Depends(require_api_key),
+):
+    """List no-thinking gateway model ids available for claudim native delegates.
+
+    The catalog is the union of ``MODEL_DELEGATE_ALLOWLIST`` (free delegates)
+    and ``MODEL_DELEGATE_APPROVAL`` (human-gated). Both empty = empty catalog
+    (no delegates). ``/v1/models`` is intentionally NOT filtered — the human
+    model picker still sees every model.
+    """
+    trace_event(stage="ingress", event="api.models.delegates", source="api")
+    registry = getattr(request.app.state, "provider_registry", None)
+    provider_registry = registry if isinstance(registry, ProviderRegistry) else None
+    refs: list[str] = []
+    seen: set[str] = set()
+    for configured in settings.configured_chat_model_refs():
+        if configured.model_ref not in seen:
+            seen.add(configured.model_ref)
+            refs.append(configured.model_ref)
+    if provider_registry is not None:
+        for info in provider_registry.cached_prefixed_model_infos():
+            if info.model_id not in seen:
+                seen.add(info.model_id)
+                refs.append(info.model_id)
+    return build_delegate_catalog(
+        refs,
+        approvals=settings.model_delegate_approval,
+        allowlist=settings.model_delegate_allowlist,
+        model_id_for_ref=no_thinking_gateway_model_id,
+        normalize_ref=_normalize_model_ref,
+    )
 
 
 @router.post("/stop")

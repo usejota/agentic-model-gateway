@@ -51,9 +51,6 @@ function sourceText(field) {
   if (label) {
     parts.push(label);
   }
-  if (field.locked) {
-    parts.push("locked");
-  }
   return parts.join(" ");
 }
 
@@ -299,17 +296,37 @@ function renderField(field) {
     label.appendChild(sourceEl);
   }
 
-  const input = inputForField(field);
+  const element = inputForField(field);
+  // Composite widgets (e.g. the model picker) carry their value in an
+  // inner hidden input; plain fields ARE the input.
+  const input = element.dataset.modelPicker === "true"
+    ? element.querySelector("input[data-model-picker-value]")
+    : element;
   input.id = `field-${field.key}`;
   input.dataset.key = field.key;
-  input.dataset.original = field.value || "";
+  // Original must mirror what readFieldValue() will report: checkboxes map to
+  // "true"/"false" (their .value is the meaningless default "on"), the model
+  // picker's hidden input holds a normalized sorted list, and plain fields
+  // report their raw value.
+  input.dataset.original =
+    input.type === "checkbox"
+      ? input.checked
+        ? "true"
+        : "false"
+      : input.dataset.modelPickerValue === "true"
+        ? input.value
+        : field.value || "";
   input.dataset.secret = field.secret ? "true" : "false";
   input.dataset.configured = field.configured ? "true" : "false";
-  input.disabled = field.locked;
+  // No input.disabled = field.locked: every field is always editable. The
+  // precedence swap in config/settings.py (_env_files) makes the managed env
+  // win over FCC_ENV_FILE, so admin edits STICK over the bootstrap .env
+  // instead of being silently overwritten on reload (which is what "locked"
+  // was papering over).
   input.addEventListener("input", updateDirtyState);
   input.addEventListener("change", updateDirtyState);
 
-  wrapper.append(label, input);
+  wrapper.append(label, element);
   if (field.description) {
     const description = document.createElement("div");
     description.className = "field-description";
@@ -344,6 +361,13 @@ function inputForField(field) {
     field.options.forEach((value) => select.appendChild(option(value, value)));
     select.value = field.value || field.options[0] || "";
     return select;
+  }
+
+  if (field.key === "MODEL_DELEGATE_ALLOWLIST" || field.key === "MODEL_DELEGATE_APPROVAL") {
+    // Multi-model picker with search, vendor grouping, and chips. Stored as a
+    // comma-separated list in a hidden input; custom fnmatch globs typed via
+    // the env file round-trip as checked entries.
+    return buildModelMultiPicker(field.value || "");
   }
 
   if (field.key.startsWith("MODEL")) {
@@ -510,10 +534,121 @@ function fillModelSelect(select, currentValue) {
   select.value = previous || "";
 }
 
+function buildModelMultiPicker(currentValue) {
+  // Simple multi-select: one search box + one flat scrollable checkbox list.
+  // Selected models sort to the top so the current value is always visible
+  // without scrolling; custom fnmatch globs typed via the env file round-trip
+  // as selected rows.
+  const container = document.createElement("div");
+  container.className = "model-picker";
+  container.dataset.modelPicker = "true";
+
+  // Selection lives in a Set; the hidden input holds the serialized value the
+  // apply flow reads via readFieldValue/changedValues.
+  const selected = new Set(
+    (currentValue || "")
+      .split(",")
+      .map((entry) => entry.trim())
+      .filter(Boolean),
+  );
+
+  const hidden = document.createElement("input");
+  hidden.type = "hidden";
+  hidden.dataset.modelPickerValue = "true";
+  hidden.value = Array.from(selected).sort().join(",");
+
+  const search = document.createElement("input");
+  search.type = "search";
+  search.placeholder = "Filter models (e.g. qwen, deepseek)…";
+  search.className = "model-picker-search";
+
+  const toolbar = document.createElement("div");
+  toolbar.className = "model-picker-toolbar";
+  const counter = document.createElement("span");
+  counter.className = "model-picker-count";
+  const selectShown = document.createElement("button");
+  selectShown.type = "button";
+  selectShown.textContent = "Select shown";
+  const clearAll = document.createElement("button");
+  clearAll.type = "button";
+  clearAll.textContent = "Clear all";
+  toolbar.append(counter, selectShown, clearAll);
+
+  const list = document.createElement("div");
+  list.className = "model-picker-list";
+
+  function sync() {
+    hidden.value = Array.from(selected).sort().join(",");
+    counter.textContent = `${selected.size} selected`;
+  }
+
+  function visibleRefs() {
+    const query = search.value.trim().toLowerCase();
+    const values = Array.from(new Set([...selected, ...state.modelOptions]));
+    const filtered = query
+      ? values.filter((ref) => ref.toLowerCase().includes(query))
+      : values;
+    // Selected first (each block alphabetical) so the current value reads at
+    // a glance without hunting through the list.
+    return filtered.sort((a, b) => {
+      const diff = Number(selected.has(b)) - Number(selected.has(a));
+      return diff !== 0 ? diff : a.localeCompare(b);
+    });
+  }
+
+  function render() {
+    list.replaceChildren();
+    visibleRefs().forEach((ref) => {
+      const row = document.createElement("label");
+      row.className = "model-picker-row";
+      if (selected.has(ref)) row.classList.add("is-selected");
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.checked = selected.has(ref);
+      checkbox.addEventListener("change", () => {
+        if (checkbox.checked) selected.add(ref);
+        else selected.delete(ref);
+        row.classList.toggle("is-selected", checkbox.checked);
+        sync();
+        hidden.dispatchEvent(new Event("change", { bubbles: true }));
+      });
+      const text = document.createElement("span");
+      text.className = "model-picker-ref";
+      text.textContent = ref;
+      row.append(checkbox, text);
+      list.appendChild(row);
+    });
+  }
+
+  search.addEventListener("input", render);
+  selectShown.addEventListener("click", () => {
+    visibleRefs().forEach((ref) => selected.add(ref));
+    sync();
+    render();
+    hidden.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  clearAll.addEventListener("click", () => {
+    selected.clear();
+    sync();
+    render();
+    hidden.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+
+  container.append(hidden, search, toolbar, list);
+  container.dataset.render = "true";
+  container.refreshOptions = render;
+  sync();
+  render();
+  return container;
+}
+
 function populateModelSelects() {
   document
     .querySelectorAll('select[data-model-select="true"]')
     .forEach((select) => fillModelSelect(select, select.value));
+  document
+    .querySelectorAll('[data-model-picker="true"]')
+    .forEach((picker) => picker.refreshOptions && picker.refreshOptions());
 }
 
 function showMessage(message, kind = "") {
