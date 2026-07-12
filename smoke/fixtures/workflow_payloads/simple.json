@@ -1,0 +1,1 @@
+{"tool_name":"Workflow","tool_input":{"script":"export const meta = { name: 'simple' }\nconst r = await agent('what is 2+2', {label: 'simple'})\nreturn r"}}

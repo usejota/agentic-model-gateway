@@ -1,0 +1,1 @@
+{"tool_name":"Workflow","tool_input":{"script":"export const meta = { name: 'parallel' }\nconst [a,b] = await Promise.all([agent('3+3', {label: 'a'}), agent('4+4', {label: 'b'})])\nreturn {a,b}"}}
