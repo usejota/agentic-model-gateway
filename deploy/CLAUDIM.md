@@ -185,6 +185,11 @@ read-only analysis that doesn't need the shell, omit it and stay sandboxed.
 | `CLAUDIM_TMUX` | _unset_ | `1` = show each `-p` delegate live — split pane in your current tmux window (main-vertical: orchestrator left, delegates stacked right) if inside tmux, else a window in a detached session `claudim` (see Observing delegates) |
 | `CLAUDIM_BASE_URL` | `http://<host>.<tailnet>:<port>` | override the gateway URL (skips tailscale checks; for local testing against `localhost`) |
 | `CLAUDIM_MAX_AGENTS` | `30` | cap on auto-generated `delegate-*` agents (bounds system-prompt bloat) |
+| `CLAUDIM_CATALOG_PATH` | temporary | full normalized delegate catalog passed from the launcher to the routing hook |
+| `CLAUDIM_ROUTE_SUBAGENTS` | `1` | set `0` to allow generic agents in transparent mode; strict `--delegate` remains enforced |
+| `MODEL_DELEGATE_EXCLUSIONS` | empty | server-side glob patterns removed from every delegate route |
+| `MODEL_DELEGATE_APPROVAL` | empty | server-side glob patterns exposed only as approval agents requiring human confirmation |
+| `MODEL_DELEGATE_ROSTER` | empty | exact refs placed first in the bounded native-agent roster; cannot bypass exclusion/approval |
 
 Example — point at a differently-named gateway node:
 
@@ -196,6 +201,36 @@ Or set it permanently in your `~/.zshrc`:
 export CLAUDIM_HOST=fcc-proxy-staging
 ```
 (The staging node is `fcc-proxy`, which is the default — no override needed.)
+
+## External delegation vs native delegates
+
+`/claudim-delegate` is manual-only and runs explicit `claudim -p` subprocesses.
+`/claudim-fanout` and `/claudim-workflow` use native Agent/Workflow calls whose
+models come from the gateway catalog. The wrapper exports only the bounded
+roster as named agents, while any catalog model remains addressable by its full
+`model` id.
+
+Resolve human input before explicit orchestration:
+
+```sh
+claudim models resolve "kimi k 2.7 code"
+```
+
+The resolver returns `resolved`, `ambiguous`, or `not_found` JSON and never
+chooses among ambiguous candidates. `opus`, `sonnet`, `haiku`, and `fable` are
+local gateway overrides (`policy: override`); `claude-*` denotes a real
+Anthropic catalog model and is only available when server approval policy
+exposes it.
+
+Canonical Workflow scripts route every call explicitly:
+
+```js
+const result = await agent(prompt, {agentType: "delegate-kimi-k2-7-code"})
+const other = await agent(prompt, {model: "claude-3-freecc-no-thinking/open_router/deepseek/deepseek-v4-pro"})
+```
+
+An `approval-*` name or approval model id produces one human confirmation for
+the Workflow. Excluded and unknown routes are denied before approval.
 
 ## Renaming & local-test installs
 

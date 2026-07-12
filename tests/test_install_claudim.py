@@ -36,11 +36,15 @@ def _installer_env(bin_dir: Path, home: Path, **extra: str) -> dict[str, str]:
         "CLAUDIM_SRC": _file_url(LAUNCHER),
         "CLAUDIM_RENDER_SRC": _file_url(REPO_ROOT / "deploy" / "claudim-render.py"),
         "CLAUDIM_HOOK_SRC": _file_url(REPO_ROOT / "deploy" / "claudim-enforce-hook.py"),
+        "CLAUDIM_RESOLVE_SRC": _file_url(REPO_ROOT / "deploy" / "claudim-resolve.py"),
         "CLAUDIM_SKILL_SRC": _file_url(
             REPO_ROOT / ".claude" / "skills" / "claudim-delegate" / "SKILL.md"
         ),
-        "CLAUDIM_PANEL_SKILL_SRC": _file_url(
-            REPO_ROOT / ".claude" / "skills" / "claudim-panel" / "SKILL.md"
+        "CLAUDIM_FANOUT_SKILL_SRC": _file_url(
+            REPO_ROOT / ".claude" / "skills" / "claudim-fanout" / "SKILL.md"
+        ),
+        "CLAUDIM_WORKFLOW_SKILL_SRC": _file_url(
+            REPO_ROOT / ".claude" / "skills" / "claudim-workflow" / "SKILL.md"
         ),
     }
     env.update(extra)
@@ -75,8 +79,11 @@ def test_install_renamed_name_creates_all_artifacts(tmp_path: Path) -> None:
     assert (bin_dir / "buxexa").exists()
     assert (bin_dir / "buxexa-render.py").exists()
     assert (bin_dir / "buxexa-enforce-hook.py").exists()
+    assert (bin_dir / "buxexa-resolve.py").exists()
     assert (home / ".claude" / "skills" / "buxexa-delegate" / "SKILL.md").exists()
-    assert (home / ".claude" / "skills" / "buxexa-panel" / "SKILL.md").exists()
+    assert (home / ".claude" / "skills" / "buxexa-fanout" / "SKILL.md").exists()
+    assert (home / ".claude" / "skills" / "buxexa-workflow" / "SKILL.md").exists()
+    assert not (home / ".claude" / "skills" / "buxexa-panel").exists()
     # No leftover `claudim`-named artifacts.
     assert not (bin_dir / "claudim").exists()
     assert not (home / ".claude" / "skills" / "claudim-delegate").exists()
@@ -90,8 +97,12 @@ def test_install_renamed_skill_has_no_literal_claudim(tmp_path: Path) -> None:
     home = tmp_path / "home"
     proc = _run_installer(bin_dir, home, CLAUDIM_NAME="buxexa")
     assert proc.returncode == 0, proc.stderr
-    skill = (home / ".claude" / "skills" / "buxexa-delegate" / "SKILL.md").read_text()
-    assert "claudim" not in skill  # no lowercase literal survives templating
+    for name in ("delegate", "fanout", "workflow"):
+        skill = (
+            home / ".claude" / "skills" / f"buxexa-{name}" / "SKILL.md"
+        ).read_text()
+        assert "claudim" not in skill
+        assert "disable-model-invocation: true" in skill
 
 
 def test_install_default_name_uses_claudim(tmp_path: Path) -> None:

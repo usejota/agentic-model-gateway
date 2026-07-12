@@ -3,6 +3,8 @@ __pycache__
 !.claude/skills/
 .claude/skills/*
 !.claude/skills/claudim-delegate/
+!.claude/skills/claudim-fanout/
+!.claude/skills/claudim-workflow/
 .cursor
 .pytest_cache
 .ruff_cache

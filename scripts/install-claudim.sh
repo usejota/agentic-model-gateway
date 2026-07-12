@@ -19,6 +19,7 @@ RENDER_SRC="${CLAUDIM_RENDER_SRC:-${REPO_RAW}/deploy/claudim-render.py}"
 # Enforce hook — PreToolUse hook for --delegate mode. Installed alongside the
 # launcher and renderer so `claudim upgrade` keeps all three in sync.
 HOOK_SRC="${CLAUDIM_HOOK_SRC:-${REPO_RAW}/deploy/claudim-enforce-hook.py}"
+RESOLVE_SRC="${CLAUDIM_RESOLVE_SRC:-${REPO_RAW}/deploy/claudim-resolve.py}"
 BIN_DIR="${CLAUDIM_BIN_DIR:-${HOME}/.local/bin}"
 # Install NAME — parameterizes the launcher so it is renameable. Defaults to
 # `claudim` (retro-compat: unchanged behavior). Set CLAUDIM_NAME=loclaudim (or
@@ -30,6 +31,7 @@ NAME="${CLAUDIM_NAME:-claudim}"
 DEST="${BIN_DIR}/${NAME}"
 RENDER_DEST="${BIN_DIR}/${NAME}-render.py"
 HOOK_DEST="${BIN_DIR}/${NAME}-enforce-hook.py"
+RESOLVE_DEST="${BIN_DIR}/${NAME}-resolve.py"
 # The claudim-delegate skill (orchestrator recipe + kill switch). Installed
 # globally so it loads in any Claude Code session, not just this repo. Installed
 # under ${NAME}-delegate so a renamed launcher gets its own skill slot.
@@ -39,7 +41,8 @@ HOOK_DEST="${BIN_DIR}/${NAME}-enforce-hook.py"
 # NAME so a renameable install (CLAUDIM_NAME=loclaudim) gets matching skills that
 # reference the correct binary.
 SKILL_DELEGATE_SRC="${CLAUDIM_SKILL_SRC:-${REPO_RAW}/.claude/skills/claudim-delegate/SKILL.md}"
-SKILL_PANEL_SRC="${CLAUDIM_PANEL_SKILL_SRC:-${REPO_RAW}/.claude/skills/claudim-panel/SKILL.md}"
+SKILL_FANOUT_SRC="${CLAUDIM_FANOUT_SKILL_SRC:-${REPO_RAW}/.claude/skills/claudim-fanout/SKILL.md}"
+SKILL_WORKFLOW_SRC="${CLAUDIM_WORKFLOW_SKILL_SRC:-${REPO_RAW}/.claude/skills/claudim-workflow/SKILL.md}"
 
 say()  { printf '==> %s\n' "$*"; }
 warn() { printf 'warning: %s\n' "$*" >&2; }
@@ -84,6 +87,9 @@ chmod +x "${RENDER_DEST}"
 say "Installing enforce hook to ${HOOK_DEST}"
 fetch "${HOOK_SRC}" "${HOOK_DEST}" || fail "download failed from ${HOOK_SRC}"
 chmod +x "${HOOK_DEST}"
+say "Installing resolver to ${RESOLVE_DEST}"
+fetch "${RESOLVE_SRC}" "${RESOLVE_DEST}" || fail "download failed from ${RESOLVE_SRC}"
+chmod +x "${RESOLVE_DEST}"
 say "Installing ${NAME} to ${DEST}"
 fetch "${SRC}" "${DEST}" || fail "download failed from ${SRC}"
 # Bake a default gateway URL into the installed launcher when
@@ -101,10 +107,11 @@ say "Installed."
 
 # Install skills globally. Non-fatal: claudim works without them.
 # Each skill is templated: every `claudim` reference → installed NAME.
-for _sk in delegate panel; do
+for _sk in delegate fanout workflow; do
   case "$_sk" in
     delegate) _src="${SKILL_DELEGATE_SRC}" ;;
-    panel)    _src="${SKILL_PANEL_SRC}" ;;
+    fanout)   _src="${SKILL_FANOUT_SRC}" ;;
+    workflow) _src="${SKILL_WORKFLOW_SRC}" ;;
   esac
   _dir="${HOME}/.claude/skills/${NAME}-${_sk}"
   _dest="${_dir}/SKILL.md"
@@ -146,9 +153,8 @@ ${NAME} installed. Next:
        ${NAME} "explain this repo"
   Args pass straight through to Claude Code. Override the gateway host/tailnet
   with CLAUDIM_HOST / CLAUDIM_TAILNET if needed (see \`${NAME}\` header comments).
-  The ${NAME}-delegate and ${NAME}-panel skills were installed to ~/.claude/skills/ — they teach an
-  Opus/Fable orchestrator when/how to delegate to the cheap non-American models
-  (and defers to native workflows if you say "workflow"/"fan out subagents").
+  The ${NAME}-delegate, ${NAME}-fanout, and ${NAME}-workflow skills were installed
+  to ~/.claude/skills/ for explicit external and native orchestration.
   Local-test wrapper (side-by-side with prod): install a second copy under
   another name pointing at your local gateway, e.g.:
     CLAUDIM_NAME=loclaudim CLAUDIM_DEFAULT_BASE_URL=http://localhost:8082 bash scripts/install-claudim.sh

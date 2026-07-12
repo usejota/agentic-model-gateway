@@ -333,6 +333,16 @@ case "${1:-}" in
     die "need curl or wget to upgrade ${SELF}"
     ;;
   models|--models)
+    if [ "${2:-}" = "resolve" ]; then
+      [ -n "${3:-}" ] || die "usage: ${SELF} models resolve <query>"
+      _ldir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+      _resolver="${_ldir}/${SELF}-resolve.py"
+      [ -f "${_resolver}" ] || _resolver="${_ldir}/claudim-resolve.py"
+      [ -f "${_resolver}" ] || die "resolver not found next to launcher"
+      curl -s -m 10 "${BASE_URL}/v1/models/delegates" -H "x-api-key: ${TOKEN}" 2>/dev/null |
+        python3 "${_resolver}" "$3" || die "could not resolve model from ${BASE_URL}"
+      exit 0
+    fi
     if [ "${2:-}" = "--all" ] || [ "${2:-}" = "all" ]; then
       # Live list of every no-thinking delegate model the gateway offers for
       # DELEGATION. The gateway filters out US closed labs and any admin
@@ -492,76 +502,36 @@ if [ -n "${TMUX:-}" ] && [ "${CLAUDIM_TMUX:-}" != "0" ]; then has_tmux=1; fi
 # session launches without delegate agents — the pre-existing behavior. -p /
 # headless delegates keep using run_in_tmux below.
 AGENTS_JSON=""
+CLAUDIM_CATALOG_PATH=""
 if [ "${has_print}" -eq 0 ]; then
   _agents_py="$(mktemp 2>/dev/null || mktemp -t "${SELF}")"
   cat > "$_agents_py" <<'AGENTS_EOF'
-import json, os, re, sys
+import json, os, sys
 try:
     d = json.load(sys.stdin)
 except Exception:
     sys.exit(0)
-PREFIX = "claude-3-freecc-no-thinking/"
-free_ids = [i for i in d.get("data", []) if i]
-approval_ids = [i for i in d.get("approval", []) if i]
-# Curated one-line strengths keyed by the tail segment (last path segment of the
-# ref after stripping the no-thinking prefix). Non-curated models get a generic
-# description. Curated ones are listed first, then the rest in gateway order.
-STRENGTHS = {
-    "deepseek-v4-pro": "heavy reasoning / multi-step planning",
-    "kimi-k2.7-code": "coding / agentic tool use",
-    "deepseek-v4-flash": "fastest / cheapest triage",
-    "glm-5.2": "long-context non-Chinese alt",
-    "minimax-m3": "long-context non-Chinese alt",
-    "mistral-small-3.2-24b-instruct": "non-Chinese general alt",
-    "ministral-8b-2512": "tiny / ultra-cheap",
-    "codestral-2508": "code completion / non-Chinese",
-}
-def ref_of(i):
-    return i[len(PREFIX):] if i.startswith(PREFIX) else i
-def tail(i):
-    return ref_of(i).split("/")[-1]
-def vendor(i):
-    parts = ref_of(i).split("/")
-    return parts[1] if len(parts) >= 3 else (parts[0] if len(parts) >= 2 else "x")
-def slug(s):
-    return re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-")
 try:
     cap = int(os.environ.get("CLAUDIM_MAX_AGENTS", "30"))
 except ValueError:
     cap = 30
-def build_agents(ids, prefix, extra_desc, budget):
-    curated = [i for i in ids if tail(i) in STRENGTHS]
-    rest = [i for i in ids if tail(i) not in STRENGTHS]
-    ordered = curated + rest
-    ordered = ordered[:budget]
-    seen = {}
-    agents = {}
-    for i in ordered:
-        t = tail(i)
-        name = prefix + slug(t)
-        if name in seen:
-            name = prefix + slug(vendor(i)) + "-" + slug(t)
-        base = name
-        n = 2
-        while name in seen:
-            name = "%s-%d" % (base, n)
-            n += 1
-        seen[name] = 1
-        agents[name] = {
-            "description": STRENGTHS.get(t, "general delegate") + extra_desc
-              + ". Alternative-model subagent: pick when spawning agents anyway and this profile fits the task; never a reason to delegate work you would do inline.",
-            "prompt": "You are a delegate subagent running " + i
-                      + ". Complete the task exactly as scoped and report concisely.",
-            "model": i,
-        }
-    return agents
 agents = {}
-agents.update(build_agents(free_ids, "delegate-", "", cap))
-agents.update(build_agents(approval_ids, "approval-", " [PREMIUM — requires human approval]", max(0, cap - len(agents))))
+for model in d.get("models", [])[:cap]:
+    premium = " [PREMIUM — requires human approval]" if model["policy"] == "approval" else ""
+    agents[model["agent_name"]] = {
+        "description": "%s (%s) — %s.%s Alternative-model subagent: pick when spawning agents anyway and this profile fits the task; never a reason to delegate work you would do inline." % (
+            model["display_name"], model["vendor"], ", ".join(model["capabilities"]), premium
+        ),
+        "prompt": "You are a delegate subagent running " + model["id"] + ". Complete the task exactly as scoped and report concisely.",
+        "model": model["id"],
+    }
 if agents:
     print(json.dumps({"agents": agents, "names": sorted(agents.keys())}, ensure_ascii=False))
 AGENTS_EOF
-  _agents_result="$(curl -s -m 10 "${BASE_URL}/v1/models/delegates" -H "x-api-key: ${TOKEN}" 2>/dev/null | python3 "$_agents_py" || true)"
+  CLAUDIM_CATALOG_PATH="$(mktemp 2>/dev/null || mktemp -t "${SELF}-catalog")"
+  curl -s -m 10 "${BASE_URL}/v1/models/delegates" -H "x-api-key: ${TOKEN}" > "${CLAUDIM_CATALOG_PATH}" 2>/dev/null || true
+  export CLAUDIM_CATALOG_PATH
+  _agents_result="$(python3 "$_agents_py" < "${CLAUDIM_CATALOG_PATH}" || true)"
   rm -f "$_agents_py"
   AGENTS_JSON=""
   CLAUDIM_DELEGATE_AGENT_NAMES=""
@@ -609,9 +579,9 @@ if [ "${need_rebuild}" -eq 1 ]; then
     args+=("--agents" "${AGENTS_JSON}")
     if [ "${has_delegate}" -eq 1 ]; then
       export CLAUDIM_ENFORCE=1
-      args+=("--append-system-prompt" "You are inside the model gateway session with the --delegate ENFORCE HOOK ACTIVE. Your agent list includes delegate-* (free) and approval-* (premium, per-spawn human approval) subagents. EVERY subagent you spawn — Agent tool, Workflow tool, fan-out, multi-agent — MUST use a delegate-* or approval-* subagent_type; the hook DENIES any other. NEVER pass run_in_background to the Workflow tool (it does not accept that param and will be denied with a clear reason); run_in_background works on the Agent tool only. To permit a custom agent, add it to ~/.claude/${SELF}-allowlist.json. Pick the cheapest competent delegate-* per task; escalate to approval-* only when the task truly needs a premium model. Use ${SELF} models --all to see the full list.")
+      args+=("--append-system-prompt" "Route every spawned Agent through a mission-appropriate delegate-* and vary models by task. Respect models explicitly named by the user. approval-* always requires human confirmation. In Workflow every agent() must include agentType or model. opus/sonnet/haiku/fable are local overrides; claude-* means real Anthropic. The routing hook denies generic or unrecognized subagents and asks you to retry.")
     else
-      args+=("--append-system-prompt" "You are inside the model gateway session. Your agent list includes delegate-* subagents (one per gateway model; description = the model's strength) and possibly approval-* subagents (premium, per-spawn human approval). These delegates change WHICH model runs a subagent, never WHETHER you spawn one: keep doing inline work inline and keep your normal judgment about when to use agents or workflows. When you DO spawn subagents — your own decision, an explicit user request to fan out, or a Workflow — pick the delegate-* agent whose strength best fits each task (Workflow agent() calls: pass agentType with the delegate agent name). If an approval-* spawn is denied by the human, pick a delegate-* alternative. Use ${SELF} models --all for the full model list.")
+      args+=("--append-system-prompt" "When spawning an Agent choose a mission-appropriate delegate-* and vary models by task. Respect models explicitly named by the user. approval-* always requires human confirmation. In Workflow every agent() must include agentType or model. opus/sonnet/haiku/fable are local overrides; claude-* means real Anthropic. Delegate policy changes which model runs, never whether work deserves a subagent.")
     fi
     # Allowlist path follows the install name so side-by-side installs (prod +
     # local test wrapper) do not share/miss each other's allowlist. Explicit
@@ -674,7 +644,11 @@ SETTINGS_EOF
     say "--tmux is for -p delegates only; ignoring"
   fi
 
-  exec claude "${args[@]+"${args[@]}"}"
+  claude "${args[@]+"${args[@]}"}"
+  _rc=$?
+  [ -n "${_settings:-}" ] && rm -f "${_settings}"
+  [ -n "${CLAUDIM_CATALOG_PATH:-}" ] && rm -f "${CLAUDIM_CATALOG_PATH}"
+  exit "${_rc}"
 fi
 
 exec claude "$@"
