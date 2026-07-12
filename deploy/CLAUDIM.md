@@ -339,13 +339,15 @@ agents. When a model matches **both** allowlist and approval, approval wins.
 Exclusions and the allowlist are enforced at request time by the gateway: any
 `/v1/messages` request whose resolved model is excluded or outside the
 allowlist ∪ approval union is rejected with an invalid-request error (400) —
-**unless** it is Claude Code's main conversation loop, detected by the
-launcher's `--append-system-prompt` sentinel (`"You are inside the model
-gateway session"`). Subagent (Agent tool) system prompts lack this sentinel
-so enforcement applies to them. The human `/model` picker keeps working for
-every model regardless. Caveat: a client that forges the gateway sentinel
-in its system prompt bypasses enforcement; keep the sentinel value
-non-public.
+**unless** it is Claude Code's main conversation loop. The main loop's system
+prompt opens with `"You are Claude Code"`; subagent (Agent tool) prompts open
+with `"You are an agent for Claude Code"`, which does not match — so the
+human `/model` picker keeps working for every model while subagents are
+enforced. The launcher's `--append-system-prompt` sentinel is a second
+marker that survives output styles replacing the CLI prompt. Caveat: the
+markers are heuristics — a client that forges a main-loop prompt bypasses
+enforcement, and a future Claude Code release changing its prompt opening
+would need `_MAIN_LOOP_MARKERS` in `api/services.py` updated.
 
 ## Troubleshooting
 

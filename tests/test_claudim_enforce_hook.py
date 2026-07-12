@@ -464,6 +464,18 @@ def test_agent_alias_model_delegate_subagent_type_allows(
 
 
 @pytest.mark.parametrize("strict", [False, True])
+def test_agent_alias_model_generic_subagent_type_denied(
+    tmp_path: Path, strict: bool
+) -> None:
+    """Alias model does not exempt a generic subagent_type from routing."""
+    payload = {
+        "tool_name": "Agent",
+        "tool_input": {"subagent_type": "general-purpose", "model": "opus"},
+    }
+    assert decision(run(payload, tmp_path, strict=strict)) == "deny"
+
+
+@pytest.mark.parametrize("strict", [False, True])
 def test_workflow_local_alias_model_is_allowed(tmp_path: Path, strict: bool) -> None:
     script = "return agent('x', {model: 'opus'})"
     assert decision(run(workflow(script), tmp_path, strict=strict)) == "allow"

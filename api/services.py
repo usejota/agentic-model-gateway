@@ -89,16 +89,19 @@ def _require_non_empty_messages(messages: list[Any]) -> None:
 
 
 # Markers identifying Claude Code's MAIN conversation loop (the model the human
-# drives via /model). These sentinels are appended by the launcher's
-# --append-system-prompt to the main loop only, never to subagent prompts.
-# Subagent (Agent tool) system prompts always start with "You are Claude Code"
-# but lack the gateway sentinel, so they are NOT matched here — enforcement
-# applies to them.
+# drives via /model). The main loop's system prompt opens with "You are Claude
+# Code, Anthropic's official CLI"; subagent (Agent tool) prompts open with
+# "You are an AGENT FOR Claude Code..." — which does NOT contain the substring
+# below — so enforcement applies to subagents but never to the main loop.
+# This also exempts plain-claude connections (fcc-connect, messaging bots)
+# that never pass through the launcher.
 #
-# The primary sentinel is name-agnostic ("the model gateway session") so the
-# launcher is renameable. The legacy "You are inside claudim (gateway session)"
-# marker is kept for retro-compat with already-deployed launchers.
+# The gateway sentinels are appended by the launcher's --append-system-prompt
+# (main loop only, survives output styles that replace the CLI prompt). The
+# name-agnostic one keeps the launcher renameable; the legacy claudim-bearing
+# one keeps already-deployed launchers matching.
 _MAIN_LOOP_MARKERS = (
+    "You are Claude Code",
     "You are inside the model gateway session",
     "You are inside claudim (gateway session)",
 )
