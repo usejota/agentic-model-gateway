@@ -127,6 +127,28 @@ pkill -f 'compute start-iap-tunnel'   # kill stale tunnels
 fcc-connect                           # reconnect
 ```
 
+## Renaming & local-test installs (claudim)
+
+The `claudim` wrapper derives its name from `$0` at runtime — the name is not
+a hard dependency. **`CLAUDIM_NAME`** at install time produces a different
+binary name, skill names, and allowlist:
+
+```sh
+CLAUDIM_NAME=buxexa bash scripts/install-claudim.sh  # → command `buxexa`
+```
+
+**`loclaudim`** is a **convention** for a local-test install, not the canonical
+name:
+
+```sh
+CLAUDIM_NAME=loclaudim CLAUDIM_DEFAULT_BASE_URL=http://localhost:8082 \
+  bash scripts/install-claudim.sh
+```
+
+Gateway URL precedence: `CLAUDIM_BASE_URL` (env) > baked `CLAUDIM_DEFAULT_BASE_URL` > `http://<host>.<tailnet>:<port>`.
+
+Env vars keep the `CLAUDIM_` prefix regardless of binary name (stable interface).
+
 ## Verification checklist
 
 Mirrors the checklists in the domain docs (plan §7, networking, cloud_infra, security).
