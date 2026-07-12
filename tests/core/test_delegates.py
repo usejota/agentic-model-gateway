@@ -30,7 +30,7 @@ def test_capability_heuristics_can_return_multiple_capabilities() -> None:
     ]
 
 
-def test_roster_is_deterministic_and_honors_available_preference() -> None:
+def test_roster_is_deterministic_and_covers_every_capability() -> None:
     models = [
         _model("p/a/code", "a", ["coding"]),
         _model("p/b/flash", "b", ["fast"]),
@@ -38,10 +38,9 @@ def test_roster_is_deterministic_and_honors_available_preference() -> None:
         _model("p/d/pro", "d", ["reasoning"]),
         _model("p/e/chat", "e", ["general"]),
     ]
-    first = build_roster(models, 5, ["p/e/chat", "excluded/missing"])
-    second = build_roster(models, 5, ["p/e/chat", "excluded/missing"])
+    first = build_roster(models, 5)
+    second = build_roster(models, 5)
     assert first == second
-    assert first[0].ref == "p/e/chat"
     assert {cap for model in first for cap in model.capabilities} == {
         "coding",
         "fast",
@@ -57,8 +56,8 @@ def test_collision_names_are_stable_across_input_order() -> None:
     def names(values: list[str]) -> dict[str, str]:
         catalog = build_delegate_catalog(
             values,
-            exclusions=[],
             approvals=[],
+            allowlist=["*/*"],
             model_id_for_ref=lambda ref: f"test/{ref}",
             normalize_ref=lambda ref: ref,
         )
@@ -77,22 +76,9 @@ def test_collision_names_are_stable_across_input_order() -> None:
     )
 
 
-def test_vendor_filter_is_case_insensitive_and_id_builder_is_authoritative() -> None:
-    catalog = build_delegate_catalog(
-        ["router/OpenAI/model", "router/deepseek/model"],
-        exclusions=[],
-        approvals=[],
-        model_id_for_ref=lambda ref: f"gateway::{ref}",
-        normalize_ref=lambda ref: ref,
-    )
-
-    assert catalog["data"] == ["gateway::router/deepseek/model"]
-
-
 # =============================================================================
-# MODEL_DELEGATE_ALLOWLIST
+# Catalog classification matrix (allowlist = free, approval = ask)
 # =============================================================================
-
 
 _ID = lambda ref: f"gateway::{ref}"  # noqa: E731
 _NORM = lambda ref: ref  # noqa: E731
@@ -110,29 +96,24 @@ def _models(catalog: dict[str, object]) -> list[object]:
     return cast(list[object], catalog["models"])
 
 
-def test_allowlist_empty_is_same_catalog() -> None:
+def test_empty_lists_empty_catalog() -> None:
     refs = ["router/deepseek/model", "router/moonshotai/model"]
-    without = build_delegate_catalog(
-        refs, exclusions=[], approvals=[], model_id_for_ref=_ID, normalize_ref=_NORM
-    )
-    with_empty = build_delegate_catalog(
+    catalog = build_delegate_catalog(
         refs,
-        exclusions=[],
         approvals=[],
         allowlist=[],
         model_id_for_ref=_ID,
         normalize_ref=_NORM,
     )
-    assert _data(without) == _data(with_empty)
-    assert _approval(without) == _approval(with_empty)
-    assert len(_models(without)) == len(_models(with_empty))
+    assert _data(catalog) == []
+    assert _approval(catalog) == []
+    assert _models(catalog) == []
 
 
-def test_allowlist_exact_refs_only_those_free() -> None:
+def test_allowlist_only_is_free() -> None:
     refs = ["router/a/model", "router/b/model", "router/c/model"]
     catalog = build_delegate_catalog(
         refs,
-        exclusions=[],
         approvals=[],
         allowlist=["router/a/model", "router/b/model"],
         model_id_for_ref=_ID,
@@ -146,25 +127,23 @@ def test_allowlist_exact_refs_only_those_free() -> None:
     assert _approval(catalog) == []
 
 
-def test_allowlist_glob_family() -> None:
-    refs = ["p/deepseek/v4-pro", "p/deepseek/v4-flash", "p/other/model"]
+def test_approval_only_is_approval() -> None:
+    refs = ["router/free/model", "router/premium/model"]
     catalog = build_delegate_catalog(
         refs,
-        exclusions=[],
-        approvals=[],
-        allowlist=["p/deepseek/*"],
+        approvals=["router/premium/*"],
+        allowlist=[],
         model_id_for_ref=_ID,
         normalize_ref=_NORM,
     )
-    assert len(_data(catalog)) == 2
-    assert _ID("p/other/model") not in _data(catalog)
+    assert _data(catalog) == []
+    assert _approval(catalog) == [_ID("router/premium/model")]
 
 
-def test_allowlist_intersection_with_approval_is_approval() -> None:
+def test_both_lists_approval_wins() -> None:
     refs = ["router/v/model"]
     catalog = build_delegate_catalog(
         refs,
-        exclusions=[],
         approvals=["router/*"],
         allowlist=["router/*"],
         model_id_for_ref=_ID,
@@ -174,11 +153,10 @@ def test_allowlist_intersection_with_approval_is_approval() -> None:
     assert _approval(catalog) == [_ID("router/v/model")]
 
 
-def test_approval_outside_allowlist_still_present() -> None:
+def test_allowlist_and_approval_split() -> None:
     refs = ["router/free/model", "router/premium/model"]
     catalog = build_delegate_catalog(
         refs,
-        exclusions=[],
         approvals=["router/premium/*"],
         allowlist=["router/free/*"],
         model_id_for_ref=_ID,
@@ -188,55 +166,52 @@ def test_approval_outside_allowlist_still_present() -> None:
     assert _approval(catalog) == [_ID("router/premium/model")]
 
 
-def test_allowlist_with_exclusion_wins() -> None:
-    refs = ["router/v/model"]
+def test_neither_list_not_in_catalog() -> None:
+    refs = ["router/free/model", "router/other/model"]
     catalog = build_delegate_catalog(
         refs,
-        exclusions=["router/*"],
         approvals=[],
-        allowlist=["router/*"],
+        allowlist=["router/free/*"],
         model_id_for_ref=_ID,
         normalize_ref=_NORM,
     )
-    assert _data(catalog) == []
+    assert _data(catalog) == [_ID("router/free/model")]
+    assert _ID("router/other/model") not in _data(catalog)
     assert _approval(catalog) == []
 
 
-def test_allowlist_us_closed_vendor_not_free() -> None:
+def test_us_closed_vendor_in_allowlist_is_free() -> None:
+    """No hardcoded US-closed filter: a vendor like openai in the allowlist is a
+    free delegate."""
     refs = ["router/openai/gpt"]
     catalog = build_delegate_catalog(
         refs,
-        exclusions=[],
         approvals=[],
         allowlist=["router/*"],
         model_id_for_ref=_ID,
         normalize_ref=_NORM,
     )
-    assert _data(catalog) == []
+    assert _data(catalog) == [_ID("router/openai/gpt")]
     assert _approval(catalog) == []
-    assert len(_models(catalog)) == 0
 
 
-def test_roster_cannot_bypass_allowlist() -> None:
-    refs = ["router/v/a", "router/v/b"]
+def test_allowlist_glob_family() -> None:
+    refs = ["p/deepseek/v4-pro", "p/deepseek/v4-flash", "p/other/model"]
     catalog = build_delegate_catalog(
         refs,
-        exclusions=[],
         approvals=[],
-        allowlist=["router/v/a"],
-        preferred_refs=["router/v/b"],
+        allowlist=["p/deepseek/*"],
         model_id_for_ref=_ID,
         normalize_ref=_NORM,
     )
-    assert len(_data(catalog)) == 1
-    assert _ID("router/v/b") not in _data(catalog)
+    assert len(_data(catalog)) == 2
+    assert _ID("p/other/model") not in _data(catalog)
 
 
-def test_allowlist_legacy_shapes_consistent() -> None:
+def test_catalog_legacy_shapes_consistent() -> None:
     refs = ["router/a/model"]
     catalog = build_delegate_catalog(
         refs,
-        exclusions=[],
         approvals=[],
         allowlist=["router/*"],
         model_id_for_ref=_ID,

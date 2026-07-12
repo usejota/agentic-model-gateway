@@ -9,23 +9,6 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from typing import Literal
 
-US_CLOSED_VENDORS = frozenset(
-    {
-        "openai",
-        "anthropic",
-        "gemini",
-        "google",
-        "x-ai",
-        "amazon",
-        "nvidia",
-        "nvidia_nim",
-        "ibm-granite",
-        "liquid",
-        "rekaai",
-        "relace",
-    }
-)
-
 CAPABILITY_ORDER = ("coding", "fast", "vision", "reasoning", "general")
 CURATED_CAPABILITIES: dict[str, list[str]] = {
     "kimi-k2.7-code": ["coding", "reasoning"],
@@ -90,21 +73,15 @@ def ref_in_catalog_union(
     approvals: list[str],
     normalize_ref: Callable[[str], str],
 ) -> bool:
-    """True if ``ref`` would be admitted to the catalog with this allowlist.
+    """True if ``ref`` would be admitted to the catalog.
 
-    Mirrors the classification in :func:`build_delegate_catalog`: approval
-    matches are always admitted; allowlist matches are admitted only for
-    open (non-US-closed) vendors. With an empty allowlist everything passes
-    (the allowlist gate is inactive).
+    Approval matches are always admitted (as approval-gated); allowlist
+    matches are admitted as free delegates. Both lists empty = empty
+    catalog = nothing admitted.
     """
     if ref_matches(ref, approvals, normalize_ref):
         return True
-    if not allowlist:
-        return True
-    return (
-        ref_matches(ref, allowlist, normalize_ref)
-        and delegate_vendor(ref).lower() not in US_CLOSED_VENDORS
-    )
+    return ref_matches(ref, allowlist, normalize_ref)
 
 
 def capabilities_for(ref: str) -> list[str]:
@@ -168,13 +145,9 @@ def _agent_names(
     return names
 
 
-def build_roster(
-    models: list[DelegateModel], size: int, preferred_refs: list[str] | None = None
-) -> list[DelegateModel]:
+def build_roster(models: list[DelegateModel], size: int) -> list[DelegateModel]:
     if size <= 0:
         return []
-    preferred_refs = preferred_refs or []
-    by_ref = {model.ref: model for model in models}
     selected: list[DelegateModel] = []
     selected_refs: set[str] = set()
     covered: set[str] = set()
@@ -187,11 +160,6 @@ def build_roster(
         selected_refs.add(model.ref)
         covered.update(model.capabilities)
         vendor_counts[model.vendor] = vendor_counts.get(model.vendor, 0) + 1
-
-    for ref in preferred_refs:
-        model = by_ref.get(ref)
-        if model is not None:
-            add(model)
 
     for capability in CAPABILITY_ORDER:
         if capability in covered:
@@ -215,23 +183,26 @@ def build_roster(
 def build_delegate_catalog(
     refs: list[str],
     *,
-    exclusions: list[str],
     approvals: list[str],
-    allowlist: list[str] | None = None,
+    allowlist: list[str],
     model_id_for_ref: Callable[[str], str],
     normalize_ref: Callable[[str], str],
-    preferred_refs: list[str] | None = None,
 ) -> dict[str, object]:
+    """Classify refs into the delegate catalog.
+
+    A ref is admitted as ``approval`` when it matches an approval pattern
+    (approval wins over allowlist), as ``delegate`` (free) when it matches an
+    allowlist pattern, and dropped otherwise. Both lists empty = empty
+    catalog. ``model_id_for_ref`` maps each ref to the id advertised at
+    ``/v1/models/delegates``; ``normalize_ref`` reduces gateway model ids
+    to canonical provider/model form so a pattern written against one
+    advertised variant matches the others.
+    """
     classified: list[tuple[str, Literal["delegate", "approval"]]] = []
-    allowlist_active = allowlist is not None and len(allowlist) > 0
     for ref in refs:
-        if ref_matches(ref, exclusions, normalize_ref):
-            continue
         if ref_matches(ref, approvals, normalize_ref):
             classified.append((ref, "approval"))
-        elif allowlist_active and not ref_matches(ref, allowlist, normalize_ref):
-            continue
-        elif delegate_vendor(ref).lower() not in US_CLOSED_VENDORS:
+        elif ref_matches(ref, allowlist, normalize_ref):
             classified.append((ref, "delegate"))
 
     names = _agent_names(classified)
@@ -256,7 +227,7 @@ def build_delegate_catalog(
         )
         for ref, policy in classified
     ]
-    ordered = build_roster(models, len(models), preferred_refs)
+    ordered = build_roster(models, len(models))
     return {
         "data": [model.id for model in models if model.policy == "delegate"],
         "approval": [model.id for model in models if model.policy == "approval"],

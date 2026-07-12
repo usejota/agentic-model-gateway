@@ -28,7 +28,7 @@ def _settings(
     classifier_route: str | None = None,
     image_route: str | None = None,
     fallback_models: str | None = None,
-    model_delegate_exclusions: str | None = None,
+    model_delegate_allowlist: str | None = None,
 ) -> Settings:
     kwargs: dict[str, str] = {
         "MODEL": model,
@@ -43,8 +43,8 @@ def _settings(
         kwargs["IMAGE_ROUTE"] = image_route
     if fallback_models is not None:
         kwargs["FALLBACK_MODELS"] = fallback_models
-    if model_delegate_exclusions is not None:
-        kwargs["MODEL_DELEGATE_EXCLUSIONS"] = model_delegate_exclusions
+    if model_delegate_allowlist is not None:
+        kwargs["MODEL_DELEGATE_ALLOWLIST"] = model_delegate_allowlist
     return Settings.model_validate(kwargs)
 
 
@@ -279,21 +279,21 @@ def test_settings_classifier_route_parts_none() -> None:
 # Interaction with delegate enforcement
 # --------------------------------------------------------------------------
 @pytest.mark.asyncio
-async def test_classifier_reroute_respects_delegate_exclusions() -> None:
+async def test_classifier_reroute_respects_delegate_policy() -> None:
     """A classifier request is NOT a main-loop request (its system prompt is the
     security-monitor prompt, not "You are Claude Code"), so it still passes
-    through _enforce_delegate_exclusions after the reroute. If the
-    CLASSIFIER_ROUTE target is itself in MODEL_DELEGATE_EXCLUSIONS, the
-    rerouted request is rejected — the reroute never bypasses enforcement."""
+    through _enforce_delegate_policy after the reroute. If the CLASSIFIER_ROUTE
+    target is outside the delegate catalog (allowlist set, model not listed),
+    the rerouted request is rejected — the reroute never bypasses policy."""
     provider = _RecordingProvider()
     svc = _service(
         _settings(
             model="deepseek/deepseek-chat",
             classifier_route="open_router/qwen/qwen3-30b",
-            model_delegate_exclusions="open_router/qwen/qwen3-30b",
+            model_delegate_allowlist="deepseek/*",
         ),
         provider,
     )
-    with pytest.raises(InvalidRequestError, match="excluded for subagents"):
+    with pytest.raises(InvalidRequestError, match="not in the delegate catalog"):
         result = svc.create_message(_classifier_request())
         await _drain(result)

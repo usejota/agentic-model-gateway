@@ -345,10 +345,9 @@ case "${1:-}" in
     fi
     if [ "${2:-}" = "--all" ] || [ "${2:-}" = "all" ]; then
       # Live list of every no-thinking delegate model the gateway offers for
-      # DELEGATION. The gateway filters out US closed labs and any admin
-      # exclusions (MODEL_DELEGATE_EXCLUSIONS) server-side — so this list is
-      # already non-American + exclusion-filtered, and every id is a ready-to-
-      # use no-thinking id. /v1/models (the user /model picker) is NOT filtered.
+      # DELEGATION. The gateway returns only the delegate catalog (free +
+      # approval-gated) — so every id is a ready-to-use no-thinking id.
+      # /v1/models (the user /model picker) is NOT filtered.
       curl -s -m 10 "${BASE_URL}/v1/models/delegates" -H "x-api-key: ${TOKEN}" 2>/dev/null | python3 -c '
 import sys, json
 from collections import defaultdict
@@ -361,7 +360,7 @@ g = defaultdict(list)
 for i in d.get("data", []):
     # Vendor is the segment after the no-thinking prefix. For a 3-segment ref
     # (route/vendor/model) that is parts[1]; for a 2-segment ref (provider/model)
-    # it is parts[0]. Matches the gateway-side US_CLOSED / exclusion filter.
+    # it is parts[0].
     ref = i[len(PREFIX):] if i.startswith(PREFIX) else i
     parts = ref.split("/")
     if len(parts) >= 3:

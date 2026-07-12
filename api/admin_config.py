@@ -457,52 +457,25 @@ FIELDS: tuple[ConfigFieldSpec, ...] = (
         ),
     ),
     ConfigFieldSpec(
-        "MODEL_DELEGATE_EXCLUSIONS",
-        "Delegate Exclusions",
-        "models",
-        settings_attr="model_delegate_exclusions",
-        description=(
-            "Comma-separated provider/model refs (fnmatch globs allowed, e.g. "
-            "open_router/qwen/*) hidden from claudim delegate agents via the "
-            "/v1/models/delegates endpoint; does NOT filter /v1/models — the human "
-            "/model picker still sees every model; empty = nothing excluded."
-        ),
-    ),
-    ConfigFieldSpec(
         "MODEL_DELEGATE_APPROVAL",
-        "Delegate Approval",
+        "Approval Delegates",
         "models",
         settings_attr="model_delegate_approval",
         description=(
-            "Comma-separated provider/model refs (fnmatch globs, same format as "
-            "exclusions) that require PER-SPAWN HUMAN APPROVAL. These become "
-            "approval-* agents — the enforce hook asks the human to confirm each "
-            "spawn. Premium models (e.g. anthropic/*, openai/*, google/*, x-ai/*) "
-            "are the intended target. Empty = nothing requires approval."
+            "Comma-separated provider/model refs (fnmatch globs) that subagents may "
+            "use only with per-spawn human approval. A model in both lists requires "
+            "approval (approval wins)."
         ),
     ),
     ConfigFieldSpec(
         "MODEL_DELEGATE_ALLOWLIST",
-        "Delegate Allowlist",
+        "Free Delegates",
         "models",
         settings_attr="model_delegate_allowlist",
         description=(
-            "Comma-separated provider/model refs (fnmatch globs, same format as "
-            "exclusions) that DEFINE the closed set of free delegate models. "
-            "When empty, all eligible vendors are free (backward compatible). "
-            "When set, only models matching these patterns (or MODEL_DELEGATE_APPROVAL) "
-            "appear in the delegate catalog. Models matching BOTH allowlist and "
-            "approval become approval (ask)."
-        ),
-    ),
-    ConfigFieldSpec(
-        "MODEL_DELEGATE_ROSTER",
-        "Delegate Roster",
-        "models",
-        settings_attr="model_delegate_roster",
-        description=(
-            "Comma-separated exact provider/model refs placed first in the "
-            "delegate roster. Exclusions and approval policy still take precedence."
+            "Comma-separated provider/model refs (fnmatch globs) subagents may use "
+            "freely, without human approval. Together with Approval Delegates this "
+            "defines the whole delegate catalog — both empty = no delegates."
         ),
     ),
     ConfigFieldSpec(

@@ -373,9 +373,10 @@ async def list_delegate_models(
 ):
     """List no-thinking gateway model ids available for claudim native delegates.
 
-    Excludes US-closed vendors and admin-configured ``MODEL_DELEGATE_EXCLUSIONS``
-    patterns. ``/v1/models`` is intentionally NOT filtered — the human model
-    picker still sees every model.
+    The catalog is the union of ``MODEL_DELEGATE_ALLOWLIST`` (free delegates)
+    and ``MODEL_DELEGATE_APPROVAL`` (human-gated). Both empty = empty catalog
+    (no delegates). ``/v1/models`` is intentionally NOT filtered — the human
+    model picker still sees every model.
     """
     trace_event(stage="ingress", event="api.models.delegates", source="api")
     registry = getattr(request.app.state, "provider_registry", None)
@@ -393,10 +394,8 @@ async def list_delegate_models(
                 refs.append(info.model_id)
     return build_delegate_catalog(
         refs,
-        exclusions=settings.model_delegate_exclusions,
         approvals=settings.model_delegate_approval,
         allowlist=settings.model_delegate_allowlist,
-        preferred_refs=settings.model_delegate_roster,
         model_id_for_ref=no_thinking_gateway_model_id,
         normalize_ref=_normalize_model_ref,
     )

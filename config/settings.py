@@ -181,35 +181,21 @@ class Settings(BaseSettings):
         default_factory=list, validation_alias="FALLBACK_MODELS"
     )
 
-    # Comma-separated provider/model refs (fnmatch globs allowed) hidden from
-    # /v1/models/delegates and thus from auto-generated claudim delegate
-    # subagents; does NOT filter /v1/models; empty = nothing excluded.
-    model_delegate_exclusions: Annotated[list[str], NoDecode] = Field(
-        default_factory=list, validation_alias="MODEL_DELEGATE_EXCLUSIONS"
-    )
-
     # Premium models that require per-spawn human approval. fnmatch patterns
-    # (applied to the same no-thinking gateway refs as exclusions). These
-    # models appear as ``approval-*`` agents in ``--agents`` — the enforce
-    # hook issues ``ASK`` (not ``ALLOW``) so the human must approve each spawn.
-    # Empty = nothing requires approval (all delegates are free).
+    # against provider/model refs. A match here ALWAYS classifies the model as
+    # approval (wins over allowlist). These appear as ``approval-*`` agents in
+    # ``--agents`` — the enforce hook issues ``ASK`` (not ``ALLOW``) so the
+    # human must approve each spawn.
     model_delegate_approval: Annotated[list[str], NoDecode] = Field(
         default_factory=list, validation_alias="MODEL_DELEGATE_APPROVAL"
     )
 
-    # Closed-set gate for the free delegate catalog. When non-empty, only
-    # models matching these fnmatch patterns are eligible as free delegates
-    # (alongside any MODEL_DELEGATE_APPROVAL matches). Empty = all eligible
-    # vendors are free (backward compatible). Models only in the allowlist
-    # that also match MODEL_DELEGATE_APPROVAL become approval.
+    # Closed-set catalog of free delegate models. fnmatch patterns against
+    # provider/model refs. A model matching ONLY the allowlist is a free
+    # delegate (no approval). Together with MODEL_DELEGATE_APPROVAL this defines
+    # the whole delegate catalog: both empty = no delegates at all.
     model_delegate_allowlist: Annotated[list[str], NoDecode] = Field(
         default_factory=list, validation_alias="MODEL_DELEGATE_ALLOWLIST"
-    )
-
-    # Exact refs placed first in the deterministic delegate roster. Entries
-    # remain subject to exclusions and approval policy.
-    model_delegate_roster: Annotated[list[str], NoDecode] = Field(
-        default_factory=list, validation_alias="MODEL_DELEGATE_ROSTER"
     )
 
     # Optional image reroute. When a request has image content (top-level user
@@ -503,10 +489,8 @@ class Settings(BaseSettings):
 
     @field_validator(
         "fallback_models",
-        "model_delegate_exclusions",
         "model_delegate_approval",
         "model_delegate_allowlist",
-        "model_delegate_roster",
         mode="before",
     )
     @classmethod

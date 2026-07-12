@@ -297,23 +297,23 @@ function renderField(field) {
   }
 
   const element = inputForField(field);
-  // Composite widgets (e.g. the exclusion picker) carry their value in an
+  // Composite widgets (e.g. the model picker) carry their value in an
   // inner hidden input; plain fields ARE the input.
-  const input = element.dataset.exclusionPicker === "true"
-    ? element.querySelector("input[data-exclusion-value]")
+  const input = element.dataset.modelPicker === "true"
+    ? element.querySelector("input[data-model-picker-value]")
     : element;
   input.id = `field-${field.key}`;
   input.dataset.key = field.key;
   // Original must mirror what readFieldValue() will report: checkboxes map to
-  // "true"/"false" (their .value is the meaningless default "on"), the
-  // exclusion picker's hidden input holds a normalized sorted list, and plain
-  // fields report their raw value.
+  // "true"/"false" (their .value is the meaningless default "on"), the model
+  // picker's hidden input holds a normalized sorted list, and plain fields
+  // report their raw value.
   input.dataset.original =
     input.type === "checkbox"
       ? input.checked
         ? "true"
         : "false"
-      : input.dataset.exclusionValue === "true"
+      : input.dataset.modelPickerValue === "true"
         ? input.value
         : field.value || "";
   input.dataset.secret = field.secret ? "true" : "false";
@@ -363,12 +363,11 @@ function inputForField(field) {
     return select;
   }
 
-  if (field.key === "MODEL_DELEGATE_EXCLUSIONS" || field.key === "MODEL_DELEGATE_APPROVAL" || field.key === "MODEL_DELEGATE_ALLOWLIST" || field.key === "MODEL_DELEGATE_ROSTER") {
-    // Checkbox picker with search: filter models (e.g. "openai"), tick
-    // individually or "select all shown", selections accumulate across
-    // searches. Stored as a comma-separated list in a hidden input; custom
-    // fnmatch globs typed via the env file round-trip as checked entries.
-    return buildExclusionPicker(field.value || "");
+  if (field.key === "MODEL_DELEGATE_ALLOWLIST" || field.key === "MODEL_DELEGATE_APPROVAL") {
+    // Multi-model picker with search, vendor grouping, and chips. Stored as a
+    // comma-separated list in a hidden input; custom fnmatch globs typed via
+    // the env file round-trip as checked entries.
+    return buildModelMultiPicker(field.value || "");
   }
 
   if (field.key.startsWith("MODEL")) {
@@ -535,10 +534,17 @@ function fillModelSelect(select, currentValue) {
   select.value = previous || "";
 }
 
-function buildExclusionPicker(currentValue) {
+function modelVendor(ref) {
+  // For a 3-segment ref (route/vendor/model) the vendor is parts[1]; for a
+  // 2-segment ref (provider/model) it is parts[0].
+  const parts = ref.split("/");
+  return (parts.length >= 3 ? parts[1] : parts[0]) || "other";
+}
+
+function buildModelMultiPicker(currentValue) {
   const container = document.createElement("div");
-  container.className = "exclusion-picker";
-  container.dataset.exclusionPicker = "true";
+  container.className = "model-picker";
+  container.dataset.modelPicker = "true";
 
   // Selection lives in a Set; the hidden input holds the serialized value the
   // apply flow reads via readFieldValue/changedValues.
@@ -551,16 +557,16 @@ function buildExclusionPicker(currentValue) {
 
   const hidden = document.createElement("input");
   hidden.type = "hidden";
-  hidden.dataset.exclusionValue = "true";
+  hidden.dataset.modelPickerValue = "true";
   hidden.value = Array.from(selected).sort().join(",");
 
   const search = document.createElement("input");
   search.type = "search";
-  search.placeholder = "Search models (e.g. openai, qwen)…";
-  search.className = "exclusion-search";
+  search.placeholder = "Search models (e.g. qwen, deepseek)…";
+  search.className = "model-picker-search";
 
   const toolbar = document.createElement("div");
-  toolbar.className = "exclusion-toolbar";
+  toolbar.className = "model-picker-toolbar";
   const selectAll = document.createElement("button");
   selectAll.type = "button";
   selectAll.textContent = "Select all shown";
@@ -568,24 +574,24 @@ function buildExclusionPicker(currentValue) {
   clearShown.type = "button";
   clearShown.textContent = "Unselect shown";
   const counter = document.createElement("span");
-  counter.className = "exclusion-count";
+  counter.className = "model-picker-count";
   toolbar.append(selectAll, clearShown, counter);
 
-  const list = document.createElement("div");
-  list.className = "exclusion-list";
-
   const chips = document.createElement("div");
-  chips.className = "exclusion-chips";
+  chips.className = "model-picker-chips";
+
+  const list = document.createElement("div");
+  list.className = "model-picker-list";
 
   function sync() {
     hidden.value = Array.from(selected).sort().join(",");
-    counter.textContent = `${selected.size} excluded`;
-    chips.innerHTML = "";
+    counter.textContent = `${selected.size} selected`;
+    chips.replaceChildren();
     Array.from(selected)
       .sort()
       .forEach((ref) => {
         const chip = document.createElement("span");
-        chip.className = "exclusion-chip";
+        chip.className = "model-picker-chip";
         chip.textContent = ref;
         const removeBtn = document.createElement("button");
         removeBtn.type = "button";
@@ -607,22 +613,97 @@ function buildExclusionPicker(currentValue) {
     return query ? values.filter((ref) => ref.toLowerCase().includes(query)) : values;
   }
 
+  // Custom globs typed via env that aren't in the discovered model list
+  // round-trip as their own group at the top, so they stay visible and
+  // removable even though no vendor group owns them.
+  function customRefs(refs) {
+    const known = new Set(state.modelOptions);
+    return refs.filter((ref) => !known.has(ref));
+  }
+
+  function groupFor(refs) {
+    const groups = new Map();
+    const custom = customRefs(refs);
+    if (custom.length) {
+      groups.set("custom patterns", custom);
+    }
+    for (const ref of refs) {
+      if (custom.includes(ref)) continue;
+      const vendor = modelVendor(ref);
+      if (!groups.has(vendor)) groups.set(vendor, []);
+      groups.get(vendor).push(ref);
+    }
+    return [...groups.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+  }
+
+  function rowFor(ref) {
+    const row = document.createElement("label");
+    row.className = "model-picker-row";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = selected.has(ref);
+    checkbox.addEventListener("change", () => {
+      if (checkbox.checked) selected.add(ref);
+      else selected.delete(ref);
+      sync();
+      hidden.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    row.append(checkbox, document.createTextNode(` ${ref}`));
+    return row;
+  }
+
+  function groupDetails(name, refs) {
+    const selectedInGroup = refs.filter((r) => selected.has(r));
+    const details = document.createElement("details");
+    details.className = "model-picker-group";
+    // Open groups that have a selection, or whenever a search is active.
+    details.open = !search.value.trim() ? selectedInGroup.length > 0 : true;
+
+    const summary = document.createElement("summary");
+    const label = document.createElement("span");
+    label.className = "model-picker-group-label";
+    label.textContent = name;
+    const count = document.createElement("span");
+    count.className = "model-picker-group-count";
+    count.textContent = `${selectedInGroup.length}/${refs.length}`;
+    const actions = document.createElement("span");
+    actions.className = "model-picker-group-actions";
+    const allBtn = document.createElement("button");
+    allBtn.type = "button";
+    allBtn.textContent = "all";
+    allBtn.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      refs.forEach((r) => selected.add(r));
+      sync();
+      render();
+      hidden.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    const noneBtn = document.createElement("button");
+    noneBtn.type = "button";
+    noneBtn.textContent = "none";
+    noneBtn.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      refs.forEach((r) => selected.delete(r));
+      sync();
+      render();
+      hidden.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    actions.append(allBtn, noneBtn);
+    summary.append(label, count, actions);
+
+    const body = document.createElement("div");
+    body.className = "model-picker-group-body";
+    refs.forEach((ref) => body.appendChild(rowFor(ref)));
+
+    details.append(summary, body);
+    return details;
+  }
+
   function render() {
-    list.innerHTML = "";
-    visibleRefs().forEach((ref) => {
-      const row = document.createElement("label");
-      row.className = "exclusion-row";
-      const checkbox = document.createElement("input");
-      checkbox.type = "checkbox";
-      checkbox.checked = selected.has(ref);
-      checkbox.addEventListener("change", () => {
-        if (checkbox.checked) selected.add(ref);
-        else selected.delete(ref);
-        sync();
-        hidden.dispatchEvent(new Event("change", { bubbles: true }));
-      });
-      row.append(checkbox, document.createTextNode(` ${ref}`));
-      list.appendChild(row);
+    list.replaceChildren();
+    const refs = visibleRefs();
+    groupFor(refs).forEach(([name, groupRefs]) => {
+      list.appendChild(groupDetails(name, groupRefs));
     });
   }
 
@@ -640,7 +721,7 @@ function buildExclusionPicker(currentValue) {
     hidden.dispatchEvent(new Event("change", { bubbles: true }));
   });
 
-  container.append(hidden, search, toolbar, list, chips);
+  container.append(hidden, search, toolbar, chips, list);
   container.dataset.render = "true";
   container.refreshOptions = render;
   sync();
@@ -653,7 +734,7 @@ function populateModelSelects() {
     .querySelectorAll('select[data-model-select="true"]')
     .forEach((select) => fillModelSelect(select, select.value));
   document
-    .querySelectorAll('[data-exclusion-picker="true"]')
+    .querySelectorAll('[data-model-picker="true"]')
     .forEach((picker) => picker.refreshOptions && picker.refreshOptions());
 }
 

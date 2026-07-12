@@ -459,8 +459,8 @@ textarea {
   }
 }
 
-/* Delegate exclusion picker */
-.exclusion-picker {
+/* Delegate model multi-picker (allowlist / approval) */
+.model-picker {
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -468,7 +468,7 @@ textarea {
   max-width: 100%;
   overflow: hidden;
 }
-.field .exclusion-search {
+.field .model-picker-search {
   width: 100%;
   min-height: 38px;
   border: 1px solid var(--line-strong);
@@ -477,12 +477,12 @@ textarea {
   color: var(--text);
   padding: 8px 10px;
 }
-.exclusion-toolbar {
+.model-picker-toolbar {
   display: flex;
   align-items: center;
   gap: 8px;
 }
-.exclusion-toolbar button {
+.model-picker-toolbar button {
   font-size: 12px;
   padding: 4px 10px;
   border: 1px solid var(--line-strong);
@@ -491,23 +491,111 @@ textarea {
   color: var(--text);
   cursor: pointer;
 }
-.exclusion-toolbar button:hover {
+.model-picker-toolbar button:hover {
   border-color: var(--text);
 }
-.exclusion-count {
+.model-picker-count {
   font-size: 12px;
-  opacity: 0.7;
+  opacity: 0.85;
   margin-left: auto;
 }
-.exclusion-list {
-  max-height: 240px;
+.model-picker-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.model-picker-chips:empty {
+  display: none;
+}
+.model-picker-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: rgba(120, 120, 255, 0.15);
+  border: 1px solid rgba(120, 120, 255, 0.35);
+  color: var(--text);
+}
+.model-picker-chip button {
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  padding: 0 2px;
+  color: var(--text);
+  min-height: 0;
+  width: auto;
+}
+.model-picker-list {
+  max-height: 320px;
   overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.model-picker-group {
   border: 1px solid var(--line-strong);
   border-radius: 8px;
   background: var(--input);
-  padding: 4px;
+  overflow: hidden;
 }
-.field .exclusion-row {
+.model-picker-group > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 13px;
+  padding: 6px 10px;
+  list-style: none;
+  user-select: none;
+}
+.model-picker-group > summary::-webkit-details-marker {
+  display: none;
+}
+.model-picker-group > summary::before {
+  content: "▸";
+  font-size: 11px;
+  opacity: 0.75;
+  transition: transform 0.12s ease-out;
+  display: inline-block;
+}
+.model-picker-group[open] > summary::before {
+  transform: rotate(90deg);
+  content: "▾";
+}
+.model-picker-group-label {
+  font-weight: 600;
+}
+.model-picker-group-count {
+  font-size: 12px;
+  opacity: 0.75;
+}
+.model-picker-group-actions {
+  margin-left: auto;
+  display: inline-flex;
+  gap: 4px;
+}
+.model-picker-group-actions button {
+  font-size: 11px;
+  padding: 1px 7px;
+  border: 1px solid var(--line-strong);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+}
+.model-picker-group-actions button:hover {
+  border-color: var(--text);
+}
+.model-picker-group-body {
+  padding: 2px 4px 4px;
+  display: flex;
+  flex-direction: column;
+}
+.field .model-picker-row {
   display: flex;
   align-items: center;
   justify-content: flex-start;
@@ -522,11 +610,11 @@ textarea {
   border-radius: 6px;
   margin: 0;
 }
-.field .exclusion-row:hover {
+.field .model-picker-row:hover {
   background: rgba(255, 255, 255, 0.05);
 }
 /* Undo the global 100%-width/38px-height input rule for the row checkboxes. */
-.field .exclusion-row input[type="checkbox"] {
+.field .model-picker-row input[type="checkbox"] {
   width: 15px;
   height: 15px;
   min-height: 0;
@@ -535,33 +623,8 @@ textarea {
   padding: 0;
   accent-color: #7a7aff;
 }
-.exclusion-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-}
-.exclusion-chips:empty {
-  display: none;
-}
-.exclusion-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 12px;
-  padding: 2px 8px;
-  border-radius: 10px;
-  background: rgba(120, 120, 255, 0.15);
-  border: 1px solid rgba(120, 120, 255, 0.35);
-  color: var(--text);
-}
-.exclusion-chip button {
-  border: none;
-  background: none;
-  cursor: pointer;
-  font-size: 13px;
-  line-height: 1;
-  padding: 0 2px;
-  color: var(--text);
-  min-height: 0;
-  width: auto;
+@media (prefers-reduced-motion: reduce) {
+  .model-picker-group > summary::before {
+    transition: none;
+  }
 }

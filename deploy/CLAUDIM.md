@@ -38,11 +38,12 @@ gateway delegate model** (`delegate-<model>`). The orchestrator (your session mo
 picks the cheapest competent delegate per task — no `-p` or tmux needed. The agent
 list is fetched live from the gateway at launch via `GET /v1/models/delegates`.
 
-The endpoint returns curated, no-thinking, non-US-closed model ids ready for
-delegation. Exclusions are configurable server-side (`MODEL_DELEGATE_EXCLUSIONS` —
-see [Exclusions and the delegate endpoint](#exclusions-and-the-delegate-endpoint))
-and apply **only** to the delegate pool — `/v1/models` is unfiltered so the human
-`/model` picker still sees every model.
+The endpoint returns the delegate catalog — no-thinking model ids ready for
+delegation. The catalog is configured server-side via `MODEL_DELEGATE_ALLOWLIST`
+(free) and `MODEL_DELEGATE_APPROVAL` (human-gated) — see
+[Delegate catalog and the delegate endpoint](#delegate-catalog-and-the-delegate-endpoint).
+It applies **only** to the delegate pool — `/v1/models` is unfiltered so the
+human `/model` picker still sees every model.
 
 `CLAUDIM_MAX_AGENTS` (default 30) caps the number of auto-generated agents to
 bound system-prompt bloat. The session gets `CLAUDIM=1` exported into its
@@ -80,14 +81,12 @@ Aliases (run `claudim models` to reprint):
 | `codestral` | non-Chinese coding (France): implement, refactor |
 
 All eight are non-American: five Chinese (DeepSeek, Moonshot/Kimi, Zhipu/GLM,
-MiniMax) + three French (Mistral). US closed labs — `openai`, `anthropic`,
-`google`, `x-ai`, `amazon`, `nvidia`, `ibm-granite`, `liquid`, `rekaai`,
-`relace` — are never called for delegation (cost-driven: they charge premium
-per-token; the rest are cheap, and open-weight Llama + fine-tunes don't fund a
-US lab per call). The US_CLOSED filter lives **server-side** in the gateway
-(`GET /v1/models/delegates`) — the launcher no longer maintains its own
-vendor list. To see every non-American no-thinking model the gateway currently
-offers, run `claudim models --all` and pass any listed id verbatim to `--model`.
+MiniMax) + three French (Mistral). They are the cheap defaults — the catalog is
+whatever you list in `MODEL_DELEGATE_ALLOWLIST` / `MODEL_DELEGATE_APPROVAL`, so
+keeping US closed labs (`openai`, `anthropic`, `google`, …) out is a config
+choice, not a hardcoded filter. To see every no-thinking model the gateway
+currently offers, run `claudim models --all` and pass any listed id verbatim
+to `--model`.
 
 A full routed id (contains `/`) or a Claude alias (`haiku`/`sonnet`/`opus`) is
 passed through unchanged — but don't use the Claude aliases for delegates, they
@@ -188,10 +187,8 @@ read-only analysis that doesn't need the shell, omit it and stay sandboxed.
 | `CLAUDIM_MAX_AGENTS` | `30` | cap on auto-generated `delegate-*` agents (bounds system-prompt bloat) |
 | `CLAUDIM_CATALOG_PATH` | temporary | full normalized delegate catalog passed from the launcher to the routing hook |
 | `CLAUDIM_ROUTE_SUBAGENTS` | `1` | set `0` to allow generic agents in transparent mode; strict `--delegate` remains enforced |
-| `MODEL_DELEGATE_EXCLUSIONS` | empty | server-side glob patterns removed from every delegate route |
-| `MODEL_DELEGATE_APPROVAL` | empty | server-side glob patterns requiring per-spawn human confirmation |
-| `MODEL_DELEGATE_ALLOWLIST` | empty | when set, closes the free delegate set to only these patterns (plus approval); empty = all eligible vendors free |
-| `MODEL_DELEGATE_ROSTER` | empty | exact refs placed first in the bounded native-agent roster; cannot bypass exclusion/approval |
+| `MODEL_DELEGATE_APPROVAL` | empty | server-side globs requiring per-spawn human confirmation |
+| `MODEL_DELEGATE_ALLOWLIST` | empty | server-side globs for free delegates; union with approval = whole catalog; both empty = no delegates |
 
 Example — point at a differently-named gateway node:
 
@@ -208,9 +205,8 @@ export CLAUDIM_HOST=fcc-proxy-staging
 
 `/claudim-delegate` is manual-only and runs explicit `claudim -p` subprocesses.
 `/claudim-fanout` and `/claudim-workflow` use native Agent/Workflow calls whose
-models come from the gateway catalog. The wrapper exports only the bounded
-roster as named agents, while any catalog model remains addressable by its full
-`model` id.
+models come from the gateway catalog. The wrapper exports the catalog as named
+agents, while any catalog model remains addressable by its full `model` id.
 
 Resolve human input before explicit orchestration:
 
@@ -232,7 +228,7 @@ const other = await agent(prompt, {model: "claude-3-freecc-no-thinking/open_rout
 ```
 
 An `approval-*` name or approval model id produces one human confirmation for
-the Workflow. Excluded and unknown routes are denied before approval.
+the Workflow. Models outside the catalog are denied before approval.
 
 ## Renaming & local-test installs
 
@@ -285,67 +281,55 @@ name.
 `exec`s `claude` with your args. It's the global-install form of
 `deploy/fcc-connect-tailscale`.
 
-## Exclusions and the delegate endpoint
+## Delegate catalog and the delegate endpoint
 
-`GET /v1/models/delegates` returns the curated delegate pool (no-thinking,
-non-US-closed ids, after exclusions). The launcher calls this endpoint at
-startup to generate the `delegate-*` agents. It is **not** the same as
-`/v1/models` — the human `/model` picker still sees every model the gateway
-can route.
+`GET /v1/models/delegates` returns the delegate catalog — no-thinking ids the
+launcher turns into `delegate-*` / `approval-*` agents. It is **not** the same
+as `/v1/models` — the human `/model` picker still sees every model the gateway
+can route; only the claudim delegate catalog is filtered.
 
-### MODEL_DELEGATE_EXCLUSIONS
+The catalog is the union of two lists (both `fnmatch` globs over provider/model
+refs):
 
-Set in the gateway Admin UI (or via the `MODEL_DELEGATE_EXCLUSIONS` env var on
-the gateway server). Comma-separated `fnmatch` globs that hide models from the
-delegate pool **only**:
+### MODEL_DELEGATE_ALLOWLIST — free delegates
+
+Models subagents may use freely, without human approval. A glob without a
+wildcard is an exact match. The match is checked against the full model ref
+(e.g. `open_router/deepseek/deepseek-v4-flash`).
 
 ```
-open_router/deepseek/*    # hide all DeepSeek models routed through OpenRouter
-*gpt-oss*                 # hide any model with "gpt-oss" in its ref
-open_router/qwen/qwen-coder-plus  # hide a specific model
+open_router/deepseek/*    # all DeepSeek via OpenRouter
+open_router/qwen/qwen3-30b  # one specific model
 ```
 
-A glob without a wildcard is an exact match. The exclusion is checked against
-the full model ref (e.g. `open_router/deepseek/deepseek-v4-flash`).
+### MODEL_DELEGATE_APPROVAL — human-gated delegates
 
-### MODEL_DELEGATE_ALLOWLIST
-
-Closed-set gate for the free delegate catalog. When **empty** (default), all
-eligible vendors are free delegates — backward compatible. When **set**, only
-models matching the allowlist or `MODEL_DELEGATE_APPROVAL` appear in the
-catalog. Models outside the union are absent from the endpoint, unresolvable,
-and blocked at the gateway for subagent requests.
+Models subagents may use only after per-spawn human confirmation (the enforce
+hook issues `ASK`). Models matching these patterns become `approval-*` agents.
+When a model matches **both** allowlist and approval, approval wins.
 
 Decision table:
 
 | Model matches | Result |
 |---|---|
-| `MODEL_DELEGATE_EXCLUSIONS` | absent from catalog + blocked (400) |
-| allowlist AND approval | approval (ask) |
+| allowlist only | free delegate |
 | approval only | approval (ask) |
-| allowlist only (open vendor) | free delegate |
-| allowlist only (US closed vendor) | absent from catalog + blocked (400) |
-| neither (allowlist set) | absent from catalog + blocked (400) |
-| neither (allowlist empty) | legacy: open vendor → free delegate |
-
-### MODEL_DELEGATE_APPROVAL
-
-Premium models requiring per-spawn human confirmation. Same format as
-exclusions and allowlist; models matching these patterns become `approval-*`
-agents. When a model matches **both** allowlist and approval, approval wins.
+| allowlist AND approval | approval (ask) |
+| neither | absent from catalog + blocked (400) for subagents |
+| both lists empty | empty catalog (no delegates); enforcement off |
 
 ### Hard enforcement (subagents only)
 
-Exclusions and the allowlist are enforced at request time by the gateway: any
-`/v1/messages` request whose resolved model is excluded or outside the
-allowlist ∪ approval union is rejected with an invalid-request error (400) —
-**unless** it is Claude Code's main conversation loop. The main loop's system
-prompt opens with `"You are Claude Code"`; subagent (Agent tool) prompts open
-with `"You are an agent for Claude Code"`, which does not match — so the
-human `/model` picker keeps working for every model while subagents are
-enforced. The launcher's `--append-system-prompt` sentinel is a second
-marker that survives output styles replacing the CLI prompt. Caveat: the
-markers are heuristics — a client that forges a main-loop prompt bypasses
+Delegate policy is enforced at request time by the gateway: once at least one
+of the two lists is configured, any `/v1/messages` request whose resolved
+model is outside the allowlist ∪ approval union is rejected with an
+invalid-request error (400) — **unless** it is Claude Code's main conversation
+loop. The main loop's system prompt opens with `"You are Claude Code"`; subagent
+(Agent tool) prompts open with `"You are an agent for Claude Code"`, which does
+not match — so the human `/model` picker keeps working for every model while
+subagents are enforced. The launcher's `--append-system-prompt` sentinel is a
+second marker that survives output styles replacing the CLI prompt. Caveat:
+the markers are heuristics — a client that forges a main-loop prompt bypasses
 enforcement, and a future Claude Code release changing its prompt opening
 would need `_MAIN_LOOP_MARKERS` in `api/services.py` updated.
 

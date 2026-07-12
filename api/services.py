@@ -16,7 +16,7 @@ from core.anthropic import get_token_count, get_user_facing_error_message
 from core.anthropic.aggregate import aggregate_sse_to_message
 from core.anthropic.image_detection import has_images
 from core.anthropic.sse import ANTHROPIC_SSE_RESPONSE_HEADERS
-from core.delegates import ref_in_catalog_union, ref_matches
+from core.delegates import ref_in_catalog_union
 from core.trace import api_messages_request_snapshot, trace_event, traced_async_stream
 from providers.base import BaseProvider
 from providers.exceptions import InvalidRequestError, OverloadedError, ProviderError
@@ -137,10 +137,9 @@ def _normalize_model_ref(ref: str) -> str:
 
     Both thinking (``anthropic/...``) and no-thinking
     (``claude-3-freecc-no-thinking/...``) advertised ids, with or without the
-    ``[1m]`` suffix, reduce to the same ``provider/model`` form. A subagent
-    can't escape an exclusion by picking the thinking variant of an excluded
-    model: both variants normalize identically, so an exclusion written against
-    one matches the other.
+    ``[1m]`` suffix, reduce to the same ``provider/model`` form. An allowlist or
+    approval pattern written against one advertised variant matches the other,
+    so a subagent can't dodge policy by picking the thinking variant of a model.
     """
     decoded = decode_gateway_model_id(ref)
     if decoded is not None:
@@ -150,54 +149,21 @@ def _normalize_model_ref(ref: str) -> str:
     return ref
 
 
-def _ref_matches_exclusions(settings: Settings, provider_model_ref: str) -> bool:
-    """True if ``provider_model_ref`` matches any ``MODEL_DELEGATE_EXCLUSIONS`` glob.
-
-    Uses the same ``ref_matches`` as the catalog so the gateway and endpoint
-    never disagree (e.g. a vendor-form pattern ``qwen/*`` matches the 3-part
-    ref ``open_router/qwen/x`` in both layers).
-    """
-    exclusions = settings.model_delegate_exclusions
-    if not exclusions:
-        return False
-    return ref_matches(provider_model_ref, exclusions, _normalize_model_ref)
-
-
-def _enforce_delegate_exclusions(
+def _enforce_delegate_policy(
     settings: Settings, request: MessagesRequest, provider_model_ref: str
 ) -> None:
-    """Hard-block excluded models for subagent requests.
+    """Hard-block subagent models outside the delegate catalog.
 
-    ``MODEL_DELEGATE_EXCLUSIONS`` patterns are matched (fnmatch) against the
-    resolved provider/model ref. A match is rejected unless the request is
-    Claude Code's main conversation loop (system prompt opens with the CLI
-    marker) — i.e. the human /model picker keeps working; Agent-tool subagents
-    (and any other side-channel request) cannot use excluded models.
+    Active only when at least one of ``MODEL_DELEGATE_ALLOWLIST`` /
+    ``MODEL_DELEGATE_APPROVAL`` is configured — an unconfigured gateway imposes
+    no subagent restrictions (plain Claude Code keeps working). When
+    configured, a non-main-loop request must target a model in the catalog
+    union (allowlist = free, approval = human-gated; the ASK gate lives in the
+    enforce hook, not here). Uses the same matching as
+    ``build_delegate_catalog`` so the gateway and the ``/v1/models/delegates``
+    endpoint never disagree. Main-loop requests are never blocked.
     """
-    if not _ref_matches_exclusions(settings, provider_model_ref):
-        return
-    if _is_main_loop_request(request):
-        return
-    raise InvalidRequestError(
-        f"model '{_normalize_model_ref(provider_model_ref)}' is excluded for "
-        "subagents by MODEL_DELEGATE_EXCLUSIONS; pick a delegate model from "
-        "/v1/models/delegates"
-    )
-
-
-def _enforce_delegate_allowlist(
-    settings: Settings, request: MessagesRequest, provider_model_ref: str
-) -> None:
-    """Hard-block subagent models outside the allowlist + approval union.
-
-    When ``MODEL_DELEGATE_ALLOWLIST`` is configured, only models the catalog
-    would admit (allowlist matches on open vendors, plus any
-    ``MODEL_DELEGATE_APPROVAL`` matches) are permitted for subagent requests.
-    Uses the same matching as ``build_delegate_catalog`` so the gateway and
-    the ``/v1/models/delegates`` endpoint never disagree. Main-loop requests
-    are never blocked.
-    """
-    if not settings.model_delegate_allowlist:
+    if not settings.model_delegate_allowlist and not settings.model_delegate_approval:
         return
     if _is_main_loop_request(request):
         return
@@ -210,7 +176,8 @@ def _enforce_delegate_allowlist(
         return
     raise InvalidRequestError(
         f"model '{_normalize_model_ref(provider_model_ref)}' is not in the "
-        "delegate allowlist; set MODEL_DELEGATE_ALLOWLIST or add this model to it"
+        "delegate catalog; add it to MODEL_DELEGATE_ALLOWLIST (free) or "
+        "MODEL_DELEGATE_APPROVAL (human-gated)"
     )
 
 
@@ -237,14 +204,11 @@ class ClaudeProxyService:
             routed = self._model_router.resolve_messages_request(request_data)
             routed = self._maybe_reroute_for_classifier(routed)
             # Reroute image-bearing requests to the vision model BEFORE
-            # enforcing delegate exclusions: a subagent image turn whose
-            # primary model is excluded would otherwise be rejected (400)
-            # instead of rerouted to the non-excluded IMAGE_ROUTE.
+            # enforcing delegate policy: a subagent image turn whose primary
+            # is outside the catalog would otherwise be rejected (400) instead
+            # of rerouted to the IMAGE_ROUTE.
             routed = self._maybe_reroute_for_images(routed)
-            _enforce_delegate_exclusions(
-                self._settings, request_data, routed.resolved.provider_model_ref
-            )
-            _enforce_delegate_allowlist(
+            _enforce_delegate_policy(
                 self._settings, request_data, routed.resolved.provider_model_ref
             )
             if routed.resolved.provider_id in _OPENAI_CHAT_UPSTREAM_IDS:
@@ -377,15 +341,13 @@ class ClaudeProxyService:
         """
         candidates: list[RoutedMessagesRequest] = []
         image_route_target = self._settings.image_route_parts
-        # A subagent request must not escape MODEL_DELEGATE_EXCLUSIONS via a
-        # fallback: if the primary overloads/5xxes, an excluded fallback would
-        # run anyway. Drop excluded candidates up front (the main loop is
+        # A subagent request must not escape delegate policy via a fallback:
+        # if the primary overloads/5xxes, a fallback outside the catalog would
+        # run anyway. Drop out-of-catalog candidates up front (the main loop is
         # exempt — the human /model picker can use any model).
-        enforce_exclusions = bool(
-            self._settings.model_delegate_exclusions
-        ) and not _is_main_loop_request(request_data)
-        enforce_allowlist = bool(
-            self._settings.model_delegate_allowlist
+        enforce_policy = (
+            bool(self._settings.model_delegate_allowlist)
+            or bool(self._settings.model_delegate_approval)
         ) and not _is_main_loop_request(request_data)
         for ref in self._settings.fallback_models:
             resolved = self._model_router.resolve(ref)
@@ -401,11 +363,7 @@ class ClaudeProxyService:
                 and resolved.provider_id != image_route_target[0]
             ):
                 continue
-            if enforce_exclusions and _ref_matches_exclusions(
-                self._settings, resolved.provider_model_ref
-            ):
-                continue
-            if enforce_allowlist and not ref_in_catalog_union(
+            if enforce_policy and not ref_in_catalog_union(
                 _normalize_model_ref(resolved.provider_model_ref),
                 allowlist=self._settings.model_delegate_allowlist,
                 approvals=self._settings.model_delegate_approval,
