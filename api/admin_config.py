@@ -458,7 +458,7 @@ FIELDS: tuple[ConfigFieldSpec, ...] = (
     ),
     ConfigFieldSpec(
         "MODEL_DELEGATE_APPROVAL",
-        "Approval Delegates",
+        "Approval",
         "models",
         settings_attr="model_delegate_approval",
         description=(
@@ -469,7 +469,7 @@ FIELDS: tuple[ConfigFieldSpec, ...] = (
     ),
     ConfigFieldSpec(
         "MODEL_DELEGATE_ALLOWLIST",
-        "Free Delegates",
+        "Allowlist",
         "models",
         settings_attr="model_delegate_allowlist",
         description=(

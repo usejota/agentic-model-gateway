@@ -459,14 +459,14 @@ textarea {
   }
 }
 
-/* Delegate model multi-picker (allowlist / approval) */
+/* Delegate model multi-picker (allowlist / approval): search box + one flat
+   scrollable checkbox list, selected rows pinned to the top. */
 .model-picker {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
   min-width: 0;
   max-width: 100%;
-  overflow: hidden;
 }
 .field .model-picker-search {
   width: 100%;
@@ -482,119 +482,34 @@ textarea {
   align-items: center;
   gap: 8px;
 }
-.model-picker-toolbar button {
+.model-picker-count {
   font-size: 12px;
-  padding: 4px 10px;
+  opacity: 0.85;
+  margin-right: auto;
+}
+.field .model-picker-toolbar button {
+  font-size: 12px;
+  padding: 3px 10px;
   border: 1px solid var(--line-strong);
   border-radius: 6px;
   background: var(--input);
   color: var(--text);
   cursor: pointer;
+  width: auto;
+  min-height: 0;
 }
-.model-picker-toolbar button:hover {
+.field .model-picker-toolbar button:hover {
   border-color: var(--text);
 }
-.model-picker-count {
-  font-size: 12px;
-  opacity: 0.85;
-  margin-left: auto;
-}
-.model-picker-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-}
-.model-picker-chips:empty {
-  display: none;
-}
-.model-picker-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 12px;
-  padding: 2px 8px;
-  border-radius: 10px;
-  background: rgba(120, 120, 255, 0.15);
-  border: 1px solid rgba(120, 120, 255, 0.35);
-  color: var(--text);
-}
-.model-picker-chip button {
-  border: none;
-  background: none;
-  cursor: pointer;
-  font-size: 13px;
-  line-height: 1;
-  padding: 0 2px;
-  color: var(--text);
-  min-height: 0;
-  width: auto;
-}
 .model-picker-list {
-  max-height: 320px;
+  max-height: 300px;
   overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.model-picker-group {
   border: 1px solid var(--line-strong);
   border-radius: 8px;
   background: var(--input);
-  overflow: hidden;
+  padding: 4px;
 }
-.model-picker-group > summary {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  cursor: pointer;
-  font-size: 13px;
-  padding: 6px 10px;
-  list-style: none;
-  user-select: none;
-}
-.model-picker-group > summary::-webkit-details-marker {
-  display: none;
-}
-.model-picker-group > summary::before {
-  content: "▸";
-  font-size: 11px;
-  opacity: 0.75;
-  transition: transform 0.12s ease-out;
-  display: inline-block;
-}
-.model-picker-group[open] > summary::before {
-  transform: rotate(90deg);
-  content: "▾";
-}
-.model-picker-group-label {
-  font-weight: 600;
-}
-.model-picker-group-count {
-  font-size: 12px;
-  opacity: 0.75;
-}
-.model-picker-group-actions {
-  margin-left: auto;
-  display: inline-flex;
-  gap: 4px;
-}
-.model-picker-group-actions button {
-  font-size: 11px;
-  padding: 1px 7px;
-  border: 1px solid var(--line-strong);
-  border-radius: 5px;
-  background: transparent;
-  color: var(--text);
-  cursor: pointer;
-}
-.model-picker-group-actions button:hover {
-  border-color: var(--text);
-}
-.model-picker-group-body {
-  padding: 2px 4px 4px;
-  display: flex;
-  flex-direction: column;
-}
+/* Rows are <label>s: reset the bold/space-between rules from `.field label`. */
 .field .model-picker-row {
   display: flex;
   align-items: center;
@@ -602,18 +517,25 @@ textarea {
   font-weight: 400;
   gap: 8px;
   font-size: 13px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   cursor: pointer;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
   padding: 4px 8px;
   border-radius: 6px;
   margin: 0;
+  min-width: 0;
 }
 .field .model-picker-row:hover {
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(255, 255, 255, 0.06);
 }
-/* Undo the global 100%-width/38px-height input rule for the row checkboxes. */
+.field .model-picker-row.is-selected {
+  color: #c9c9ff;
+}
+.model-picker-ref {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Reset the global 100%-width/38px-height `.field input` rule for checkboxes. */
 .field .model-picker-row input[type="checkbox"] {
   width: 15px;
   height: 15px;
@@ -622,9 +544,4 @@ textarea {
   margin: 0;
   padding: 0;
   accent-color: #7a7aff;
-}
-@media (prefers-reduced-motion: reduce) {
-  .model-picker-group > summary::before {
-    transition: none;
-  }
 }
