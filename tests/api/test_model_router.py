@@ -251,3 +251,70 @@ def test_model_router_logs_mapping(settings):
     assert "MODEL MAPPING" in args[0]
     assert args[1] == "claude-2.1"
     assert args[2] == "fallback-model"
+
+
+def test_model_router_claude_alias_with_1m_suffix_resolves_to_override(settings):
+    """claude-fable-5[1m] resolves via MODEL_FABLE with one_m_context=True."""
+    settings.model_fable = "open_router/openai/gpt-5.6-sol"
+
+    routed = ModelRouter(settings).resolve_messages_request(
+        MessagesRequest(
+            model="claude-fable-5[1m]",
+            max_tokens=100,
+            messages=[Message(role="user", content="hello")],
+        )
+    )
+
+    assert routed.resolved.one_m_context is True
+    assert routed.resolved.provider_id == "open_router"
+    assert routed.resolved.provider_model == "openai/gpt-5.6-sol"
+    assert routed.resolved.provider_model_ref == "open_router/openai/gpt-5.6-sol"
+    assert routed.request.model == "openai/gpt-5.6-sol"
+
+
+def test_model_router_claude_alias_without_1m_suffix_resolves_to_override(settings):
+    """claude-fable-5 (no [1m]) resolves via MODEL_FABLE with one_m_context=False."""
+    settings.model_fable = "open_router/openai/gpt-5.6-sol"
+
+    routed = ModelRouter(settings).resolve_messages_request(
+        MessagesRequest(
+            model="claude-fable-5",
+            max_tokens=100,
+            messages=[Message(role="user", content="hello")],
+        )
+    )
+
+    assert routed.resolved.one_m_context is False
+    assert routed.resolved.provider_model == "openai/gpt-5.6-sol"
+
+
+def test_model_router_claude_opus_with_1m_suffix(settings):
+    """claude-opus-4-20250514[1m] resolves via MODEL_OPUS with one_m_context=True."""
+    settings.model_opus = "open_router/deepseek/deepseek-v4-pro"
+
+    routed = ModelRouter(settings).resolve_messages_request(
+        MessagesRequest(
+            model="claude-opus-4-20250514[1m]",
+            max_tokens=100,
+            messages=[Message(role="user", content="hello")],
+        )
+    )
+
+    assert routed.resolved.one_m_context is True
+    assert routed.resolved.provider_model == "deepseek/deepseek-v4-pro"
+
+
+def test_model_router_claude_sonnet_with_1m_suffix(settings):
+    """claude-sonnet-4-20250514[1m] resolves via MODEL_SONNET with one_m_context=True."""
+    settings.model_sonnet = "open_router/deepseek/deepseek-v4-flash"
+
+    routed = ModelRouter(settings).resolve_messages_request(
+        MessagesRequest(
+            model="claude-sonnet-4-20250514[1m]",
+            max_tokens=100,
+            messages=[Message(role="user", content="hello")],
+        )
+    )
+
+    assert routed.resolved.one_m_context is True
+    assert routed.resolved.provider_model == "deepseek/deepseek-v4-flash"

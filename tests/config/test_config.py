@@ -595,6 +595,7 @@ class TestPerModelMapping:
         assert s.model_opus is None
         assert s.model_sonnet is None
         assert s.model_haiku is None
+        assert s.model_fable is None
 
     def test_model_opus_from_env(self, monkeypatch):
         """MODEL_OPUS env var is loaded."""
@@ -604,7 +605,9 @@ class TestPerModelMapping:
         s = Settings()
         assert s.model_opus == "open_router/deepseek/deepseek-r1"
 
-    @pytest.mark.parametrize("env_var", ["MODEL_OPUS", "MODEL_SONNET", "MODEL_HAIKU"])
+    @pytest.mark.parametrize(
+        "env_var", ["MODEL_OPUS", "MODEL_SONNET", "MODEL_HAIKU", "MODEL_FABLE"]
+    )
     def test_empty_model_override_env_is_unset(self, monkeypatch, env_var):
         """Empty per-model override env vars are treated as unset."""
         from config.settings import Settings
@@ -668,6 +671,15 @@ class TestPerModelMapping:
         monkeypatch.setenv("MODEL_HAIKU", "lmstudio/qwen2.5-7b")
         s = Settings()
         assert s.model_haiku == "lmstudio/qwen2.5-7b"
+
+    def test_model_fable_from_env(self, monkeypatch):
+        """MODEL_FABLE env var is loaded."""
+        from config.settings import Settings
+
+        monkeypatch.setenv("MODEL_FABLE", "zai/glm-5.2")
+        s = Settings()
+        assert s.model_fable == "zai/glm-5.2"
+        assert s.resolve_model("claude-fable-5") == "zai/glm-5.2"
 
     def test_model_opus_invalid_provider_raises(self, monkeypatch):
         """MODEL_OPUS with invalid provider prefix raises ValidationError."""

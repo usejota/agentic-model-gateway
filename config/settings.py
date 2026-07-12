@@ -168,6 +168,7 @@ class Settings(BaseSettings):
     model_opus: str | None = Field(default=None, validation_alias="MODEL_OPUS")
     model_sonnet: str | None = Field(default=None, validation_alias="MODEL_SONNET")
     model_haiku: str | None = Field(default=None, validation_alias="MODEL_HAIKU")
+    model_fable: str | None = Field(default=None, validation_alias="MODEL_FABLE")
 
     # Optional cross-model fallback chain. When a request's backend fails with an
     # overload/5xx error *before any response has streamed*, the proxy retries the
@@ -226,6 +227,9 @@ class Settings(BaseSettings):
     )
     enable_haiku_thinking: bool | None = Field(
         default=None, validation_alias="ENABLE_HAIKU_THINKING"
+    )
+    enable_fable_thinking: bool | None = Field(
+        default=None, validation_alias="ENABLE_FABLE_THINKING"
     )
 
     # ==================== HTTP Client Timeouts ====================
@@ -386,9 +390,11 @@ class Settings(BaseSettings):
         "model_opus",
         "model_sonnet",
         "model_haiku",
+        "model_fable",
         "enable_opus_thinking",
         "enable_sonnet_thinking",
         "enable_haiku_thinking",
+        "enable_fable_thinking",
         mode="before",
     )
     @classmethod
@@ -565,7 +571,9 @@ class Settings(BaseSettings):
             )
         return v
 
-    @field_validator("model", "model_opus", "model_sonnet", "model_haiku")
+    @field_validator(
+        "model", "model_opus", "model_sonnet", "model_haiku", "model_fable"
+    )
     @classmethod
     def validate_model_format(cls, v: str | None) -> str | None:
         if v is None:
@@ -668,6 +676,8 @@ class Settings(BaseSettings):
         name_lower = claude_model_name.lower()
         if "opus" in name_lower and self.model_opus is not None:
             return self.model_opus
+        if "fable" in name_lower and self.model_fable is not None:
+            return self.model_fable
         if "haiku" in name_lower and self.model_haiku is not None:
             return self.model_haiku
         if "sonnet" in name_lower and self.model_sonnet is not None:
@@ -681,6 +691,7 @@ class Settings(BaseSettings):
             ("MODEL_OPUS", self.model_opus),
             ("MODEL_SONNET", self.model_sonnet),
             ("MODEL_HAIKU", self.model_haiku),
+            ("MODEL_FABLE", self.model_fable),
         )
         sources_by_ref: dict[str, list[str]] = {}
         for source, model_ref in candidates:
@@ -703,6 +714,8 @@ class Settings(BaseSettings):
         name_lower = claude_model_name.lower()
         if "opus" in name_lower and self.enable_opus_thinking is not None:
             return self.enable_opus_thinking
+        if "fable" in name_lower and self.enable_fable_thinking is not None:
+            return self.enable_fable_thinking
         if "haiku" in name_lower and self.enable_haiku_thinking is not None:
             return self.enable_haiku_thinking
         if "sonnet" in name_lower and self.enable_sonnet_thinking is not None:
