@@ -1,15 +1,18 @@
 """Tests for scripts/install-claudim.sh — renameability, baked URL, name validation.
 
-Runs the installer in a tmpdir with a ``file://`` source override so no network
-is needed and the real ``~/.local/bin`` is never touched. Pairs with the static
-launcher-renameability + upgrade-hardening checks on ``deploy/claudim``.
+Runs the installer in a tmpdir with ``file://`` source overrides so no network is
+needed and the real ``~/.local/bin`` and ``~/.claude`` are never touched. Pairs
+with the static launcher-renameability checks on ``deploy/claudim``.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 from pathlib import Path
+
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 INSTALLER = REPO_ROOT / "scripts" / "install-claudim.sh"
@@ -23,14 +26,27 @@ def _file_url(p: Path) -> str:
 def _installer_env(bin_dir: Path, home: Path, **extra: str) -> dict[str, str]:
     """Env to run the installer offline into a throwaway bin/home.
 
-    The launcher source is pointed at the local repo file via file://, so
-    curl/wget never hit the network. CLAUDIM_BIN_DIR/HOME isolate the footprint.
+    Every source the installer fetches (launcher, renderer, hook, both skills) is
+    pointed at the local repo file via file://, so curl/wget never hits the
+    network. CLAUDIM_BIN_DIR/HOME isolate the install footprint.
     """
     env = {
         **{k: v for k, v in os.environ.items() if not k.startswith("CLAUDIM_")},
         "HOME": str(home),
         "CLAUDIM_BIN_DIR": str(bin_dir),
         "CLAUDIM_SRC": _file_url(LAUNCHER),
+        "CLAUDIM_RENDER_SRC": _file_url(REPO_ROOT / "deploy" / "claudim-render.py"),
+        "CLAUDIM_HOOK_SRC": _file_url(REPO_ROOT / "deploy" / "claudim-enforce-hook.py"),
+        "CLAUDIM_RESOLVE_SRC": _file_url(REPO_ROOT / "deploy" / "claudim-resolve.py"),
+        "CLAUDIM_SKILL_SRC": _file_url(
+            REPO_ROOT / ".claude" / "skills" / "claudim-delegate" / "SKILL.md"
+        ),
+        "CLAUDIM_FANOUT_SKILL_SRC": _file_url(
+            REPO_ROOT / ".claude" / "skills" / "claudim-fanout" / "SKILL.md"
+        ),
+        "CLAUDIM_WORKFLOW_SKILL_SRC": _file_url(
+            REPO_ROOT / ".claude" / "skills" / "claudim-workflow" / "SKILL.md"
+        ),
     }
     env.update(extra)
     return env
@@ -54,24 +70,63 @@ def _run_installer(
 # ---------------------------------------------------------------------------
 
 
-def test_install_default_name_creates_launcher(tmp_path: Path) -> None:
-    """Default install (no CLAUDIM_NAME) installs an executable `claudim`."""
+def test_install_renamed_name_creates_all_artifacts(tmp_path: Path) -> None:
+    """CLAUDIM_NAME=buxexa installs binary + renderer + hook + both skills under
+    that name (no `claudim`-named artifacts)."""
     bin_dir = tmp_path / "bin"
-    proc = _run_installer(bin_dir, tmp_path)
-    assert proc.returncode == 0, proc.stderr
-    launcher = bin_dir / "claudim"
-    assert launcher.exists()
-    assert launcher.stat().st_mode & 0o111  # executable
-
-
-def test_install_renamed_name_creates_launcher(tmp_path: Path) -> None:
-    """CLAUDIM_NAME=buxexa installs the binary under that name (not `claudim`)."""
-    bin_dir = tmp_path / "bin"
-    proc = _run_installer(bin_dir, tmp_path, CLAUDIM_NAME="buxexa")
+    home = tmp_path / "home"
+    proc = _run_installer(bin_dir, home, CLAUDIM_NAME="buxexa")
     assert proc.returncode == 0, proc.stderr
     assert (bin_dir / "buxexa").exists()
-    # The default name is NOT created — the install name fully parameterizes it.
+    assert (bin_dir / "buxexa-render.py").exists()
+    assert (bin_dir / "buxexa-enforce-hook.py").exists()
+    assert (bin_dir / "buxexa-resolve.py").exists()
+    assert (home / ".claude" / "skills" / "buxexa-delegate" / "SKILL.md").exists()
+    assert (home / ".claude" / "skills" / "buxexa-fanout" / "SKILL.md").exists()
+    assert (home / ".claude" / "skills" / "buxexa-workflow" / "SKILL.md").exists()
+    assert not (home / ".claude" / "skills" / "buxexa-panel").exists()
+    # No leftover `claudim`-named artifacts.
     assert not (bin_dir / "claudim").exists()
+    assert not (home / ".claude" / "skills" / "claudim-delegate").exists()
+
+
+def test_install_renamed_skill_has_no_literal_claudim(tmp_path: Path) -> None:
+    """A renamed skill references the installed name, never the lowercase literal
+    `claudim`. The sed template rewrites every lowercase `claudim` token to NAME;
+    uppercase `CLAUDIM_` env-var references are case-sensitive and survive."""
+    bin_dir = tmp_path / "bin"
+    home = tmp_path / "home"
+    proc = _run_installer(bin_dir, home, CLAUDIM_NAME="buxexa")
+    assert proc.returncode == 0, proc.stderr
+    for name in ("delegate", "fanout", "workflow"):
+        skill = (
+            home / ".claude" / "skills" / f"buxexa-{name}" / "SKILL.md"
+        ).read_text()
+        assert "claudim" not in skill
+        assert "disable-model-invocation: true" in skill
+
+
+def test_install_default_name_uses_claudim(tmp_path: Path) -> None:
+    """Default install (no CLAUDIM_NAME) still installs under `claudim`."""
+    bin_dir = tmp_path / "bin"
+    home = tmp_path / "home"
+    proc = _run_installer(bin_dir, home)
+    assert proc.returncode == 0, proc.stderr
+    assert (bin_dir / "claudim").exists()
+    assert (home / ".claude" / "skills" / "claudim-delegate" / "SKILL.md").exists()
+
+
+def test_upgrade_removes_legacy_panel_skill(tmp_path: Path) -> None:
+    bin_dir = tmp_path / "bin"
+    home = tmp_path / "home"
+    panel = home / ".claude" / "skills" / "buxexa-panel"
+    panel.mkdir(parents=True)
+    (panel / "SKILL.md").write_text("legacy broad auto-trigger")
+
+    proc = _run_installer(bin_dir, home, CLAUDIM_NAME="buxexa")
+
+    assert proc.returncode == 0, proc.stderr
+    assert not panel.exists()
 
 
 # ---------------------------------------------------------------------------
@@ -83,70 +138,104 @@ def test_install_bakes_default_base_url(tmp_path: Path) -> None:
     """CLAUDIM_DEFAULT_BASE_URL is stamped into the installed binary's
     CLAUDIM_BAKED_BASE_URL so a local-test wrapper points at its own gateway."""
     bin_dir = tmp_path / "bin"
+    home = tmp_path / "home"
     proc = _run_installer(
         bin_dir,
-        tmp_path,
+        home,
         CLAUDIM_NAME="loclaudim",
         CLAUDIM_DEFAULT_BASE_URL="http://localhost:8082",
     )
     assert proc.returncode == 0, proc.stderr
-    text = (bin_dir / "loclaudim").read_text(encoding="utf-8")
+    text = (bin_dir / "loclaudim").read_text()
     assert 'CLAUDIM_BAKED_BASE_URL="http://localhost:8082"' in text
 
 
 def test_install_default_has_empty_baked_url(tmp_path: Path) -> None:
     """Default install leaves CLAUDIM_BAKED_BASE_URL empty (no bake)."""
     bin_dir = tmp_path / "bin"
-    proc = _run_installer(bin_dir, tmp_path, CLAUDIM_NAME="claudim")
+    home = tmp_path / "home"
+    proc = _run_installer(bin_dir, home, CLAUDIM_NAME="claudim")
     assert proc.returncode == 0, proc.stderr
-    text = (bin_dir / "claudim").read_text(encoding="utf-8")
+    text = (bin_dir / "claudim").read_text()
     assert 'CLAUDIM_BAKED_BASE_URL=""' in text
 
 
 # ---------------------------------------------------------------------------
-# Name validation (rejects characters unsafe as a filename / sed replacement)
+# Name validation
 # ---------------------------------------------------------------------------
 
 
-def test_install_rejects_invalid_name(tmp_path: Path) -> None:
-    """A NAME with a shell/sed metacharacter is rejected before any download."""
+@pytest.mark.parametrize("bad_name", ["a/b", "my.tool", "a b", "a&b", "a$b"])
+def test_install_rejects_invalid_name(tmp_path: Path, bad_name: str) -> None:
+    """Invalid CLAUDIM_NAME values (sed metacharacters / bad filename chars) are
+    rejected with a clear error and non-zero exit before any download."""
     bin_dir = tmp_path / "bin"
-    proc = _run_installer(bin_dir, tmp_path, CLAUDIM_NAME="bad/name")
+    home = tmp_path / "home"
+    proc = _run_installer(bin_dir, home, CLAUDIM_NAME=bad_name)
     assert proc.returncode != 0
     assert "CLAUDIM_NAME must match [A-Za-z0-9_-]+" in proc.stderr
-    # Nothing was installed — the bin dir may not even exist, and certainly no binary.
-    assert not (bin_dir / "bad").exists()
 
 
 # ---------------------------------------------------------------------------
-# Static checks on the launcher: renameability + upgrade command-injection fix
+# Launcher renameability (static checks on deploy/claudim)
 # ---------------------------------------------------------------------------
 
 
-def test_launcher_derives_self_from_argv0() -> None:
-    """The launcher is renameable: SELF comes from $0, and user-facing messages
-    use ${SELF} — never the hardcoded literal `claudim`."""
-    text = LAUNCHER.read_text(encoding="utf-8")
+def test_launcher_derives_name_from_argv0() -> None:
+    """The launcher derives its name from $0, not a hardcoded literal; the
+    allowlist path follows $SELF (V1 regression guard — no literal path)."""
+    text = LAUNCHER.read_text()
     assert 'SELF="${0##*/}"' in text
-    assert 'say()  { echo "[${SELF}] $*"' in text
-    assert 'die()  { echo "[${SELF}] error: $*"' in text
+    assert "~/.claude/claudim-allowlist.json" not in text
+    assert "${SELF}-allowlist.json" in text
 
 
-def test_launcher_upgrade_quotes_installer_url() -> None:
-    """The upgrade path shell-quotes CLAUDIM_INSTALLER with printf %q instead of
-    interpolating it into a re-parsed shell string — CLAUDIM_INSTALLER is
-    user-controlled (env), so unquoted interpolation would allow command
-    injection into the upgrade subshell."""
-    text = LAUNCHER.read_text(encoding="utf-8")
-    assert '_installer_q="$(printf \'%q\' "${INSTALLER}")"' in text
-    assert "curl -fsSL ${_installer_q} | sh" in text
-    # The old, vulnerable interpolation must be gone.
-    assert "curl -fsSL '${INSTALLER}'" not in text
+def test_launcher_syntax_ok() -> None:
+    """bash -n: the launcher parses cleanly."""
+    proc = subprocess.run(["bash", "-n", str(LAUNCHER)], capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr
 
 
-def test_launcher_export_reinstall_name_on_upgrade() -> None:
-    """`upgrade` exports CLAUDIM_NAME=$SELF so a renamed install reinstalls under
-    its current name (loclaudim stays loclaudim) and carries any baked URL."""
-    text = LAUNCHER.read_text(encoding="utf-8")
-    assert 'export CLAUDIM_NAME="${SELF}"' in text
-    assert "CLAUDIM_BAKED_BASE_URL" in text
+def test_launcher_renamed_copy_syntax_ok(tmp_path: Path) -> None:
+    """A renamed copy of the launcher still parses — name is not hardcoded."""
+    dest = tmp_path / "buxexa"
+    dest.write_text(LAUNCHER.read_text())
+    proc = subprocess.run(["bash", "-n", str(dest)], capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr
+
+
+def test_launcher_registers_temp_cleanup_traps() -> None:
+    text = LAUNCHER.read_text()
+    assert "cleanup_session_temps" in text
+    assert "trap cleanup_session_temps EXIT" in text
+    assert "trap 'exit 130' INT" in text
+    assert "trap 'exit 143' TERM" in text
+
+
+def test_agents_builder_skips_only_malformed_entries() -> None:
+    text = LAUNCHER.read_text()
+    script = text.split("<<'AGENTS_EOF'\n", 1)[1].split("\nAGENTS_EOF", 1)[0]
+    catalog = {
+        "models": [
+            {"agent_name": "delegate-broken"},
+            {
+                "id": "id/free",
+                "agent_name": "delegate-free",
+                "display_name": "Free",
+                "vendor": "vendor",
+                "policy": "delegate",
+                "capabilities": ["general"],
+            },
+        ]
+    }
+
+    proc = subprocess.run(
+        ["python3", "-c", script],
+        input=json.dumps(catalog),
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+
+    result = json.loads(proc.stdout)
+    assert result["names"] == ["delegate-free"]

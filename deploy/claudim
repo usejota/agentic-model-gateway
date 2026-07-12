@@ -7,6 +7,31 @@
 #   claudim                 # interactive Claude Code, pointed at the gateway
 #   claudim "fix this bug"  # all args pass straight through to claude
 #   claudim upgrade         # update claudim itself (re-runs the installer)
+#   claudim models          # list delegate aliases + their strengths
+#   claudim -p --model deepseek-v4-pro "task"   # delegate: cheap model, returns
+#                                               # the answer on stdout
+#   claudim -p --unrestricted --model deepseek-v4-flash "task"
+#                             # delegate that can run gcloud / network / file
+#                             # writes (bypasses Claude Code permission prompts,
+#                             # which -p can't answer). Opt-in: only when the
+#                             # task needs it. Default is sandboxed (auto).
+#   CLAUDIM_TMUX=1 claudim -p --model kimi-k2.7-code "task"
+#                             # run the delegate inside a tmux window you can
+#                             # watch AND interact with. If you're inside tmux,
+#                             # it opens in YOUR session; else in a detached
+#                             # session `claudim` (tmux attach -t claudim). -p only.
+#
+# `--model <alias>` is rewritten to the gateway's no-thinking model id so that
+# `claude -p` delegates return non-empty output (reasoning backends otherwise
+# stream an unsigned `thinking` block that Claude Code -p discards). A full
+# routed id (contains "/") or a Claude alias (haiku/sonnet/opus) is passed
+# through unchanged. See `claudim models`.
+#
+# `--unrestricted` (or CLAUDIM_BYPASS=1) injects `--dangerously-skip-permissions`
+# so a -p delegate can run gcloud/GCP/network/file-write commands that the
+# default `auto` permission mode would deny non-interactively. Off by default.
+# `--tmux` (or CLAUDIM_TMUX=1) wraps a -p delegate in a tmux window for live
+# observation. Both are claudim-only flags (stripped before reaching claude).
 #
 # Requirements on the dev machine:
 #   - Tailscale: installed and logged in to the company tailnet (jota.ai),
@@ -24,15 +49,21 @@
 #                     gateway that is NOT on the tailnet. When set, the
 #                     tailscale-connected check and the nc reachability probe
 #                     are skipped (reachable() falls back to its curl branch).
+#   CLAUDIM_MAX_WAIT  max seconds to wait for a tmux delegate (default: 3600)
+#   CLAUDIM_BYPASS    1 = inject --dangerously-skip-permissions (let -p delegate
+#                     run gcloud/network/file-writes; off by default)
+#   CLAUDIM_TMUX      1 = open each -p delegate in a tmux window (your current
+#                     session if inside tmux, else detached session `claudim`;
+#                     needs tmux on PATH; falls back to inline if absent)
 #
 set -euo pipefail
 
-# Invocation name — drives user-facing messages and the `upgrade` target.
-# Derived from $0 so the launcher is renameable: install it as `claudim`
-# (default), `loclaudim`, or any other name and every self-reference follows.
-# "claudim" is the default install name, NOT a hard dependency. (CLAUDIM_*
-# env vars stay the stable public interface regardless of the binary name —
-# retro-compat for existing shell configs.)
+# Invocation name — drives the tmux session name, renderer lookup, user-facing
+# messages, and `upgrade` target. Derived from $0 so the launcher is renameable:
+# install it as `claudim` (default), `loclaudim`, or any other name and every
+# self-reference follows. "claudim" is the default install name, NOT a hard
+# dependency. (CLAUDIM_* env vars stay the stable public interface regardless of
+# the binary name — retro-compat for existing shell configs.)
 SELF="${0##*/}"
 
 # Baked defaults — the installer may stamp these at install time so a named
@@ -53,9 +84,233 @@ BASE_URL="${CLAUDIM_BASE_URL:-${CLAUDIM_BAKED_BASE_URL:-http://${FQDN}:${PORT}}}
 say()  { echo "[${SELF}] $*" >&2; }
 die()  { echo "[${SELF}] error: $*" >&2; exit 1; }
 
-# Self-update of the claudim launcher ONLY. Intercepted as the bare first arg so it
-# never reaches `claude` (this updates claudim, NOT Claude Code — for the latter use
-# `claude update`). Runs before the claude/tailscale checks so it works regardless.
+# Map a friendly delegate alias to the gateway's no-thinking model id.
+# The no-thinking variant is MANDATORY for `claude -p` delegates: reasoning
+# backends otherwise stream a `thinking` block with an empty signature, which
+# Claude Code in -p/SDK mode treats as an invalid turn and discards — yielding
+# empty stdout even though the text block was sent. The `claude-3-freecc-no-
+# thinking/` prefix both tells Claude Code the model doesn't support thinking
+# (no signature expected) and tells the gateway to disable thinking upstream.
+# Values that already look like a routed id (contain "/") or a Claude alias
+# (haiku/sonnet/opus) are passed through unchanged.
+resolve_model_alias() {
+  case "$1" in
+    deepseek-v4-pro)   printf 'claude-3-freecc-no-thinking/open_router/deepseek/deepseek-v4-pro' ;;
+    kimi-k2.7-code)    printf 'claude-3-freecc-no-thinking/open_router/moonshotai/kimi-k2.7-code' ;;
+    deepseek-v4-flash) printf 'claude-3-freecc-no-thinking/open_router/deepseek/deepseek-v4-flash' ;;
+    glm-5.2)           printf 'claude-3-freecc-no-thinking/open_router/z-ai/glm-5.2' ;;
+    minimax-m3)        printf 'claude-3-freecc-no-thinking/open_router/minimax/minimax-m3' ;;
+    mistral-small)     printf 'claude-3-freecc-no-thinking/open_router/mistralai/mistral-small-3.2-24b-instruct' ;;
+    ministral-8b)      printf 'claude-3-freecc-no-thinking/open_router/mistralai/ministral-8b-2512' ;;
+    codestral)         printf 'claude-3-freecc-no-thinking/open_router/mistralai/codestral-2508' ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
+# Run a `claude -p` delegate inside a tmux PANE so the user watches it live
+# AND can interact with it (approve prompts, type instructions).
+#
+# Layout (inside the caller's tmux session): the orchestrator pane keeps the
+# LEFT HALF at full height; delegates stack vertically in the right half, one
+# equal-height slice each. Achieved with tmux's built-in `main-vertical`
+# layout (main-pane-width 50%), re-applied after every spawn so N delegates
+# always split the right column into N equal slices. When a delegate finishes
+# its pane closes and the layout re-balances.
+#
+# Outside tmux there is no pane to split, so delegates go to a window in a
+# detached session named after the launcher (tmux attach -t <name> from another
+# terminal). Sanitized: tmux session names can't contain '.' or ':'.
+#
+# stdout is teed to a log and returned on claudim's stdout so the orchestrator
+# captures it exactly like the inline path (--output-format json stays clean).
+# stderr stays on the pane's tty: that's where Claude Code renders its live
+# spinner/progress, which is what the user actually watches (`claude -p` only
+# emits stdout at the very end). Blocks until the delegate exits, then removes
+# the pane/window.
+#
+# Env is passed explicitly in the pane command (env VAR=... claude ...) so a
+# pre-existing tmux server with a different environment can't lose the gateway
+# exports claudim set above.
+run_in_tmux() {
+  local in_session=0
+  local sess=""
+  if [ -n "${TMUX:-}" ]; then
+    in_session=1
+    sess="$(tmux display-message -p '#S' 2>/dev/null)"
+  fi
+  if [ -z "${sess}" ]; then
+    in_session=0
+    sess="${SELF//[.:]/_}"
+    tmux has-session -t "$sess" 2>/dev/null || tmux new-session -d -s "$sess"
+  fi
+
+  # mktemp dir (not PID-based) so parallel delegates can't collide and nothing
+  # predictable sits in /tmp. Trap cleans it up on normal exit OR Ctrl+C during
+  # the wait loop below.
+  local tmpdir
+  tmpdir="$(mktemp -d 2>/dev/null || mktemp -d -t "${SELF}")"
+  # Traps: EXIT cleans up on die() (the script exits while still inside this
+  # function, so $tmpdir is in scope). INT/TERM (Ctrl+C during the wait loop)
+  # clean up AND exit — without `exit`, the trap returns into the wait loop
+  # and keeps spinning on the dead sentinel. Normal return does explicit
+  # cleanup below and clears the traps so EXIT can't fire later with $tmpdir
+  # out of scope (which would be a no-op and leak the temp dir).
+  trap 'rm -rf "$tmpdir"' EXIT
+  trap 'rm -rf "$tmpdir"; exit 130' INT
+  trap 'rm -rf "$tmpdir"; exit 143' TERM
+  local out="$tmpdir/out.log"
+  local done="$tmpdir/done"
+  local status="$tmpdir/status"
+  local max_wait="${CLAUDIM_MAX_WAIT:-3600}"
+  case "$max_wait" in
+    ''|*[!0-9]*) die "CLAUDIM_MAX_WAIT must be a non-negative integer (seconds)" ;;
+  esac
+  # Title carries the delegate model (last path segment) so panes/windows are
+  # tellable apart; PID suffix keeps parallel delegates unique.
+  local model="" _prev=""
+  for _a in "$@"; do
+    case "$_prev" in --model) model="$_a" ;; esac
+    case "$_a" in --model=*) model="${_a#--model=}" ;; esac
+    _prev="$_a"
+  done
+  model="${model##*/}"
+  local title="${model:-del}-$$"
+
+  # Shell-quote every claude arg so tmux's shell parses them verbatim.
+  local cmd=""
+  local _a
+  for _a in "$@"; do cmd+=$(printf '%q ' "$_a"); done
+
+  # Pass the gateway env explicitly (tmux server may not share claudim's env).
+  local envp="env"
+  envp+=" PATH=$(printf '%q' "$PATH")"
+  envp+=" ANTHROPIC_BASE_URL=$(printf '%q' "$ANTHROPIC_BASE_URL")"
+  envp+=" ANTHROPIC_AUTH_TOKEN=$(printf '%q' "$ANTHROPIC_AUTH_TOKEN")"
+  envp+=" CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=$(printf '%q' "$CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY")"
+  envp+=" CLAUDE_CODE_AUTO_COMPACT_WINDOW=$(printf '%q' "$CLAUDE_CODE_AUTO_COMPACT_WINDOW")"
+
+  # Pane experience: `claude -p` prints stdout only at the very end and draws
+  # nothing in print mode — a mute pane. So the delegate actually runs with
+  # `--output-format stream-json --verbose`, and a renderer (the sibling
+  # `claudim-render.py`, installed alongside the launcher) turns the event
+  # stream into a compact Claude-Code-style per-turn feed: `● Read <path>`,
+  # `● Edit <path> (-A/+B)`, `● Bash $ <cmd> → exit 0 (first line)`, tool
+  # results with first line + size, `✗` always surfacing the error text (this
+  # is the bug fix — the previous bare `✗` was a debugging black box), thinking
+  # blocks dimmed, a per-turn separator with elapsed time. The renderer
+  # extracts the final result and writes it to the log in the format the
+  # CALLER asked for (text by default, the raw result object for
+  # --output-format json), so the orchestrator's captured stdout is unchanged
+  # by the live view.
+  local caller_fmt="text"
+  local strip=() _skip=0
+  for _a in "$@"; do
+    if [ "$_skip" = "1" ]; then _skip=0; caller_fmt="$_a"; continue; fi
+    case "$_a" in
+      --output-format) _skip=1 ;;
+      --output-format=*) caller_fmt="${_a#--output-format=}" ;;
+      *) strip+=("$_a") ;;
+    esac
+  done
+  local scmd=""
+  for _a in "${strip[@]}"; do scmd+=$(printf '%q ' "$_a"); done
+
+  # Renderer lives next to the launcher (installed together by
+  # install-claudim.sh as <name>-render.py). Looked up by the launcher's OWN
+  # name first (so a renamed install finds its matching renderer), falling back
+  # to the legacy `claudim-render.py` (retro-compat: an old renderer still
+  # serves a renamed launcher). A CWD/PATH lookup keeps `bash deploy/claudim`
+  # from a git clone working for dev.
+  local launcher_dir renderer render_name
+  render_name="${SELF}-render.py"
+  launcher_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+  if [ -x "${launcher_dir}/${render_name}" ]; then
+    renderer="${launcher_dir}/${render_name}"
+  elif [ -x "${launcher_dir}/claudim-render.py" ]; then
+    renderer="${launcher_dir}/claudim-render.py"
+  elif command -v "${render_name}" >/dev/null 2>&1; then
+    renderer="$(command -v "${render_name}")"
+  elif command -v claudim-render.py >/dev/null 2>&1; then
+    renderer="$(command -v claudim-render.py)"
+  else
+    die "${render_name} (or legacy claudim-render.py) not found next to launcher (${launcher_dir}) and not on PATH. Re-run scripts/install-claudim.sh."
+  fi
+
+  local taskprev=""
+  for _a in "$@"; do case "$_a" in -*) ;; *) taskprev="$_a"; break ;; esac; done
+  taskprev="$(printf '%.120s' "$taskprev")"
+  # `unset ANTHROPIC_API_KEY` first: the tmux SERVER may have inherited it
+  # from its own startup env (e.g. the user's shell rc), and `env VAR=...`
+  # below only overrides — it doesn't unset. Without this, a delegate pane
+  # could auth with the parent subscription key instead of the gateway token.
+  # `rc=$?` after the pipe captures the RENDERER's exit status (the pipe's
+  # last command). The renderer exits non-zero when claude died before emitting
+  # a final `result` event (OOM/timeout/network drop), so the launcher can
+  # propagate that failure instead of hiding it behind `cat "$out"` + exit 0.
+  local shellcmd="unset ANTHROPIC_API_KEY; printf '\\033[1m[%s]\\033[0m %s\\n\\n' $(printf '%q' "${model:-delegate}") $(printf '%q' "$taskprev"); $envp claude $scmd --output-format stream-json --verbose | python3 $(printf '%q' "$renderer") $(printf '%q' "$out") $(printf '%q' "$caller_fmt"); rc=$?; printf '%s' \"\$rc\" > $(printf '%q' "$status"); printf 1 > $(printf '%q' "$done"); echo; echo '[${SELF}] delegate done — pane closes in 8s'; sleep 8"
+
+  rm -f "$done"
+  local orig_win="" orig_pane="" new_pane="" new_win=""
+  if [ "$in_session" -eq 1 ]; then
+    # Split inside the ORCHESTRATOR's window. The first delegate splits the
+    # orchestrator pane horizontally (left|right); the next ones keep
+    # splitting, then `main-vertical` re-lays everything out: pane 0 (the
+    # orchestrator) becomes the left column at 50% width and full height, and
+    # every delegate pane becomes an equal-height slice in the right column.
+    orig_win="$(tmux display-message -p '#{window_id}' 2>/dev/null)"
+    orig_pane="$(tmux display-message -p '#{pane_id}' 2>/dev/null)"
+    if ! new_pane="$(tmux split-window -d -h -t "$orig_pane" -P -F '#{pane_id}' "$shellcmd" 2>/dev/null)" || [ -z "$new_pane" ]; then
+      die "tmux split-window failed; delegate was not started"
+    fi
+    tmux select-pane -t "$new_pane" -T "$title" 2>/dev/null || true
+    tmux select-pane -t "$orig_pane" -T "orchestrator" 2>/dev/null || true
+    tmux set-window-option -t "$orig_win" pane-border-status top 2>/dev/null || true
+    tmux set-window-option -t "$orig_win" main-pane-width '50%' 2>/dev/null || true
+    tmux select-layout -t "$orig_win" main-vertical 2>/dev/null || true
+    # Re-balance once more when the pane count changes on exit (handled below
+    # after the sentinel, since the dying pane auto-closes).
+  else
+    if ! new_win="$(tmux new-window -d -t "$sess" -n "$title" -P -F '#{window_id}' "$shellcmd" 2>/dev/null)" || [ -z "$new_win" ]; then
+      die "tmux new-window failed; delegate was not started"
+    fi
+  fi
+
+  # Block until the delegate finishes (sentinel file), regardless of
+  # remain-on-exit. Then surface stdout and tear down the pane/window.
+  local deadline=$(( $(date +%s) + 10#$max_wait ))
+  while [ ! -f "$done" ]; do
+    sleep 0.5
+    if [ "$max_wait" -gt 0 ] && [ "$(date +%s)" -ge "$deadline" ]; then
+      if [ "$in_session" -eq 1 ]; then
+        tmux kill-pane -t "$new_pane" 2>/dev/null || true
+        [ -n "$orig_win" ] && tmux select-layout -t "$orig_win" main-vertical 2>/dev/null || true
+      else
+        tmux kill-window -t "${new_win:-$sess:$title}" 2>/dev/null || true
+      fi
+      die "tmux delegate timed out after ${max_wait}s (set CLAUDIM_MAX_WAIT to override; 0 disables)"
+    fi
+  done
+  rm -f "$done"
+  cat "$out" 2>/dev/null
+  rm -f "$out"
+  local rc=0
+  [ -f "$status" ] && rc=$(cat "$status" 2>/dev/null)
+  rc="${rc:-0}"
+  if [ "$in_session" -eq 1 ]; then
+    # The delegate pane closed itself when its command exited; re-balance the
+    # remaining delegate slices (no-op if the orchestrator pane is alone).
+    tmux select-layout -t "$orig_win" main-vertical 2>/dev/null || true
+  else
+    tmux kill-window -t "${new_win:-$sess:$title}" 2>/dev/null || true
+  fi
+  rm -rf "$tmpdir"
+  trap - EXIT INT TERM
+  return "$rc"
+}
+
+# Self-update of the claudim launcher ONLY, and the `models` cheat-sheet. Both are
+# intercepted as the bare first arg so they never reach `claude`. Run before the
+# claude/tailscale checks so they work regardless.
 case "${1:-}" in
   upgrade|--upgrade|self-update|--self-update)
     INSTALLER="${CLAUDIM_INSTALLER:-https://raw.githubusercontent.com/usejota/agentic-model-gateway/main/scripts/install-claudim.sh}"
@@ -69,10 +324,6 @@ case "${1:-}" in
     _baked="$(sed -n 's/^CLAUDIM_BAKED_BASE_URL="\(.*\)"$/\1/p' "$0" | head -1)"
     export CLAUDIM_NAME="${SELF}"
     [ -n "${_baked}" ] && export CLAUDIM_DEFAULT_BASE_URL="${_baked}"
-    # Shell-quote the installer URL instead of interpolating it into a string the
-    # shell re-parses: CLAUDIM_INSTALLER is user-controlled (env), so a value with
-    # shell metacharacters could otherwise inject commands into the upgrade
-    # subshell. printf %q makes it safe to embed.
     _installer_q="$(printf '%q' "${INSTALLER}")"
     if command -v curl >/dev/null 2>&1; then
       exec sh -c "curl -fsSL ${_installer_q} | sh"
@@ -80,6 +331,82 @@ case "${1:-}" in
       exec sh -c "wget -qO- ${_installer_q} | sh"
     fi
     die "need curl or wget to upgrade ${SELF}"
+    ;;
+  models|--models)
+    if [ "${2:-}" = "resolve" ]; then
+      [ -n "${3:-}" ] || die "usage: ${SELF} models resolve <query>"
+      _ldir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+      _resolver="${_ldir}/${SELF}-resolve.py"
+      [ -f "${_resolver}" ] || _resolver="${_ldir}/claudim-resolve.py"
+      [ -f "${_resolver}" ] || die "resolver not found next to launcher"
+      curl -s -m 10 "${BASE_URL}/v1/models/delegates" -H "x-api-key: ${TOKEN}" 2>/dev/null |
+        python3 "${_resolver}" "$3" || die "could not resolve model from ${BASE_URL}"
+      exit 0
+    fi
+    if [ "${2:-}" = "--all" ] || [ "${2:-}" = "all" ]; then
+      # Live list of every no-thinking delegate model the gateway offers for
+      # DELEGATION. The gateway returns only the delegate catalog (free +
+      # approval-gated) — so every id is a ready-to-use no-thinking id.
+      # /v1/models (the user /model picker) is NOT filtered.
+      curl -s -m 10 "${BASE_URL}/v1/models/delegates" -H "x-api-key: ${TOKEN}" 2>/dev/null | python3 -c '
+import sys, json
+from collections import defaultdict
+PREFIX = "claude-3-freecc-no-thinking/"
+try:
+    d = json.load(sys.stdin)
+except Exception as e:
+    sys.exit(f"could not parse /v1/models/delegates: {e} (gateway reachable? tailscale up?)")
+g = defaultdict(list)
+for i in d.get("data", []):
+    # Vendor is the segment after the no-thinking prefix. For a 3-segment ref
+    # (route/vendor/model) that is parts[1]; for a 2-segment ref (provider/model)
+    # it is parts[0].
+    ref = i[len(PREFIX):] if i.startswith(PREFIX) else i
+    parts = ref.split("/")
+    if len(parts) >= 3:
+        vendor = parts[1]
+    elif len(parts) == 2:
+        vendor = parts[0]
+    else:
+        continue
+    g[vendor].append(i)
+if not g:
+    sys.exit("no delegate models found on the gateway")
+for v in sorted(g):
+    print(f"[{v}]")
+    for i in sorted(g[v]):
+        print(f"  {i}")
+' || die "could not list models from ${BASE_URL} (tailscale up? gateway up?)"
+      exit 0
+    fi
+    cat <<MODELS
+${SELF} delegate aliases — curated best-in-class NON-AMERICAN (Chinese +
+Mistral/France). US closed labs (openai, anthropic, google, x-ai, amazon,
+nvidia, ibm-granite, liquid, rekaai, relace) are NEVER called. All no-thinking
+(safe for \`claude -p\`).
+
+  deepseek-v4-pro     smartest: heavy reasoning, multi-step logic, algorithms
+  kimi-k2.7-code      coding: implement, refactor, bug fix, write tests
+  deepseek-v4-flash   fastest/cheapest: triage, lookups, mechanical edits
+  glm-5.2             long-context general: read/analyze big files, writing
+  minimax-m3          long-context general alternative
+  mistral-small       non-Chinese general (France): cheap, good for writing/analysis
+  ministral-8b        non-Chinese cheapest (France): triage, lookups (alt to flash)
+  codestral           non-Chinese coding (France): implement, refactor (alt to kimi)
+
+Pick rule: use the CHEAPEST that can do the job; escalate to deepseek-v4-pro
+only when the task needs real reasoning. Chinese or Mistral — your call per
+task; both are cheap and non-American.
+
+Delegate:  ${SELF} -p --model <alias> "<task>"
+JSON out:  ${SELF} -p --output-format json --model <alias> "<task>"
+gcloud/net: ${SELF} -p --unrestricted --model <alias> "<task>"  # bypass perms
+Watch live: CLAUDIM_TMUX=1 ${SELF} -p --model <alias> "<task>"  # tmux window (in your session if you're inside tmux)
+All non-American models live:  ${SELF} models --all
+A full routed id (contains "/") or a Claude alias (haiku/sonnet/opus) is
+passed through unchanged.
+MODELS
+    exit 0
     ;;
 esac
 
@@ -126,5 +453,222 @@ export CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1   # enables the /model picke
 # own. Lower it (or export in your shell) to force earlier compaction.
 export CLAUDE_CODE_AUTO_COMPACT_WINDOW="${CLAUDE_CODE_AUTO_COMPACT_WINDOW:-1000000}"
 
+# A parent Claude Code session (e.g. an Opus/Fable orchestrator on a real
+# Anthropic subscription) may export ANTHROPIC_API_KEY. Claude Code gives that
+# key precedence over ANTHROPIC_AUTH_TOKEN, so the child would auth against the
+# gateway with the wrong credential and 401/hang. Drop it so the gateway token
+# above is the sole auth source.
+unset ANTHROPIC_API_KEY
+# A parent Claude Code session may export CLAUDE_CODE_SUBAGENT_MODEL to force
+# every sub-agent onto a specific model. That would override the per-agent
+# delegate-* model routing and make all fan-out/Workflow agents use the same
+# model — defeating the whole point of delegate orchestration. Drop it.
+unset CLAUDE_CODE_SUBAGENT_MODEL
+export CLAUDIM=1
+
 say "gateway ${BASE_URL} — launching claude"
-exec claude "$@"
+
+# Scan args once for: --model (rewrite to no-thinking id), --unrestricted
+# (inject bypass-permissions so -p can run gcloud/network/writes), --tmux
+# (wrap -p in a tmux window for live observation), and -p/--print (tmux only
+# applies to print mode). Rebuild args only when one of claudim's own flags is
+# present; otherwise pass through untouched (avoids empty-array expansion under
+# `set -u` on bash 3.2).
+has_model=0; has_unrestricted=0; has_tmux=0; has_print=0; has_delegate=0
+for _a in "$@"; do
+  case "$_a" in
+    --model|--model=*) has_model=1 ;;
+    --unrestricted) has_unrestricted=1 ;;
+    --tmux) has_tmux=1 ;;
+    --delegate) has_delegate=1 ;;
+    -p|--print) has_print=1 ;;
+  esac
+done
+if [ "${CLAUDIM_BYPASS:-0}" = "1" ]; then has_unrestricted=1; fi
+if [ "${CLAUDIM_TMUX:-0}" = "1" ]; then has_tmux=1; fi
+# Inside a tmux session, live panes are the DEFAULT for -p delegates — the
+# orchestrator forgetting --tmux must not make a delegate invisible. Opt out
+# with CLAUDIM_TMUX=0 (headless) when explicitly wanted.
+if [ -n "${TMUX:-}" ] && [ "${CLAUDIM_TMUX:-}" != "0" ]; then has_tmux=1; fi
+
+# Delegate agents — INTERACTIVE mode only (has_print==0). Ask the gateway which
+# no-thinking models are available for delegation (/v1/models/delegates, already
+# US-closed + exclusion filtered server-side) and build a native `--agents` JSON
+# object: one agent per model, so the session model can spawn delegates via the
+# Agent tool without `claudim -p`. The script is written to a temp file (same
+# pattern as the tmux renderer) and fed the curl response on stdin; any failure
+# (gateway down, 401, empty/invalid JSON) leaves AGENTS_JSON empty and the
+# session launches without delegate agents — the pre-existing behavior. -p /
+# headless delegates keep using run_in_tmux below.
+AGENTS_JSON=""
+CLAUDIM_CATALOG_PATH=""
+_agents_py=""
+_settings=""
+cleanup_session_temps() {
+  [ -z "${_agents_py:-}" ] || rm -f "${_agents_py}"
+  [ -z "${_settings:-}" ] || rm -f "${_settings}"
+  [ -z "${CLAUDIM_CATALOG_PATH:-}" ] || rm -f "${CLAUDIM_CATALOG_PATH}"
+}
+trap cleanup_session_temps EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+if [ "${has_print}" -eq 0 ]; then
+  _agents_py="$(mktemp 2>/dev/null || mktemp -t "${SELF}")"
+  cat > "$_agents_py" <<'AGENTS_EOF'
+import json, os, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+try:
+    cap = int(os.environ.get("CLAUDIM_MAX_AGENTS", "30"))
+except ValueError:
+    cap = 30
+agents = {}
+for model in d.get("models", [])[:cap]:
+    if not isinstance(model, dict):
+        continue
+    required = ("id", "agent_name", "display_name", "vendor", "policy", "capabilities")
+    if any(key not in model for key in required):
+        continue
+    if not all(isinstance(model[key], str) for key in required[:-1]):
+        continue
+    if model["policy"] not in ("delegate", "approval"):
+        continue
+    if not isinstance(model["capabilities"], list) or not all(isinstance(item, str) for item in model["capabilities"]):
+        continue
+    premium = " [PREMIUM — requires human approval]" if model["policy"] == "approval" else ""
+    agents[model["agent_name"]] = {
+        "description": "%s (%s) — %s.%s Alternative-model subagent: pick when spawning agents anyway and this profile fits the task; never a reason to delegate work you would do inline." % (
+            model["display_name"], model["vendor"], ", ".join(model["capabilities"]), premium
+        ),
+        "prompt": "You are a delegate subagent running " + model["id"] + ". Complete the task exactly as scoped and report concisely.",
+        "model": model["id"],
+    }
+if agents:
+    print(json.dumps({"agents": agents, "names": sorted(agents.keys())}, ensure_ascii=False))
+AGENTS_EOF
+  CLAUDIM_CATALOG_PATH="$(mktemp 2>/dev/null || mktemp -t "${SELF}-catalog")"
+  curl -s -m 10 "${BASE_URL}/v1/models/delegates" -H "x-api-key: ${TOKEN}" > "${CLAUDIM_CATALOG_PATH}" 2>/dev/null || true
+  export CLAUDIM_CATALOG_PATH
+  _agents_result="$(python3 "$_agents_py" < "${CLAUDIM_CATALOG_PATH}" || true)"
+  rm -f "$_agents_py"
+  _agents_py=""
+  AGENTS_JSON=""
+  CLAUDIM_DELEGATE_AGENT_NAMES=""
+  if [ -n "${_agents_result:-}" ]; then
+    AGENTS_JSON="$(echo "${_agents_result}" | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["agents"]))' 2>/dev/null || true)"
+    CLAUDIM_DELEGATE_AGENT_NAMES="$(echo "${_agents_result}" | python3 -c 'import json,sys; print(",".join(json.load(sys.stdin)["names"]))' 2>/dev/null || true)"
+  fi
+  export CLAUDIM_DELEGATE_AGENT_NAMES
+  if [ -z "${AGENTS_JSON:-}" ]; then
+    say "warning: delegate agents unavailable (gateway list failed); launching without them"
+  fi
+fi
+
+need_rebuild=0
+if [ "${has_model}" -eq 1 ] || [ "${has_unrestricted}" -eq 1 ] || [ "${has_tmux}" -eq 1 ] || [ "${has_delegate}" -eq 1 ] || [ -n "${AGENTS_JSON}" ]; then
+  need_rebuild=1
+fi
+
+if [ "${need_rebuild}" -eq 1 ]; then
+  args=()
+  # Bypass flags first (only when --unrestricted): let the -p delegate run
+  # gcloud/GCP/network/file-writes the default `auto` mode denies non-interactively.
+  if [ "${has_unrestricted}" -eq 1 ]; then
+    args+=("--dangerously-skip-permissions" "--allow-dangerously-skip-permissions")
+  fi
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --unrestricted|--tmux|--delegate) shift ;;     # claudim-only, stripped
+      --model=*) args+=("--model=$(resolve_model_alias "${1#--model=}")"); shift ;;
+      --model)
+        args+=("--model"); shift
+        [ "$#" -gt 0 ] && { args+=("$(resolve_model_alias "$1")"); shift; }
+        ;;
+      *) args+=("$1"); shift ;;
+    esac
+  done
+
+  # Inject the delegate agents built above (interactive mode only). Two modes:
+  # - Transparent (default): agents available, hook loaded for approval-gating
+  #   only (neutral prompt — the session model keeps its normal judgment).
+  # - Strict (--delegate): CLAUDIM_ENFORCE=1, strong prompt instructing the
+  #   session model to ALWAYS use delegate-*/approval-* subagents, and the hook
+  #   enforces that routing with deny-on-violation.
+  if [ -n "${AGENTS_JSON}" ]; then
+    args+=("--agents" "${AGENTS_JSON}")
+    if [ "${has_delegate}" -eq 1 ]; then
+      export CLAUDIM_ENFORCE=1
+      args+=("--append-system-prompt" "Route every spawned Agent through a mission-appropriate delegate-* and vary models by task. Respect models explicitly named by the user. approval-* always requires human confirmation. In Workflow every agent() must include agentType or model. opus/sonnet/haiku/fable are local overrides; claude-* means real Anthropic. The routing hook denies generic or unrecognized subagents and asks you to retry.")
+    else
+      args+=("--append-system-prompt" "When spawning an Agent choose a mission-appropriate delegate-* and vary models by task. Respect models explicitly named by the user. approval-* always requires human confirmation. In Workflow every agent() must include agentType or model. opus/sonnet/haiku/fable are local overrides; claude-* means real Anthropic. Delegate policy changes which model runs, never whether work deserves a subagent.")
+    fi
+    # Allowlist path follows the install name so side-by-side installs (prod +
+    # local test wrapper) do not share/miss each other's allowlist. Explicit
+    # CLAUDIM_ALLOWLIST_PATH still wins (stable public interface).
+    export CLAUDIM_ALLOWLIST_PATH="${CLAUDIM_ALLOWLIST_PATH:-${HOME}/.claude/${SELF}-allowlist.json}"
+    # Hook has no access to $0 of the launcher — hand it the invocation name so
+    # user-facing deny messages show the right command.
+    export CLAUDIM_LAUNCHER_NAME="${SELF}"
+
+    # === HOOK: carregado sempre que há agentes (transparente ou estrito) ===
+    # Localizar o enforce hook script (renameable: <SELF>-enforce-hook.py)
+    _ldir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+    _hname="${SELF}-enforce-hook.py"
+    if [ -x "${_ldir}/${_hname}" ]; then
+      _hook="${_ldir}/${_hname}"
+    elif [ -x "${_ldir}/claudim-enforce-hook.py" ]; then
+      _hook="${_ldir}/claudim-enforce-hook.py"
+    elif [ "${has_delegate}" -eq 1 ]; then
+      die "enforce hook not found next to launcher (${_ldir}). Re-run scripts/install-claudim.sh."
+    else
+      _hook=""
+    fi
+    if [ -n "${_hook}" ]; then
+      _settings="$(mktemp 2>/dev/null || mktemp -t "${SELF}-settings")"
+      python3 - "$_hook" "$_settings" <<'SETTINGS_EOF'
+import json, sys
+json.dump(
+    {"hooks": {"PreToolUse": [
+        {"matcher": "Agent|Task|Workflow", "hooks": [
+            {"type": "command", "command": f"python3 {sys.argv[1]}"}
+        ]}
+    ]}},
+    open(sys.argv[2], "w"),
+)
+SETTINGS_EOF
+      args+=("--settings" "$_settings")
+    else
+      say "warning: enforce hook not found; launching without approval gating"
+    fi
+  elif [ "${has_delegate}" -eq 1 ]; then
+    say "--delegate: no delegate agents available (gateway /v1/models/delegates empty); enforce hook NOT loaded (session runs without routing enforcement)"
+  fi
+
+  # Observation: tmux window per delegate. If the orchestrator session already
+  # runs inside tmux ($TMUX set), the window opens in THAT session — visible
+  # right where the user is, navigable (C-b n/p) and interactive. Outside tmux
+  # it opens in a detached session `claudim` (tmux attach -t claudim). -p only.
+  if [ "${has_tmux}" -eq 1 ] && [ "${has_print}" -eq 1 ]; then
+    if command -v tmux >/dev/null 2>&1; then
+      if [ -n "${TMUX:-}" ]; then
+        say "tmux: delegate window opening in your current session (C-b n / C-b w)"
+      else
+        say "tmux: delegate in detached session (tmux attach -t ${SELF//[.:]/_})"
+      fi
+      run_in_tmux "${args[@]+"${args[@]}"}"
+      exit $?
+    fi
+    say "tmux not found; running delegate inline (brew install tmux to observe)"
+  elif [ "${has_tmux}" -eq 1 ]; then
+    say "--tmux is for -p delegates only; ignoring"
+  fi
+
+  claude "${args[@]+"${args[@]}"}"
+  _rc=$?
+  exit "${_rc}"
+fi
+
+claude "$@"
+exit $?

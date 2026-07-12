@@ -6,38 +6,52 @@
 # One-liner (no repo clone needed):
 #   curl -fsSL https://raw.githubusercontent.com/usejota/agentic-model-gateway/main/scripts/install-claudim.sh | sh
 #
-# Renameable: set CLAUDIM_NAME=loclaudim (or any [A-Za-z0-9_-]+ name) to install
-# side-by-side under that name. The launcher derives its own name from $0 at
-# runtime, so a different install name just works. Local-test wrapper:
-#   CLAUDIM_NAME=loclaudim CLAUDIM_DEFAULT_BASE_URL=http://localhost:8082 \
-#     bash scripts/install-claudim.sh
-#
-# Installs to ~/.local/bin/${CLAUDIM_NAME:-claudim} (override with CLAUDIM_BIN_DIR).
+# Installs to ~/.local/bin/claudim by default (override with CLAUDIM_BIN_DIR).
 # Pre-reqs the dev still needs: Tailscale (logged in to jota.ai) and Claude Code
 # (`npm install -g @anthropic-ai/claude-code`). The script warns if either is missing.
 set -eu
 
 REPO_RAW="https://raw.githubusercontent.com/usejota/agentic-model-gateway/main"
 SRC="${CLAUDIM_SRC:-${REPO_RAW}/deploy/claudim}"
+# Renderer is the sibling of the launcher (claudim finds it next to itself at
+# runtime). Installing them together keeps `claudim upgrade` consistent.
+RENDER_SRC="${CLAUDIM_RENDER_SRC:-${REPO_RAW}/deploy/claudim-render.py}"
+# Enforce hook — PreToolUse hook for --delegate mode. Installed alongside the
+# launcher and renderer so `claudim upgrade` keeps all three in sync.
+HOOK_SRC="${CLAUDIM_HOOK_SRC:-${REPO_RAW}/deploy/claudim-enforce-hook.py}"
+RESOLVE_SRC="${CLAUDIM_RESOLVE_SRC:-${REPO_RAW}/deploy/claudim-resolve.py}"
 BIN_DIR="${CLAUDIM_BIN_DIR:-${HOME}/.local/bin}"
 # Install NAME — parameterizes the launcher so it is renameable. Defaults to
 # `claudim` (retro-compat: unchanged behavior). Set CLAUDIM_NAME=loclaudim (or
 # any name) to install side-by-side under that name; the launcher derives its
 # own name from $0 at runtime, so a different install name just works. The repo
-# SOURCE file keeps its canonical filename (deploy/claudim); only the installed
-# binary takes NAME.
+# SOURCE files keep their canonical filenames (deploy/claudim,
+# deploy/claudim-render.py); only the installed binary/renderer/skill take NAME.
 NAME="${CLAUDIM_NAME:-claudim}"
 DEST="${BIN_DIR}/${NAME}"
+RENDER_DEST="${BIN_DIR}/${NAME}-render.py"
+HOOK_DEST="${BIN_DIR}/${NAME}-enforce-hook.py"
+RESOLVE_DEST="${BIN_DIR}/${NAME}-resolve.py"
+# The claudim-delegate skill (orchestrator recipe + kill switch). Installed
+# globally so it loads in any Claude Code session, not just this repo. Installed
+# under ${NAME}-delegate so a renamed launcher gets its own skill slot.
+# Skills installed globally so they load in any Claude Code session, not just this
+# repo. Installed under ${NAME}-<name> so a renamed launcher gets its own skill slots.
+# Each skill is templated: every `claudim` reference is replaced with the installed
+# NAME so a renameable install (CLAUDIM_NAME=loclaudim) gets matching skills that
+# reference the correct binary.
+SKILL_DELEGATE_SRC="${CLAUDIM_SKILL_SRC:-${REPO_RAW}/.claude/skills/claudim-delegate/SKILL.md}"
+SKILL_FANOUT_SRC="${CLAUDIM_FANOUT_SKILL_SRC:-${REPO_RAW}/.claude/skills/claudim-fanout/SKILL.md}"
+SKILL_WORKFLOW_SRC="${CLAUDIM_WORKFLOW_SKILL_SRC:-${REPO_RAW}/.claude/skills/claudim-workflow/SKILL.md}"
 
 say()  { printf '==> %s\n' "$*"; }
 warn() { printf 'warning: %s\n' "$*" >&2; }
 fail() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
-# Validate NAME early: must be [A-Za-z0-9_-]+ so it is safe as a filename and
-# (later, when skills are templated) as a sed replacement with no metacharacter
-# (/ & . etc.) that would break the expression or produce an invalid skill
-# directory. Runs after fail() is defined so the clear message prints (validation
-# before any mkdir/fetch).
+# Validate NAME early: must be [A-Za-z0-9_-]+ so downstream sed "s/claudim/${NAME}/g"
+# never sees a metacharacter (/ & . etc.) that would break the expression or produce
+# an invalid filename / skill directory. Runs after fail() is defined so the clear
+# message prints (validation before any mkdir/fetch).
 case "${NAME}" in
   *[!A-Za-z0-9_-]* | "" ) fail "CLAUDIM_NAME must match [A-Za-z0-9_-]+ (got: '${NAME}')" ;;
 esac
@@ -46,8 +60,8 @@ esac
 # without exiting, so callers can decide whether to fail or warn. Downloads to a
 # sibling temp file and atomically moves on success, so a mid-stream failure
 # (flaky link, transient 404) leaves any existing destination intact instead of
-# truncating it to a partial/empty file — a corrupt launcher would break every
-# later claudim run.
+# truncating it to a partial/empty file — a corrupt launcher or renderer would
+# break every later claudim -p / upgrade run.
 fetch() {
   _ftmp="$2.tmp.$$"
   if command -v curl >/dev/null 2>&1; then
@@ -60,12 +74,28 @@ fetch() {
 }
 
 mkdir -p "${BIN_DIR}"
+# Install the renderer BEFORE the launcher: the new launcher depends on the
+# renderer for tmux observation, so a flaky renderer download must abort BEFORE
+# the (working) old launcher is replaced — leaving the old launcher + old
+# renderer paired and functional. If the launcher download then fails, the old
+# launcher still runs (inline path, no renderer dependency) with the new
+# renderer sitting unused. Reversing this order would leave a new launcher
+# pointing at an absent/old renderer and break every --tmux run.
+say "Installing renderer to ${RENDER_DEST}"
+fetch "${RENDER_SRC}" "${RENDER_DEST}" || fail "download failed from ${RENDER_SRC}"
+chmod +x "${RENDER_DEST}"
+say "Installing enforce hook to ${HOOK_DEST}"
+fetch "${HOOK_SRC}" "${HOOK_DEST}" || fail "download failed from ${HOOK_SRC}"
+chmod +x "${HOOK_DEST}"
+say "Installing resolver to ${RESOLVE_DEST}"
+fetch "${RESOLVE_SRC}" "${RESOLVE_DEST}" || fail "download failed from ${RESOLVE_SRC}"
+chmod +x "${RESOLVE_DEST}"
 say "Installing ${NAME} to ${DEST}"
 fetch "${SRC}" "${DEST}" || fail "download failed from ${SRC}"
 # Bake a default gateway URL into the installed launcher when
-# CLAUDIM_DEFAULT_BASE_URL is set. This lets a side-by-side local-test wrapper
-# (e.g. CLAUDIM_NAME=loclaudim) point at its own gateway without env vars, while
-# CLAUDIM_BASE_URL at runtime still wins if set.
+# CLAUDIM_DEFAULT_BASE_URL is set. This lets a side-by-side local-test
+# wrapper (e.g. CLAUDIM_NAME=loclaudim) point at its own gateway without
+# env vars, while CLAUDIM_BASE_URL at runtime still wins if set.
 if [ -n "${CLAUDIM_DEFAULT_BASE_URL:-}" ]; then
   say "Baking default gateway URL: ${CLAUDIM_DEFAULT_BASE_URL}"
   _esc="$(printf '%s' "${CLAUDIM_DEFAULT_BASE_URL}" | sed 's/[&\\/]/\\&/g')"
@@ -74,6 +104,34 @@ if [ -n "${CLAUDIM_DEFAULT_BASE_URL:-}" ]; then
 fi
 chmod +x "${DEST}"
 say "Installed."
+
+# Install skills globally. Non-fatal: claudim works without them.
+# Each skill is templated: every `claudim` reference → installed NAME.
+for _sk in delegate fanout workflow; do
+  case "$_sk" in
+    delegate) _src="${SKILL_DELEGATE_SRC}" ;;
+    fanout)   _src="${SKILL_FANOUT_SRC}" ;;
+    workflow) _src="${SKILL_WORKFLOW_SRC}" ;;
+  esac
+  _dir="${HOME}/.claude/skills/${NAME}-${_sk}"
+  _dest="${_dir}/SKILL.md"
+  say "Installing ${NAME}-${_sk} skill to ${_dest}"
+  mkdir -p "${_dir}"
+  _tmp="${_dest}.tmp.$$"
+  if fetch "${_src}" "${_tmp}"; then
+    # NAME is validated [A-Za-z0-9_-]+ above — no sed metachar risk.
+    sed "s/claudim/${NAME}/g" "${_tmp}" > "${_dest}"
+    rm -f "${_tmp}"
+    say "Skill ${NAME}-${_sk} installed."
+  else
+    rm -f "${_tmp}"
+    warn "could not install ${NAME}-${_sk} skill from ${_src}"
+  fi
+done
+
+# PR #3 renamed panel to fanout with no compatibility alias. Remove an older
+# installed skill so upgrades cannot leave its broad auto-trigger active.
+rm -rf "${HOME}/.claude/skills/${NAME}-panel"
 
 # PATH check.
 case ":${PATH}:" in
@@ -99,6 +157,8 @@ ${NAME} installed. Next:
        ${NAME} "explain this repo"
   Args pass straight through to Claude Code. Override the gateway host/tailnet
   with CLAUDIM_HOST / CLAUDIM_TAILNET if needed (see \`${NAME}\` header comments).
+  The ${NAME}-delegate, ${NAME}-fanout, and ${NAME}-workflow skills were installed
+  to ~/.claude/skills/ for explicit external and native orchestration.
   Local-test wrapper (side-by-side with prod): install a second copy under
   another name pointing at your local gateway, e.g.:
     CLAUDIM_NAME=loclaudim CLAUDIM_DEFAULT_BASE_URL=http://localhost:8082 bash scripts/install-claudim.sh

@@ -1,0 +1,1 @@
+{"tool_name":"Workflow","tool_input":{"script":"export const meta = { name: 'model' }\nreturn agent('6+6', {label: 'modeled', model: 'haiku'})"}}

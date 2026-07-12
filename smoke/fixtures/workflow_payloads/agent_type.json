@@ -1,0 +1,1 @@
+{"tool_name":"Workflow","tool_input":{"script":"export const meta = { name: 'agent-type' }\nreturn agent('5+5', {label: 'typed', agentType: 'general-purpose'})"}}

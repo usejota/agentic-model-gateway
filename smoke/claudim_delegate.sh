@@ -1,0 +1,232 @@
+#!/usr/bin/env bash
+#
+# Local smoke for claudim delegate mode. Verifies:
+#   - `claudim -p --model <alias>` returns NON-empty stdout (the empty-response
+#     regression: reasoning backends stream an unsigned `thinking` block that
+#     Claude Code -p discards; the alias rewrites to the no-thinking gateway id).
+#   - CLAUDIM_TMUX=1 wraps a delegate in a tmux window and still returns stdout;
+#     falls back to inline (with a stderr note) when tmux is absent from PATH.
+#   - `--unrestricted` lets a -p delegate run gcloud (bypasses the permission
+#     wall that non-interactive -p can't answer).
+#
+# Run locally before a PR:
+#   bash smoke/claudim_delegate.sh
+#
+# This is a LIVE test: it needs Tailscale up and the fcc-proxy gateway reachable,
+# so it does NOT run in CI (GitHub Actions has no tailnet). If either is missing
+# it skips (exit 0) rather than false-failing. Port to pytest (smoke/skips.py
+# pattern) if you later want CI to gate on a self-hosted runner with tailnet.
+#
+set -euo pipefail
+
+# Resolve repo root from this script's location (works via path or `bash <file>`).
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+CLAUDIM="${REPO_ROOT}/deploy/claudim"
+HOST="${CLAUDIM_HOST:-fcc-proxy}"
+TAILNET="${CLAUDIM_TAILNET:-tail576af6.ts.net}"
+PORT="${CLAUDIM_PORT:-8082}"
+TOKEN="${CLAUDIM_TOKEN:-freecc}"
+FQDN="${HOST}.${TAILNET}"
+BASE_URL="http://${FQDN}:${PORT}"
+
+PROMPT="quanto é 17*23? Responda só o número, nada mais."
+EXPECT="391"
+ALIASES=(deepseek-v4-pro kimi-k2.7-code deepseek-v4-flash glm-5.2 minimax-m3 \
+         mistral-small ministral-8b codestral)
+
+pass=0; fail=0
+ok()   { printf '  \033[32mPASS\033[0m %s\n' "$1"; pass=$((pass+1)); }
+bad()  { printf '  \033[31mFAIL\033[0m %s\n' "$1"; fail=$((fail+1)); }
+skip() { printf '  \033[33mSKIP\033[0m %s\n' "$1"; }
+step() { printf '\n== %s ==\n' "$1"; }
+
+# Renderer test runs WITHOUT tailscale/gateway — pipes synthetic stream-json
+# into claudim-render.py and asserts the compact pane feed. Catches regressions
+# in the error-text visibility (the original "✗ tool result" black box) and the
+# per-tool compact display.
+RENDERER="${REPO_ROOT}/deploy/claudim-render.py"
+if [ -f "${RENDERER}" ]; then
+  step "renderer: compact tool display, error text visible, Read shows size"
+  out="$(mktemp)"; fx="$(mktemp)"
+  cat > "$fx" <<'JSONL'
+{"type":"system","subtype":"init","model":"claude-test"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"hi"}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"/abs/judge-task.md"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"# judge task\nline2\nline3","is_error":false}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t2","name":"Read","input":{"file_path":"/abs/missing.jsonl"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t2","content":"ENOENT: no such file or directory","is_error":true}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t3","name":"Edit","input":{"file_path":"/abs/foo.py","old_string":"a\nb","new_string":"a\nb\nc\nd"}}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t4","name":"Bash","input":{"command":"wc -l /abs/foo.py"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t4","content":"       4 /abs/foo.py","is_error":false}]}}
+{"type":"result","result":"391"}
+JSONL
+  rendered="$(python3 "$RENDERER" "$out" text < "$fx")"
+  rc=$?
+  rm -f "$fx"
+  if [ $rc -ne 0 ]; then
+    bad "renderer exited $rc"
+  else
+    if echo "$rendered" | grep -q "Read /abs/judge-task.md"; then ok "Read shows path"; else bad "Read path missing: $(echo "$rendered" | head -3)"; fi
+    if echo "$rendered" | grep -q "3 lines · # judge task"; then ok "Read shows size + first line"; else bad "Read size/first-line missing"; fi
+    if echo "$rendered" | grep -q "ENOENT: no such file"; then ok "tool error text visible (the bug fix)"; else bad "tool error text NOT surfaced"; fi
+    if echo "$rendered" | grep -q "Edit /abs/foo.py (-1/+3)"; then ok "Edit compact form (-A/+B)"; else bad "Edit form wrong: $(echo "$rendered" | grep Edit)"; fi
+    if echo "$rendered" | grep -q "Bash \$ wc -l /abs/foo.py"; then ok "Bash compact form"; else bad "Bash form wrong"; fi
+    if echo "$rendered" | grep -q "T1\|T2\|T3"; then ok "turn separators present"; else bad "no turn separator"; fi
+    captured="$(cat "$out" 2>/dev/null || true)"
+    if [ "$captured" = "391" ]; then ok "result extraction unchanged (caller gets plain text)"; else bad "result extraction broken: [$captured]"; fi
+  fi
+  rm -f "$out"
+
+  step "renderer: stream-json fmt replays the full event stream"
+  out="$(mktemp)"; fx2="$(mktemp)"
+  cat > "$fx2" <<'JSONL'
+{"type":"system","subtype":"init","model":"claude-test"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"hi"}]}}
+{"type":"result","result":"done"}
+JSONL
+  rc=0
+  python3 "$RENDERER" "$out" stream-json < "$fx2" >/dev/null || rc=$?
+  captured="$(cat "$out" 2>/dev/null || true)"
+  rm -f "$fx2" "$out"
+  if [ $rc -ne 0 ]; then bad "renderer exited $rc for stream-json"
+  elif echo "$captured" | grep -q '"type":"system"'; then ok "stream-json replays system event"
+  else bad "stream-json did not replay events: [$captured]"; fi
+  if echo "$captured" | grep -q '"type":"result"'; then ok "stream-json replays result event"; else bad "stream-json missing result event"; fi
+
+  step "renderer: exits non-zero when no result event (delegate died)"
+  out="$(mktemp)"; fx3="$(mktemp)"
+  cat > "$fx3" <<'JSONL'
+{"type":"system","subtype":"init","model":"claude-test"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"partial"}]}}
+JSONL
+  # `|| rc=$?` so set -e doesn't abort the script on the renderer's intentional
+  # non-zero exit before we can assert on it.
+  rc=0
+  python3 "$RENDERER" "$out" text < "$fx3" >/dev/null || rc=$?
+  rm -f "$fx3" "$out"
+  if [ $rc -ne 0 ]; then ok "renderer exited non-zero (no result event)"; else bad "renderer exited 0 despite no result event"; fi
+
+  step "renderer: is_error result event exits non-zero (delegate failed)"
+  out="$(mktemp)"; fx4="$(mktemp)"
+  cat > "$fx4" <<'JSONL'
+{"type":"system","subtype":"init","model":"claude-test"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"trying"}]}}
+{"type":"result","result":"provider 500","is_error":true}
+JSONL
+  rc=0
+  python3 "$RENDERER" "$out" text < "$fx4" >/dev/null || rc=$?
+  rm -f "$fx4" "$out"
+  if [ $rc -ne 0 ]; then ok "renderer exited non-zero on is_error result"; else bad "renderer exited 0 despite is_error result"; fi
+else
+  skip "renderer script not found (deploy/claudim-render.py)"
+fi
+
+# Skip cleanly without tailscale or gateway (CI / machines without tailnet).
+if ! command -v tailscale >/dev/null 2>&1; then
+  echo "skip: tailscale not on PATH (no tailnet -> can't reach fcc-proxy)."; exit 0
+fi
+if ! tailscale status >/dev/null 2>&1; then
+  echo "skip: not connected to the tailnet."; exit 0
+fi
+if ! curl -s -o /dev/null -m 5 "${BASE_URL}/v1/models" -H "x-api-key: ${TOKEN}"; then
+  echo "skip: gateway ${FQDN}:${PORT} not reachable (override CLAUDIM_HOST/CLAUDIM_TAILNET/CLAUDIM_PORT/CLAUDIM_TOKEN if needed)."; exit 0
+fi
+
+step "alias -> non-empty stdout containing ${EXPECT}"
+for a in "${ALIASES[@]}"; do
+  out="$("${CLAUDIM}" -p --model "${a}" "${PROMPT}" 2>/dev/null || true)"
+  if [ -n "${out}" ] && echo "${out}" | grep -q "${EXPECT}"; then
+    ok "${a} -> $(echo "${out}" | head -c 60 | tr -d '\n')"
+  else
+    bad "${a} -> empty/wrong: [$(echo "${out}" | head -c 60)]"
+  fi
+done
+
+step "--model=<alias> (= form) rewrites too"
+out="$("${CLAUDIM}" -p --model=glm-5.2 "${PROMPT}" 2>/dev/null || true)"
+if [ -n "${out}" ] && echo "${out}" | grep -q "${EXPECT}"; then ok "glm-5.2 (= form)"; else bad "glm-5.2 (= form): [${out}]"; fi
+
+step "--output-format json: result non-empty, stop_reason=end_turn, is_error=false"
+json="$("${CLAUDIM}" -p --output-format json --model deepseek-v4-pro "${PROMPT}" 2>/dev/null || true)"
+if python3 - "${json}" <<'PY' 2>&1
+import json, sys
+d = json.loads(sys.argv[1])
+ok = bool(d.get("result")) and d.get("stop_reason") == "end_turn" and d.get("is_error") is False
+print(f"result={d.get('result')!r:.60} stop={d.get('stop_reason')} is_error={d.get('is_error')}")
+sys.exit(0 if ok else 1)
+PY
+then ok "json contract"; else bad "json contract (see above)"; fi
+
+step "auth: ANTHROPIC_API_KEY=fake (parent subscription) must NOT poison the child"
+out="$(ANTHROPIC_API_KEY=fakeinvalid "${CLAUDIM}" -p --model deepseek-v4-flash "diga: ok" 2>/dev/null || true)"
+if [ -n "${out}" ]; then ok "child ignored inherited API_KEY -> $(echo "${out}" | head -c 40)"; else bad "child 401/hang on fake API_KEY"; fi
+
+step "models --all: non-American only (US closed labs excluded, Mistral present)"
+all="$("${CLAUDIM}" models --all 2>/dev/null || true)"
+if [ -z "${all}" ]; then
+  bad "models --all returned nothing (gateway reachable?)"
+else
+  leak=""
+  for v in openai anthropic google x-ai amazon nvidia ibm-granite liquid rekaai relace openrouter; do
+    echo "${all}" | grep -q "\[${v}\]" && leak="${leak} ${v}"
+  done
+  if [ -n "${leak}" ]; then
+    bad "US closed labs leaked into --all:${leak}"
+  elif echo "${all}" | grep -q "\[mistralai\]"; then
+    ok "no US closed labs; Mistral present ($(echo "${all}" | grep -c '^\[') vendors)"
+  else
+    bad "no US leak but Mistral missing (expected non-American)"
+  fi
+fi
+
+step "CLAUDIM_TMUX=1: delegate runs in a tmux window, stdout intact"
+if command -v tmux >/dev/null 2>&1; then
+  out="$(CLAUDIM_TMUX=1 "${CLAUDIM}" -p --model deepseek-v4-flash "${PROMPT}" 2>/dev/null || true)"
+  if [ -n "${out}" ] && echo "${out}" | grep -q "${EXPECT}"; then ok "tmux wrap -> $(echo "${out}" | head -c 40)"; else bad "tmux wrap: [$(echo "${out}" | head -c 60)]"; fi
+else
+  skip "tmux not installed (brew install tmux)"
+fi
+
+step "inside tmux: delegate window opens in the caller's session, stdout intact"
+if command -v tmux >/dev/null 2>&1; then
+  tmux kill-session -t claudim-smoke 2>/dev/null || true
+  tmux new-session -d -s claudim-smoke
+  tmux send-keys -t claudim-smoke "cd $(pwd) && CLAUDIM_TMUX=1 '${CLAUDIM}' -p --model deepseek-v4-flash '${PROMPT}' > /tmp/claudim-smoke-in.txt 2>/tmp/claudim-smoke-err.txt" Enter
+  waited=0
+  # 120s cap: generous for a warm gateway, but a cold start (first call after
+  # the gateway node wakes on the tailnet) can exceed it and false-negative.
+  while [ ! -s /tmp/claudim-smoke-in.txt ] && [ "${waited}" -lt 120 ]; do sleep 2; waited=$((waited+2)); done
+  out="$(cat /tmp/claudim-smoke-in.txt 2>/dev/null || true)"
+  errnote="$(grep -c "your current session" /tmp/claudim-smoke-err.txt 2>/dev/null || echo 0)"
+  tmux kill-session -t claudim-smoke 2>/dev/null || true
+  rm -f /tmp/claudim-smoke-in.txt /tmp/claudim-smoke-err.txt
+  if [ -n "${out}" ] && echo "${out}" | grep -q "${EXPECT}" && [ "${errnote}" -ge 1 ]; then
+    ok "in-session window -> $(echo "${out}" | head -c 40)"
+  else
+    bad "in-session: out=[$(echo "${out}" | head -c 40)] note=${errnote}"
+  fi
+else
+  skip "tmux not installed"
+fi
+
+step "no tmux on PATH: inline fallback with stderr note, stdout intact"
+fbdir="$(mktemp -d 2>/dev/null || mktemp -d)"
+for b in claude tailscale curl nc python3; do
+  p="$(command -v "$b" 2>/dev/null)" && [ -n "$p" ] && ln -sf "$p" "$fbdir/$b"
+done
+out="$(PATH="$fbdir:/usr/bin:/bin" "${CLAUDIM}" -p --tmux --model deepseek-v4-flash "${PROMPT}" 2>/dev/null || true)"
+if [ -n "${out}" ] && echo "${out}" | grep -q "${EXPECT}"; then ok "fallback stdout intact -> $(echo "${out}" | head -c 40)"; else bad "fallback: [$(echo "${out}" | head -c 60)]"; fi
+rm -rf "$fbdir"
+
+step "--unrestricted: delegate runs gcloud --version (bypasses permission wall)"
+if command -v gcloud >/dev/null 2>&1; then
+  out="$("${CLAUDIM}" -p --unrestricted --model deepseek-v4-flash "Use the bash tool to run: gcloud --version. Then report ONLY the line starting with 'Google Cloud SDK'. Nothing else." 2>/dev/null || true)"
+  if [ -n "${out}" ] && echo "${out}" | grep -q "Google Cloud SDK"; then ok "gcloud ran -> $(echo "${out}" | head -c 50)"; else bad "gcloud: [$(echo "${out}" | head -c 60)]"; fi
+else
+  skip "gcloud not installed"
+fi
+
+echo ""
+echo "result: ${pass} passed, ${fail} failed"
+[ "${fail}" -eq 0 ]
