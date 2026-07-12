@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import fnmatch
 import traceback
 import uuid
 from collections.abc import AsyncIterator, Callable
@@ -17,7 +16,7 @@ from core.anthropic import get_token_count, get_user_facing_error_message
 from core.anthropic.aggregate import aggregate_sse_to_message
 from core.anthropic.image_detection import has_images
 from core.anthropic.sse import ANTHROPIC_SSE_RESPONSE_HEADERS
-from core.delegates import ref_in_catalog_union
+from core.delegates import ref_in_catalog_union, ref_matches
 from core.trace import api_messages_request_snapshot, trace_event, traced_async_stream
 from providers.base import BaseProvider
 from providers.exceptions import InvalidRequestError, OverloadedError, ProviderError
@@ -154,19 +153,14 @@ def _normalize_model_ref(ref: str) -> str:
 def _ref_matches_exclusions(settings: Settings, provider_model_ref: str) -> bool:
     """True if ``provider_model_ref`` matches any ``MODEL_DELEGATE_EXCLUSIONS`` glob.
 
-    Both the ref and each pattern are normalized first, so a pattern written as
-    a full advertised id (e.g. ``claude-3-freecc-no-thinking/gemini/*``) matches
-    the thinking variant (``anthropic/gemini/...``) after both reduce to
-    ``gemini/...``.
+    Uses the same ``ref_matches`` as the catalog so the gateway and endpoint
+    never disagree (e.g. a vendor-form pattern ``qwen/*`` matches the 3-part
+    ref ``open_router/qwen/x`` in both layers).
     """
     exclusions = settings.model_delegate_exclusions
     if not exclusions:
         return False
-    ref = _normalize_model_ref(provider_model_ref)
-    return any(
-        fnmatch.fnmatchcase(ref, _normalize_model_ref(pattern))
-        for pattern in exclusions
-    )
+    return ref_matches(provider_model_ref, exclusions, _normalize_model_ref)
 
 
 def _enforce_delegate_exclusions(
@@ -389,6 +383,9 @@ class ClaudeProxyService:
         enforce_exclusions = bool(
             self._settings.model_delegate_exclusions
         ) and not _is_main_loop_request(request_data)
+        enforce_allowlist = bool(
+            self._settings.model_delegate_allowlist
+        ) and not _is_main_loop_request(request_data)
         for ref in self._settings.fallback_models:
             resolved = self._model_router.resolve(ref)
             routed = request_data.model_copy(deep=True)
@@ -405,6 +402,13 @@ class ClaudeProxyService:
                 continue
             if enforce_exclusions and _ref_matches_exclusions(
                 self._settings, resolved.provider_model_ref
+            ):
+                continue
+            if enforce_allowlist and not ref_in_catalog_union(
+                _normalize_model_ref(resolved.provider_model_ref),
+                allowlist=self._settings.model_delegate_allowlist,
+                approvals=self._settings.model_delegate_approval,
+                normalize_ref=_normalize_model_ref,
             ):
                 continue
             candidates.append(RoutedMessagesRequest(request=routed, resolved=resolved))

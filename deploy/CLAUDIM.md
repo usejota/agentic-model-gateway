@@ -96,8 +96,9 @@ full orchestration recipe (when to delegate, model selection, parallelism,
 output handling), see the `claudim-delegate` skill — it ships in this repo at
 [`.claude/skills/claudim-delegate/SKILL.md`](../.claude/skills/claudim-delegate/SKILL.md)
 and the installer downloads it into `~/.claude/skills/` so it loads globally.
-It has a kill switch: if you say "workflow"/"fan out subagents" it defers to
-Claude Code's native Workflow/Agent tools instead.
+It is manual-only: invoke via ``/claudim-delegate`` or explicitly mention
+``claudim-delegate`` in the prompt. It never auto-triggers on "workflow" or
+"fan out" phrases.
 
 `claudim` also unsets `ANTHROPIC_API_KEY` before launching, so an inherited
 parent-subscription API key (which Claude Code prefers over `ANTHROPIC_AUTH_TOKEN`)
@@ -245,7 +246,7 @@ installer installs binary + renderer + hook + skills under the chosen name.
 CLAUDIM_NAME=buxexa bash scripts/install-claudim.sh
 ```
 
-This produces command `buxexa`, skills `buxexa-delegate` / `buxexa-panel`, and
+This produces command `buxexa`, skills `buxexa-delegate` / `buxexa-fanout` / `buxexa-workflow`, and
 allowlist `~/.claude/buxexa-allowlist.json`. The installed binary calls itself
 `buxexa` in messages, tmux session names, and the `upgrade` command.
 
@@ -323,7 +324,7 @@ Decision table:
 | allowlist AND approval | approval (ask) |
 | approval only | approval (ask) |
 | allowlist only (open vendor) | free delegate |
-| allowlist only (US closed vendor) | absent from catalog |
+| allowlist only (US closed vendor) | absent from catalog + blocked (400) |
 | neither (allowlist set) | absent from catalog + blocked (400) |
 | neither (allowlist empty) | legacy: open vendor → free delegate |
 

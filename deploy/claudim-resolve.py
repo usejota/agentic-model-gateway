@@ -58,8 +58,11 @@ def resolve(catalog: dict[str, object], query: str) -> dict[str, object]:
     alias_matches = [
         model
         for model in models
-        if normalized in aliases(model)
-        or normalized == normalize(str(model.get("display_name", "")))
+        if normalized
+        and (
+            normalized in aliases(model)
+            or normalized == normalize(str(model.get("display_name", "")))
+        )
     ]
     if len(alias_matches) == 1:
         return {

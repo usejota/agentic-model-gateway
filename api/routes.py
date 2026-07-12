@@ -396,7 +396,7 @@ async def list_delegate_models(
         exclusions=settings.model_delegate_exclusions,
         approvals=settings.model_delegate_approval,
         allowlist=settings.model_delegate_allowlist,
-        preferred_refs=getattr(settings, "model_delegate_roster", []),
+        preferred_refs=settings.model_delegate_roster,
         model_id_for_ref=no_thinking_gateway_model_id,
         normalize_ref=_normalize_model_ref,
     )

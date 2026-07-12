@@ -70,7 +70,7 @@ def delegate_vendor(ref: str) -> str:
     return (parts[1] if len(parts) >= 3 else parts[0]).lstrip("~")
 
 
-def _matches(
+def ref_matches(
     ref: str, patterns: list[str], normalize_ref: Callable[[str], str]
 ) -> bool:
     normalized_ref = normalize_approval_ref(ref, normalize_ref)
@@ -97,12 +97,12 @@ def ref_in_catalog_union(
     open (non-US-closed) vendors. With an empty allowlist everything passes
     (the allowlist gate is inactive).
     """
-    if _matches(ref, approvals, normalize_ref):
+    if ref_matches(ref, approvals, normalize_ref):
         return True
     if not allowlist:
         return True
     return (
-        _matches(ref, allowlist, normalize_ref)
+        ref_matches(ref, allowlist, normalize_ref)
         and delegate_vendor(ref).lower() not in US_CLOSED_VENDORS
     )
 
@@ -225,11 +225,11 @@ def build_delegate_catalog(
     classified: list[tuple[str, Literal["delegate", "approval"]]] = []
     allowlist_active = allowlist is not None and len(allowlist) > 0
     for ref in refs:
-        if _matches(ref, exclusions, normalize_ref):
+        if ref_matches(ref, exclusions, normalize_ref):
             continue
-        if _matches(ref, approvals, normalize_ref):
+        if ref_matches(ref, approvals, normalize_ref):
             classified.append((ref, "approval"))
-        elif allowlist_active and not _matches(ref, allowlist, normalize_ref):
+        elif allowlist_active and not ref_matches(ref, allowlist, normalize_ref):
             continue
         elif delegate_vendor(ref).lower() not in US_CLOSED_VENDORS:
             classified.append((ref, "delegate"))

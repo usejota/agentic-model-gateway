@@ -416,7 +416,7 @@ command -v claude >/dev/null 2>&1 || die "claude not found. Install: npm install
 # Tailscale checks only apply to the default tailnet path. When CLAUDIM_BASE_URL
 # overrides the endpoint (local testing against a non-tailnet gateway), skip
 # them and let reachable() probe the URL directly via its curl branch.
-if [ -z "${CLAUDIM_BASE_URL:-}" ]; then
+if [ -z "${CLAUDIM_BASE_URL:-}${CLAUDIM_BAKED_BASE_URL}" ]; then
   command -v tailscale >/dev/null 2>&1 || die "tailscale not found. Install Tailscale and log in to the jota.ai tailnet."
 
   # Must be connected to the tailnet.
@@ -427,7 +427,7 @@ fi
 
 # Wait for the gateway to be reachable (it may be briefly unreachable; node could be asleep).
 reachable() {
-  if [ -z "${CLAUDIM_BASE_URL:-}" ] && command -v nc >/dev/null 2>&1; then
+  if [ -z "${CLAUDIM_BASE_URL:-}${CLAUDIM_BAKED_BASE_URL}" ] && command -v nc >/dev/null 2>&1; then
     nc -z -w 3 "${FQDN}" "${PORT}" >/dev/null 2>&1
   else
     curl -s -o /dev/null -m 3 "${BASE_URL}/v1/models" -H "x-api-key: ${TOKEN}"

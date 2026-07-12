@@ -60,7 +60,8 @@ def run(
 ) -> subprocess.CompletedProcess[str]:
     catalog = tmp_path / "catalog.json"
     catalog.write_text(json.dumps({"models": MODELS}))
-    env = {**os.environ, "CLAUDIM_CATALOG_PATH": str(catalog)}
+    env = {k: v for k, v in os.environ.items() if not k.startswith("CLAUDIM_")}
+    env["CLAUDIM_CATALOG_PATH"] = str(catalog)
     if strict:
         env["CLAUDIM_ENFORCE"] = "1"
     if extra:
@@ -414,4 +415,40 @@ def test_workflow_invalid_route_wins_over_approval(
         "const a = agent('a', {model: 'id/premium'}); "
         "const b = agent('b', {agentType: 'delegate-missing'})"
     )
+    assert decision(run(workflow(script), tmp_path, strict=strict)) == "deny"
+
+
+# =============================================================================
+# review fixes
+# =============================================================================
+
+
+@pytest.mark.parametrize("strict", [False, True])
+def test_agent_local_alias_model_is_allowed(tmp_path: Path, strict: bool) -> None:
+    """Local aliases (opus, sonnet, haiku, fable) as explicit model → allow."""
+    for alias in ("opus", "sonnet", "haiku", "fable"):
+        assert (
+            decision(
+                run(
+                    {"tool_name": "Agent", "tool_input": {"model": alias}},
+                    tmp_path,
+                    strict=strict,
+                )
+            )
+            == "allow"
+        )
+
+
+@pytest.mark.parametrize("strict", [False, True])
+def test_workflow_local_alias_model_is_allowed(tmp_path: Path, strict: bool) -> None:
+    script = "return agent('x', {model: 'opus'})"
+    assert decision(run(workflow(script), tmp_path, strict=strict)) == "allow"
+
+
+@pytest.mark.parametrize("strict", [False, True])
+def test_workflow_regex_literal_does_not_swallow_scanning(
+    tmp_path: Path, strict: bool
+) -> None:
+    """Regex literals are skipped; an unrouted call inside is still caught."""
+    script = "const r = /'/; return agent('x')"
     assert decision(run(workflow(script), tmp_path, strict=strict)) == "deny"

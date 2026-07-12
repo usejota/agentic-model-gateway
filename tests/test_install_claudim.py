@@ -31,7 +31,7 @@ def _installer_env(bin_dir: Path, home: Path, **extra: str) -> dict[str, str]:
     network. CLAUDIM_BIN_DIR/HOME isolate the install footprint.
     """
     env = {
-        **os.environ,
+        **{k: v for k, v in os.environ.items() if not k.startswith("CLAUDIM_")},
         "HOME": str(home),
         "CLAUDIM_BIN_DIR": str(bin_dir),
         "CLAUDIM_SRC": _file_url(LAUNCHER),

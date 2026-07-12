@@ -17,6 +17,7 @@ ALLOWLIST_PATH = Path(
     os.environ.get("CLAUDIM_ALLOWLIST_PATH")
     or Path.home() / ".claude" / "claudim-allowlist.json"
 )
+_LOCAL_ALIASES = frozenset({"opus", "sonnet", "haiku", "fable"})
 
 
 @dataclass(frozen=True)
@@ -98,7 +99,7 @@ def _representatives(catalog: Catalog) -> list[str]:
     for name in free:
         if name not in chosen:
             chosen.append(name)
-        if len(chosen) == 5:
+        if len(chosen) >= 5:
             break
     return chosen[:8]
 
@@ -133,6 +134,8 @@ def decide_agent(
     # Validate it first so neither a free agent nor the custom allowlist can
     # bypass approval/unknown-model policy.
     if isinstance(model, str):
+        if model in _LOCAL_ALIASES:
+            return "allow", ""
         policy = _policy(model, catalog)
         if policy == "approval":
             return "ask", f"Subagent model '{model}' requires per-spawn human approval."
@@ -154,6 +157,26 @@ def decide_agent(
     if not strict and not route_subagents():
         return "allow", ""
     return "deny", _routing_reason(catalog)
+
+
+def _advance_past_regex(script: str, index: int) -> int:
+    """If ``script[index]`` starts a JS regex literal, skip it; else return ``index``."""
+    if script[index] != "/":
+        return index
+    previous = script[index - 1] if index else ""
+    if previous.isalnum() or previous in "_$)]>":
+        return index
+    pos = index + 1
+    while pos < len(script):
+        if script[pos] == "\\":
+            pos += 2
+            continue
+        if script[pos] == "/":
+            return pos + 1
+        if script[pos] == "\n":
+            return index
+        pos += 1
+    return index
 
 
 def _skip_quoted(script: str, start: int, quote: str) -> int:
@@ -184,6 +207,10 @@ def _agent_calls(script: str) -> list[str] | None:
     index = 0
     while index < len(script):
         char = script[index]
+        regex_end = _advance_past_regex(script, index)
+        if regex_end != index:
+            index = regex_end
+            continue
         if char in "'\"`":
             index = _skip_quoted(script, index, char)
             continue
@@ -191,16 +218,20 @@ def _agent_calls(script: str) -> list[str] | None:
         if comment_end != index:
             index = comment_end
             continue
-        match = re.match(r"agent\s*\(", script[index:])
+        match = _AGENT_CALL_RE.match(script, index)
         previous = script[index - 1] if index else ""
         if match is None or previous.isalnum() or (previous and previous in "_$"):
             index += 1
             continue
         call_start = index
-        index += match.end()
+        index = match.end()
         depth = 1
         while index < len(script) and depth:
             char = script[index]
+            regex_end = _advance_past_regex(script, index)
+            if regex_end != index:
+                index = regex_end
+                continue
             if char in "'\"`":
                 index = _skip_quoted(script, index, char)
                 continue
@@ -219,11 +250,19 @@ def _agent_calls(script: str) -> list[str] | None:
     return calls
 
 
+_AGENT_CALL_RE = re.compile(r"agent\s*\(")
+_ROUTING_RE = re.compile(r"(agentType|model)\s*:\s*(['\"])")
+
+
 def _routing_values(call: str) -> dict[str, str]:
     values: dict[str, str] = {}
     index = 0
     while index < len(call):
         char = call[index]
+        regex_end = _advance_past_regex(call, index)
+        if regex_end != index:
+            index = regex_end
+            continue
         if char in "'\"`":
             index = _skip_quoted(call, index, char)
             continue
@@ -231,13 +270,13 @@ def _routing_values(call: str) -> dict[str, str]:
         if comment_end != index:
             index = comment_end
             continue
-        match = re.match(r"(agentType|model)\s*:\s*(['\"])", call[index:])
+        match = _ROUTING_RE.match(call, index)
         previous = call[index - 1] if index else ""
         if match is None or previous.isalnum() or (previous and previous in "_$"):
             index += 1
             continue
         quote = match.group(2)
-        value_start = index + match.end()
+        value_start = match.end()
         value_end = value_start
         while value_end < len(call):
             if call[value_end] == "\\":
@@ -286,6 +325,8 @@ def decide_workflow(
                 "or model (a catalog id)."
             )
         for field, value in values.items():
+            if field == "model" and value in _LOCAL_ALIASES:
+                continue
             policy = _policy(value, catalog)
             if policy == "approval":
                 approval = True
