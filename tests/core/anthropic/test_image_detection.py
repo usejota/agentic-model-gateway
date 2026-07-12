@@ -10,6 +10,7 @@ import copy
 
 from core.anthropic.image_detection import (
     ImageCache,
+    has_image_in_last_user_turn,
     has_images,
     restore_images,
     strip_to_placeholders,
@@ -250,3 +251,107 @@ def test_restore_preserves_string_content() -> None:
     msgs = [{"role": "user", "content": "no images here"}]
     out = restore_images(msgs, ImageCache())
     assert out[0]["content"] == "no images here"
+
+
+# --------------------------------------------------------------------------
+# has_image_in_last_user_turn
+# --------------------------------------------------------------------------
+def test_last_user_turn_has_top_level_image() -> None:
+    """Image in the most recent user turn → True (reroute path)."""
+    msgs = [
+        {"role": "user", "content": [_text_block("first")]},
+        {"role": "assistant", "content": [_text_block("hi")]},
+        {
+            "role": "user",
+            "content": [_text_block("what's this?"), _image_block()],
+        },
+    ]
+    assert has_image_in_last_user_turn(msgs) is True
+
+
+def test_last_user_turn_text_only_old_turn_has_image() -> None:
+    """Image only in an OLDER user turn → False (don't lock the session)."""
+    msgs = [
+        {
+            "role": "user",
+            "content": [_text_block("look at this"), _image_block()],
+        },
+        {"role": "assistant", "content": [_text_block("cool image")]},
+        {"role": "user", "content": [_text_block("now explain the code")]},
+    ]
+    assert has_image_in_last_user_turn(msgs) is False
+    # Sanity: full history DOES have the image (so has_images returns True).
+    assert has_images(msgs) is True
+
+
+def test_last_user_turn_image_in_tool_result() -> None:
+    """Image nested inside a tool_result in the last user turn → True."""
+    msgs = [
+        {"role": "user", "content": [_text_block("read file")]},
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "x",
+                    "name": "Read",
+                    "input": {},
+                }
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "x",
+                    "content": [
+                        _text_block("output: "),
+                        _image_block(),
+                    ],
+                }
+            ],
+        },
+    ]
+    assert has_image_in_last_user_turn(msgs) is True
+
+
+def test_no_user_turns_returns_false() -> None:
+    """No user turn at all → False."""
+    msgs = [
+        {"role": "assistant", "content": [_text_block("hi")]},
+        {"role": "system", "content": [_text_block("sys")]},
+    ]
+    assert has_image_in_last_user_turn(msgs) is False
+
+
+def test_last_user_turn_string_content_no_image() -> None:
+    """Last user turn is plain text (string content) → False."""
+    msgs = [
+        {
+            "role": "user",
+            "content": [_image_block()],  # older turn has image
+        },
+        {"role": "user", "content": "plain text follow-up"},
+    ]
+    assert has_image_in_last_user_turn(msgs) is False
+
+
+def test_last_user_turn_text_blocks_only_no_image() -> None:
+    """Last user turn has only text blocks (no image) → False."""
+    msgs = [
+        {"role": "user", "content": [_image_block()]},
+        {"role": "user", "content": [_text_block("a"), _text_block("b")]},
+    ]
+    assert has_image_in_last_user_turn(msgs) is False
+
+
+def test_only_one_user_turn_with_image_returns_true() -> None:
+    """Single user turn with image → True."""
+    msgs = [{"role": "user", "content": [_text_block("x"), _image_block()]}]
+    assert has_image_in_last_user_turn(msgs) is True
+
+
+def test_empty_messages_returns_false() -> None:
+    assert has_image_in_last_user_turn([]) is False
+    assert has_image_in_last_user_turn(None) is False  # type: ignore[arg-type]

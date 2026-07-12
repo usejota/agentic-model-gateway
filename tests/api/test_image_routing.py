@@ -386,3 +386,143 @@ async def test_image_route_matches_primary_no_double_reroute() -> None:
 # No-op when primary is text-only but image_route is set AND request has no images
 # (covered by test_no_images_with_route_no_reroute — explicit here for clarity)
 # --------------------------------------------------------------------------
+
+
+# --------------------------------------------------------------------------
+# Image reroute scope: only the LAST user turn triggers reroute.
+# Older images in the history do NOT lock the session on the vision model —
+# they are stripped to placeholders so the text-only primary can serve the
+# current turn. Reproduces the "session gets stuck on the vision model after
+# one image" bug that motivated the fix.
+# --------------------------------------------------------------------------
+def _request_with_image_in_history_then_text_followup() -> MessagesRequest:
+    """Two user turns: an old one with an image, a recent one that's pure text.
+
+    The new behavior: do NOT reroute (the current turn is text-only); the old
+    image is stripped to a placeholder so the text-only primary (deepseek-chat)
+    doesn't 400 on the raw image block.
+    """
+    return MessagesRequest(
+        model="claude-sonnet-4",
+        messages=[
+            Message(
+                role="user",
+                content=cast(
+                    Any,
+                    [
+                        {"type": "text", "text": "look at this"},
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/png",
+                                "data": "BASE64DATA",
+                            },
+                        },
+                    ],
+                ),
+            ),
+            Message(role="assistant", content=cast(Any, "what a picture")),
+            Message(
+                role="user",
+                content=cast(Any, "now explain the code"),
+            ),
+        ],
+        max_tokens=16,
+        stream=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_old_image_text_only_turn_uses_text_primary_not_vision() -> None:
+    """Old image in history + current turn is text → primary, not IMAGE_ROUTE.
+
+    The new helper ``has_image_in_last_user_turn`` returns False (the last user
+    turn has no image), so the reroute is skipped. The text-only primary
+    (deepseek-chat) is used and the old image is stripped to a placeholder.
+    """
+    provider = _RecordingProvider()
+    svc = _service(
+        _settings(
+            model="deepseek/deepseek-chat",
+            image_route="open_router/minimax/minimax-m3",
+        ),
+        provider,
+    )
+    result = svc.create_message(_request_with_image_in_history_then_text_followup())
+    await _drain(result)
+    # Primary (deepseek) used, NOT the image route (minimax).
+    assert provider.streamed_models == ["deepseek-chat"]
+
+
+@pytest.mark.asyncio
+async def test_old_image_text_only_turn_strips_image_from_history() -> None:
+    """Old image in history → stripped to placeholder before primary is called.
+
+    The primary sees the original user turn as text + a [Image #1] placeholder
+    instead of a raw base64 image block (which would 400 a text-only model).
+    """
+    seen_payloads: list[list] = []
+
+    class _CapturingProvider:
+        def preflight_stream(self, request, *, thinking_enabled=None):
+            return None
+
+        async def stream_response(
+            self,
+            request: MessagesRequest,
+            *,
+            input_tokens,
+            request_id,
+            thinking_enabled,
+        ):
+            seen_payloads.append(request.model_dump()["messages"])
+            yield "event: message_start\ndata: {}\n\n"
+            yield "[DONE]\n\n"
+
+    provider = cast(BaseProvider, _CapturingProvider())
+    svc = _service(
+        _settings(
+            model="deepseek/deepseek-chat",
+            image_route="open_router/minimax/minimax-m3",
+        ),
+        provider,
+    )
+    result = svc.create_message(_request_with_image_in_history_then_text_followup())
+    await _drain(result)
+
+    assert seen_payloads, "Provider should have been called"
+    messages = seen_payloads[0]
+    # First (old) user turn: image replaced with text placeholder.
+    first_user_blocks = messages[0]["content"]
+    assert isinstance(first_user_blocks, list)
+    image_blocks_in_first = [
+        b for b in first_user_blocks if isinstance(b, dict) and b.get("type") == "image"
+    ]
+    assert image_blocks_in_first == []
+    placeholder_texts = [
+        b.get("text", "")
+        for b in first_user_blocks
+        if isinstance(b, dict) and b.get("type") == "text"
+    ]
+    assert any(t.startswith("[Image #1]") for t in placeholder_texts)
+    # Third (current) user turn: untouched, pure text.
+    assert messages[2]["content"] == "now explain the code"
+
+
+@pytest.mark.asyncio
+async def test_current_turn_with_image_still_reroutes() -> None:
+    """The original reroute contract is preserved: image in the LAST turn
+    (no history) still routes to IMAGE_ROUTE."""
+    provider = _RecordingProvider()
+    svc = _service(
+        _settings(
+            model="deepseek/deepseek-chat",
+            image_route="open_router/minimax/minimax-m3",
+        ),
+        provider,
+    )
+    result = svc.create_message(_text_request(with_image=True))
+    await _drain(result)
+    # Image is in the only/last user turn → reroute to IMAGE_ROUTE.
+    assert provider.streamed_models == ["minimax/minimax-m3"]

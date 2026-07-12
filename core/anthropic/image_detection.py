@@ -85,6 +85,20 @@ def _message_content(message: Any) -> Any:
     return getattr(message, "content", None)
 
 
+def _message_role(message: Any) -> str | None:
+    """Return the role field of a message, whether dict or Pydantic model.
+
+    Returns ``None`` when the message is neither a dict with a ``role`` key nor
+    an object with a ``role`` attribute (i.e. unvalidated input that doesn't
+    match the Anthropic shape).
+    """
+    if isinstance(message, dict):
+        role = message.get("role")
+        return role if isinstance(role, str) else None
+    role = getattr(message, "role", None)
+    return role if isinstance(role, str) else None
+
+
 def has_images(messages: Any) -> bool:
     """Return True if any message has an image block (top-level or tool_result).
 
@@ -101,6 +115,36 @@ def has_images(messages: Any) -> bool:
         for block in _iter_content_blocks(_message_content(message)):
             if _is_image_block(block) or _block_has_nested_image(block):
                 return True
+    return False
+
+
+def has_image_in_last_user_turn(messages: Any) -> bool:
+    """Return True only if the LAST ``role == "user"`` message carries an image.
+
+    Used by the service-layer image reroute to decide whether the *current* turn
+    needs the vision model. ``has_images`` (full-history) is too coarse: Claude
+    Code re-sends the entire conversation on every turn, so a single image pasted
+    one turn ago would otherwise keep every subsequent turn locked to the vision
+    model — even text-only turns that just want a follow-up answer. The vision
+    model streams long tool-heavy turns unreliably; the fix is to scope the
+    reroute to the turn that actually carries the image.
+
+    Returns False when the history has no user turn, or when the last user turn
+    is text-only (string content or list of non-image blocks).
+    """
+    if not isinstance(messages, list):
+        return False
+    # Walk the messages in reverse; the most recent user turn is the one that
+    # defines "this turn". Stops on the first match.
+    for message in reversed(messages):
+        role = _message_role(message)
+        if role != "user":
+            continue
+        for block in _iter_content_blocks(_message_content(message)):
+            if _is_image_block(block) or _block_has_nested_image(block):
+                return True
+        # Last user turn found but it carries no image.
+        return False
     return False
 
 

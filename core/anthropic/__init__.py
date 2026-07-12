@@ -8,6 +8,7 @@ from .conversion import (
     build_base_request_body,
 )
 from .errors import (
+    StreamErrorEnvelope,
     append_request_id,
     format_user_error_preview,
     get_user_facing_error_message,
@@ -29,6 +30,7 @@ __all__ = [
     "OpenAIConversionError",
     "ReasoningReplayMode",
     "SSEBuilder",
+    "StreamErrorEnvelope",
     "ThinkTagParser",
     "append_request_id",
     "build_base_request_body",
