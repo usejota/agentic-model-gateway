@@ -251,18 +251,20 @@ def test_enforce_pattern_as_advertised_id_matches_thinking_variant():
 
 
 def test_enforce_allows_main_loop_requests():
-    """The human /model picker (Claude Code main loop) is never blocked."""
+    """The human /model picker (Claude Code main loop) is never blocked.
+    Identified by the launcher's gateway sentinel, not the generic "You are
+    Claude Code" opening (which also appears in subagent prompts)."""
     settings = _settings(model_delegate_exclusions=["open_router/openai/gpt-oss-120b"])
     _enforce(
         settings,
         "anthropic/open_router/openai/gpt-oss-120b",
-        system="You are Claude Code, Anthropic's official CLI for Claude.",
+        system="You are inside the model gateway session",
     )
     # Also as a system-blocks list.
     _enforce(
         settings,
         "anthropic/open_router/openai/gpt-oss-120b",
-        system=[{"type": "text", "text": "You are Claude Code, official CLI."}],
+        system=[{"type": "text", "text": "You are inside the model gateway session"}],
     )
     # Output styles REPLACE the CLI prompt, but the launcher's
     # append-system-prompt sentinel lands in a later block — still main loop.
@@ -364,12 +366,36 @@ def test_allowlist_enforce_blocks_no_thinking_variant():
 
 
 def test_allowlist_enforce_allows_main_loop_even_if_outside_union():
+    """Main loop identified by gateway sentinel, not just "You are Claude Code"."""
     settings = _settings(model_delegate_allowlist=["open_router/deepseek/*"])
     _enforce_allowlist(
         settings,
         "anthropic/open_router/qwen/qwen-4",
-        system="You are Claude Code, Anthropic's official CLI",
+        system="You are inside the model gateway session",
     )
+
+
+def test_allowlist_enforce_blocks_native_subagent_outside_union():
+    """Native subagent prompts start with "You are Claude Code" but lack the
+    gateway sentinel — enforcement must apply."""
+    settings = _settings(model_delegate_allowlist=["open_router/deepseek/*"])
+    with pytest.raises(InvalidRequestError, match="delegate allowlist"):
+        _enforce_allowlist(
+            settings,
+            "anthropic/open_router/qwen/qwen-4",
+            system="You are Claude Code, Anthropic's official CLI for Claude. You are an agent for...",
+        )
+
+
+def test_exclusions_enforce_blocks_native_subagent():
+    """Same: exclusions now apply to native subagents, not just side-channel."""
+    settings = _settings(model_delegate_exclusions=["open_router/qwen/*"])
+    with pytest.raises(InvalidRequestError, match="excluded for subagents"):
+        _enforce(
+            settings,
+            "anthropic/open_router/qwen/qwen-4",
+            system="You are Claude Code, Anthropic's official CLI for Claude. You are an agent for...",
+        )
 
 
 def test_allowlist_enforce_noop_when_empty():

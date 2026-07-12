@@ -336,17 +336,16 @@ agents. When a model matches **both** allowlist and approval, approval wins.
 
 ### Hard enforcement (subagents only)
 
-Exclusions are enforced at request time by the gateway: any `/v1/messages`
-request whose resolved model matches a `MODEL_DELEGATE_EXCLUSIONS` pattern is
-rejected with an invalid-request error — **unless** it is Claude Code's main
-conversation loop (detected by the CLI's system-prompt marker, `"You are
-Claude Code"`). Likewise, when `MODEL_DELEGATE_ALLOWLIST` is set, models
-outside the allowlist ∪ approval union are blocked for subagents (400). The
-human `/model` picker keeps working for every model regardless.
-Caveat: the marker is a heuristic — a client
-that forges a main-loop system prompt bypasses it, and if a future Claude Code
-release changes its system-prompt opening, the main loop would start being
-blocked too (fix: update `_MAIN_LOOP_MARKERS` in `api/services.py`).
+Exclusions and the allowlist are enforced at request time by the gateway: any
+`/v1/messages` request whose resolved model is excluded or outside the
+allowlist ∪ approval union is rejected with an invalid-request error (400) —
+**unless** it is Claude Code's main conversation loop, detected by the
+launcher's `--append-system-prompt` sentinel (`"You are inside the model
+gateway session"`). Subagent (Agent tool) system prompts lack this sentinel
+so enforcement applies to them. The human `/model` picker keeps working for
+every model regardless. Caveat: a client that forges the gateway sentinel
+in its system prompt bypasses enforcement; keep the sentinel value
+non-public.
 
 ## Troubleshooting
 

@@ -440,6 +440,30 @@ def test_agent_local_alias_model_is_allowed(tmp_path: Path, strict: bool) -> Non
 
 
 @pytest.mark.parametrize("strict", [False, True])
+def test_agent_alias_model_approval_subagent_type_asks(
+    tmp_path: Path, strict: bool
+) -> None:
+    """Alias model + approval subagent_type → ask, consistent with Workflow."""
+    payload = {
+        "tool_name": "Agent",
+        "tool_input": {"subagent_type": "approval-premium", "model": "opus"},
+    }
+    assert decision(run(payload, tmp_path, strict=strict)) == "ask"
+
+
+@pytest.mark.parametrize("strict", [False, True])
+def test_agent_alias_model_delegate_subagent_type_allows(
+    tmp_path: Path, strict: bool
+) -> None:
+    """Alias model + delegate subagent_type → allow."""
+    payload = {
+        "tool_name": "Agent",
+        "tool_input": {"subagent_type": "delegate-free", "model": "opus"},
+    }
+    assert decision(run(payload, tmp_path, strict=strict)) == "allow"
+
+
+@pytest.mark.parametrize("strict", [False, True])
 def test_workflow_local_alias_model_is_allowed(tmp_path: Path, strict: bool) -> None:
     script = "return agent('x', {model: 'opus'})"
     assert decision(run(workflow(script), tmp_path, strict=strict)) == "allow"

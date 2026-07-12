@@ -132,16 +132,23 @@ def decide_agent(
 
     # Agent's explicit model overrides the model attached to subagent_type.
     # Validate it first so neither a free agent nor the custom allowlist can
-    # bypass approval/unknown-model policy.
+    # bypass approval/unknown-model policy. Local aliases (opus, sonnet, etc.)
+    # fall through to the subagent_type check — an approval-* agent_type with
+    # an alias model still asks, consistent with the Workflow path.
     if isinstance(model, str):
         if model in _LOCAL_ALIASES:
-            return "allow", ""
-        policy = _policy(model, catalog)
-        if policy == "approval":
-            return "ask", f"Subagent model '{model}' requires per-spawn human approval."
-        if policy == "delegate":
-            return "allow", ""
-        return "deny", f"Unknown or excluded delegate model '{model}'."
+            if not isinstance(subagent_type, str) or not subagent_type.strip():
+                return "allow", ""
+        else:
+            policy = _policy(model, catalog)
+            if policy == "approval":
+                return (
+                    "ask",
+                    f"Subagent model '{model}' requires per-spawn human approval.",
+                )
+            if policy == "delegate":
+                return "allow", ""
+            return "deny", f"Unknown or excluded delegate model '{model}'."
 
     policy = _policy(subagent_type, catalog)
     if policy == "approval":

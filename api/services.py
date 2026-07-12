@@ -89,20 +89,16 @@ def _require_non_empty_messages(messages: list[Any]) -> None:
 
 
 # Markers identifying Claude Code's MAIN conversation loop (the model the human
-# drives via /model). Subagent (Agent tool) requests carry the agent's own
-# prompt instead. Multiple markers because output styles REPLACE the CLI's
-# default system prompt (dropping "You are Claude Code"), while the launcher's
-# --append-system-prompt sentinel survives any output style — it is appended to
-# the main loop only, never to subagent prompts.
+# drives via /model). These sentinels are appended by the launcher's
+# --append-system-prompt to the main loop only, never to subagent prompts.
+# Subagent (Agent tool) system prompts always start with "You are Claude Code"
+# but lack the gateway sentinel, so they are NOT matched here — enforcement
+# applies to them.
 #
 # The primary sentinel is name-agnostic ("the model gateway session") so the
-# launcher is renameable: a binary installed as `claudim`, `loclaudim`, or any
-# other name emits the same string and the gateway matches it. The legacy
-# "You are inside claudim (gateway session)" marker is kept so already-deployed
-# launchers that still emit the old (name-bearing) sentinel keep matching —
-# renameability without breaking retro-compat.
+# launcher is renameable. The legacy "You are inside claudim (gateway session)"
+# marker is kept for retro-compat with already-deployed launchers.
 _MAIN_LOOP_MARKERS = (
-    "You are Claude Code",
     "You are inside the model gateway session",
     "You are inside claudim (gateway session)",
 )
