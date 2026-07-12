@@ -452,3 +452,22 @@ def test_workflow_regex_literal_does_not_swallow_scanning(
     """Regex literals are skipped; an unrouted call inside is still caught."""
     script = "const r = /'/; return agent('x')"
     assert decision(run(workflow(script), tmp_path, strict=strict)) == "deny"
+
+
+@pytest.mark.parametrize("strict", [False, True])
+@pytest.mark.parametrize(
+    "script",
+    [
+        "const x = 1 / 2 + agent('a', {agentType: 'delegate-fake'}) / 3;",
+        (
+            "const r = total / count; "
+            "agent('a', {agentType: 'delegate-fake'}); "
+            "const q = a / b;"
+        ),
+    ],
+)
+def test_workflow_division_does_not_swallow_agent_calls(
+    tmp_path: Path, strict: bool, script: str
+) -> None:
+    """Division operators must not be parsed as regex starts hiding agent()."""
+    assert decision(run(workflow(script), tmp_path, strict=strict)) == "deny"

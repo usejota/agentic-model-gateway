@@ -160,10 +160,18 @@ def decide_agent(
 
 
 def _advance_past_regex(script: str, index: int) -> int:
-    """If ``script[index]`` starts a JS regex literal, skip it; else return ``index``."""
+    """If ``script[index]`` starts a JS regex literal, skip it; else return ``index``.
+
+    A ``/`` after a value (identifier, number, ``)``, ``]``) is division, not a
+    regex — determined by the last non-whitespace character so ``a / b`` never
+    swallows the rest of the line.
+    """
     if script[index] != "/":
         return index
-    previous = script[index - 1] if index else ""
+    pos = index - 1
+    while pos >= 0 and script[pos] in " \t":
+        pos -= 1
+    previous = script[pos] if pos >= 0 else ""
     if previous.isalnum() or previous in "_$)]>":
         return index
     pos = index + 1
