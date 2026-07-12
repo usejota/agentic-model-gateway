@@ -38,6 +38,7 @@ def _resolve(query: str) -> dict:
 
 def test_resolves_local_override_before_catalog() -> None:
     assert _resolve("opus")["policy"] == "override"
+    assert _resolve("opus.")["policy"] == "override"
 
 
 def test_resolves_human_name_and_never_picks_ambiguity() -> None:

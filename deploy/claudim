@@ -503,6 +503,16 @@ if [ -n "${TMUX:-}" ] && [ "${CLAUDIM_TMUX:-}" != "0" ]; then has_tmux=1; fi
 # headless delegates keep using run_in_tmux below.
 AGENTS_JSON=""
 CLAUDIM_CATALOG_PATH=""
+_agents_py=""
+_settings=""
+cleanup_session_temps() {
+  [ -z "${_agents_py:-}" ] || rm -f "${_agents_py}"
+  [ -z "${_settings:-}" ] || rm -f "${_settings}"
+  [ -z "${CLAUDIM_CATALOG_PATH:-}" ] || rm -f "${CLAUDIM_CATALOG_PATH}"
+}
+trap cleanup_session_temps EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 if [ "${has_print}" -eq 0 ]; then
   _agents_py="$(mktemp 2>/dev/null || mktemp -t "${SELF}")"
   cat > "$_agents_py" <<'AGENTS_EOF'
@@ -517,6 +527,17 @@ except ValueError:
     cap = 30
 agents = {}
 for model in d.get("models", [])[:cap]:
+    if not isinstance(model, dict):
+        continue
+    required = ("id", "agent_name", "display_name", "vendor", "policy", "capabilities")
+    if any(key not in model for key in required):
+        continue
+    if not all(isinstance(model[key], str) for key in required[:-1]):
+        continue
+    if model["policy"] not in ("delegate", "approval"):
+        continue
+    if not isinstance(model["capabilities"], list) or not all(isinstance(item, str) for item in model["capabilities"]):
+        continue
     premium = " [PREMIUM — requires human approval]" if model["policy"] == "approval" else ""
     agents[model["agent_name"]] = {
         "description": "%s (%s) — %s.%s Alternative-model subagent: pick when spawning agents anyway and this profile fits the task; never a reason to delegate work you would do inline." % (
@@ -533,6 +554,7 @@ AGENTS_EOF
   export CLAUDIM_CATALOG_PATH
   _agents_result="$(python3 "$_agents_py" < "${CLAUDIM_CATALOG_PATH}" || true)"
   rm -f "$_agents_py"
+  _agents_py=""
   AGENTS_JSON=""
   CLAUDIM_DELEGATE_AGENT_NAMES=""
   if [ -n "${_agents_result:-}" ]; then
@@ -646,9 +668,8 @@ SETTINGS_EOF
 
   claude "${args[@]+"${args[@]}"}"
   _rc=$?
-  [ -n "${_settings:-}" ] && rm -f "${_settings}"
-  [ -n "${CLAUDIM_CATALOG_PATH:-}" ] && rm -f "${CLAUDIM_CATALOG_PATH}"
   exit "${_rc}"
 fi
 
-exec claude "$@"
+claude "$@"
+exit $?

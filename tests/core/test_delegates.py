@@ -55,7 +55,13 @@ def test_collision_names_are_stable_across_input_order() -> None:
     refs = ["router/vendor/model-x", "other/vendor/model-x"]
 
     def names(values: list[str]) -> dict[str, str]:
-        catalog = build_delegate_catalog(values, exclusions=[], approvals=[])
+        catalog = build_delegate_catalog(
+            values,
+            exclusions=[],
+            approvals=[],
+            model_id_for_ref=lambda ref: f"test/{ref}",
+            normalize_ref=lambda ref: ref,
+        )
         models = catalog["models"]
         assert isinstance(models, list)
         result: dict[str, str] = {}
@@ -69,3 +75,15 @@ def test_collision_names_are_stable_across_input_order() -> None:
     assert all(
         name.startswith("delegate-vendor-model-x-") for name in names(refs).values()
     )
+
+
+def test_vendor_filter_is_case_insensitive_and_id_builder_is_authoritative() -> None:
+    catalog = build_delegate_catalog(
+        ["router/OpenAI/model", "router/deepseek/model"],
+        exclusions=[],
+        approvals=[],
+        model_id_for_ref=lambda ref: f"gateway::{ref}",
+        normalize_ref=lambda ref: ref,
+    )
+
+    assert catalog["data"] == ["gateway::router/deepseek/model"]

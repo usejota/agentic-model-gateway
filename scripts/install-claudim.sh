@@ -129,6 +129,10 @@ for _sk in delegate fanout workflow; do
   fi
 done
 
+# PR #3 renamed panel to fanout with no compatibility alias. Remove an older
+# installed skill so upgrades cannot leave its broad auto-trigger active.
+rm -rf "${HOME}/.claude/skills/${NAME}-panel"
+
 # PATH check.
 case ":${PATH}:" in
   *":${BIN_DIR}:"*) : ;;

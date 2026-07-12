@@ -22,7 +22,7 @@ from .gateway_model_ids import (
 )
 from .models.anthropic import MessagesRequest, TokenCountRequest
 from .models.responses import ModelResponse, ModelsListResponse
-from .services import ClaudeProxyService
+from .services import ClaudeProxyService, _normalize_model_ref
 
 router = APIRouter()
 
@@ -396,6 +396,8 @@ async def list_delegate_models(
         exclusions=settings.model_delegate_exclusions,
         approvals=settings.model_delegate_approval,
         preferred_refs=getattr(settings, "model_delegate_roster", []),
+        model_id_for_ref=no_thinking_gateway_model_id,
+        normalize_ref=_normalize_model_ref,
     )
 
 

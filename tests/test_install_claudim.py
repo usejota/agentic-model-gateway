@@ -7,6 +7,7 @@ with the static launcher-renameability checks on ``deploy/claudim``.
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -115,6 +116,19 @@ def test_install_default_name_uses_claudim(tmp_path: Path) -> None:
     assert (home / ".claude" / "skills" / "claudim-delegate" / "SKILL.md").exists()
 
 
+def test_upgrade_removes_legacy_panel_skill(tmp_path: Path) -> None:
+    bin_dir = tmp_path / "bin"
+    home = tmp_path / "home"
+    panel = home / ".claude" / "skills" / "buxexa-panel"
+    panel.mkdir(parents=True)
+    (panel / "SKILL.md").write_text("legacy broad auto-trigger")
+
+    proc = _run_installer(bin_dir, home, CLAUDIM_NAME="buxexa")
+
+    assert proc.returncode == 0, proc.stderr
+    assert not panel.exists()
+
+
 # ---------------------------------------------------------------------------
 # Baked gateway URL (CLAUDIM_DEFAULT_BASE_URL → CLAUDIM_BAKED_BASE_URL)
 # ---------------------------------------------------------------------------
@@ -188,3 +202,40 @@ def test_launcher_renamed_copy_syntax_ok(tmp_path: Path) -> None:
     dest.write_text(LAUNCHER.read_text())
     proc = subprocess.run(["bash", "-n", str(dest)], capture_output=True, text=True)
     assert proc.returncode == 0, proc.stderr
+
+
+def test_launcher_registers_temp_cleanup_traps() -> None:
+    text = LAUNCHER.read_text()
+    assert "cleanup_session_temps" in text
+    assert "trap cleanup_session_temps EXIT" in text
+    assert "trap 'exit 130' INT" in text
+    assert "trap 'exit 143' TERM" in text
+
+
+def test_agents_builder_skips_only_malformed_entries() -> None:
+    text = LAUNCHER.read_text()
+    script = text.split("<<'AGENTS_EOF'\n", 1)[1].split("\nAGENTS_EOF", 1)[0]
+    catalog = {
+        "models": [
+            {"agent_name": "delegate-broken"},
+            {
+                "id": "id/free",
+                "agent_name": "delegate-free",
+                "display_name": "Free",
+                "vendor": "vendor",
+                "policy": "delegate",
+                "capabilities": ["general"],
+            },
+        ]
+    }
+
+    proc = subprocess.run(
+        ["python3", "-c", script],
+        input=json.dumps(catalog),
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+
+    result = json.loads(proc.stdout)
+    assert result["names"] == ["delegate-free"]

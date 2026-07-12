@@ -5,10 +5,9 @@ from __future__ import annotations
 import fnmatch
 import hashlib
 import re
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from typing import Literal
-
-NO_THINKING_PREFIX = "claude-3-freecc-no-thinking/"
 
 US_CLOSED_VENDORS = frozenset(
     {
@@ -60,11 +59,8 @@ def normalize_alias(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
 
 
-def normalize_approval_ref(ref: str) -> str:
-    if ref.startswith(NO_THINKING_PREFIX):
-        ref = ref[len(NO_THINKING_PREFIX) :]
-    if ref.endswith("[1m]"):
-        ref = ref[:-4]
+def normalize_approval_ref(ref: str, normalize_ref: Callable[[str], str]) -> str:
+    ref = normalize_ref(ref)
     parts = ref.split("/")
     return "/".join(parts[1:]) if len(parts) >= 3 else ref
 
@@ -74,11 +70,15 @@ def delegate_vendor(ref: str) -> str:
     return (parts[1] if len(parts) >= 3 else parts[0]).lstrip("~")
 
 
-def _matches(ref: str, patterns: list[str]) -> bool:
-    normalized_ref = normalize_approval_ref(ref)
+def _matches(
+    ref: str, patterns: list[str], normalize_ref: Callable[[str], str]
+) -> bool:
+    normalized_ref = normalize_approval_ref(ref, normalize_ref)
     return any(
         fnmatch.fnmatchcase(ref, pattern)
-        or fnmatch.fnmatchcase(normalized_ref, normalize_approval_ref(pattern))
+        or fnmatch.fnmatchcase(
+            normalized_ref, normalize_approval_ref(pattern, normalize_ref)
+        )
         for pattern in patterns
     )
 
@@ -193,21 +193,23 @@ def build_delegate_catalog(
     *,
     exclusions: list[str],
     approvals: list[str],
+    model_id_for_ref: Callable[[str], str],
+    normalize_ref: Callable[[str], str],
     preferred_refs: list[str] | None = None,
 ) -> dict[str, object]:
     classified: list[tuple[str, Literal["delegate", "approval"]]] = []
     for ref in refs:
-        if _matches(ref, exclusions):
+        if _matches(ref, exclusions, normalize_ref):
             continue
-        if _matches(ref, approvals):
+        if _matches(ref, approvals, normalize_ref):
             classified.append((ref, "approval"))
-        elif delegate_vendor(ref) not in US_CLOSED_VENDORS:
+        elif delegate_vendor(ref).lower() not in US_CLOSED_VENDORS:
             classified.append((ref, "delegate"))
 
     names = _agent_names(classified)
     models = [
         DelegateModel(
-            id=NO_THINKING_PREFIX + ref,
+            id=model_id_for_ref(ref),
             ref=ref,
             agent_name=names[ref],
             display_name=_display_name(ref),

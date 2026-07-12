@@ -31,11 +31,11 @@ def aliases(model: dict[str, object]) -> list[str]:
 def resolve(catalog: dict[str, object], query: str) -> dict[str, object]:
     result: dict[str, object] = {"query": query}
     normalized = normalize(query)
-    if query.lower() in LOCAL_ALIASES:
+    if normalized in LOCAL_ALIASES:
         return {
             **result,
             "status": "resolved",
-            "id": query.lower(),
+            "id": normalized,
             "agent_name": None,
             "policy": "override",
             "candidates": [],
