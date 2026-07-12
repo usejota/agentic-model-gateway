@@ -1,7 +1,8 @@
 """Request detection utilities for API optimizations.
 
 Detects quota checks, title generation, prefix detection, suggestion mode,
-and filepath extraction requests to enable fast-path responses.
+filepath extraction, and safety classifier requests to enable fast-path
+responses and targeted rerouting.
 """
 
 from core.anthropic import extract_text_from_content
@@ -134,3 +135,17 @@ def is_filepath_extraction_request(
             output = output.split(marker)[0].strip()
 
     return True, command, output
+
+
+def is_safety_classifier_request(request_data: MessagesRequest) -> bool:
+    """Check if this is a Claude Code auto-mode safety classifier side-query.
+
+    Signature: no tools, system prompt contains the security-monitor
+    prompt, non-streaming create() call.
+    """
+    if request_data.tools:
+        return False
+    if not request_data.system:
+        return False
+    system_text = extract_text_from_content(request_data.system)
+    return "You are a security monitor for autonomous AI coding agents" in system_text
