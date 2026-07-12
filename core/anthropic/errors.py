@@ -4,6 +4,32 @@ import httpx
 import openai
 
 
+class StreamErrorEnvelope(Exception):
+    """Raised when a provider SSE stream ends with a top-level ``event: error``.
+
+    The Anthropic SDK surfaces a top-level ``event: error`` as a real
+    transport failure (the partial response is abandoned, the error is
+    reported). The aggregator in :mod:`core.anthropic.aggregate` raises this
+    on the same signal so the non-streaming Messages path (the auto-mode
+    safety classifier, ``count_tokens``, etc.) stays fail-closed: a stream
+    that ends in a transport error returns an HTTP 5xx to the client, not a
+    200 with an empty body the classifier would silently accept.
+
+    The ``envelope`` is the parsed ``data:`` payload of the event so the
+    caller's :func:`get_user_facing_error_message` can render a stable
+    provider message.
+    """
+
+    def __init__(self, envelope: dict) -> None:
+        self.envelope = envelope
+        message = ""
+        if isinstance(envelope, dict):
+            inner = envelope.get("error")
+            if isinstance(inner, dict):
+                message = str(inner.get("message", "") or "")
+        super().__init__(message or "Provider stream returned event:error")
+
+
 def get_user_facing_error_message(
     e: Exception,
     *,

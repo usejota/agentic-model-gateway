@@ -304,10 +304,16 @@ async def test_midstream_error_closes_open_block_and_uses_fresh_content_index(
         events, user_message_substr="mid-stream failure"
     )
     parsed = parse_sse_text("".join(events))
+    # Midstream transport failure closes the dangling block (the open text
+    # block from the upstream's content_block_start) and emits a top-level
+    # event:error — no NEW content block for the error itself. The error is
+    # signaled at the transport level, NOT as part of the assistant's
+    # response, so Claude Code surfaces it as a real failure (not as text the
+    # model said).
     starts = [e for e in parsed if e.event == "content_block_start"]
+    assert len(starts) == 1, parsed
     assert event_index(starts[0]) == 0
-    assert event_index(starts[-1]) == 1
-    assert {event_index(e) for e in parsed if e.event == "content_block_stop"} == {0, 1}
+    assert {event_index(e) for e in parsed if e.event == "content_block_stop"} == {0}
 
 
 @pytest.mark.asyncio
