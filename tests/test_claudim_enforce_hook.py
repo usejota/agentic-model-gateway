@@ -378,6 +378,8 @@ def test_workflow_matrix_from_captured_shape(tmp_path: Path, strict: bool) -> No
     [
         "// agentType: 'delegate-free'\nreturn agent('x')",
         "return agent(\"agentType: 'delegate-free'\")",
+        "agent('x')",
+        "agent('x', {agentType: 'delegate-fake'})",
         (
             "const a = agent('a', {agentType: 'delegate-free', model: 'id/free'}); "
             "const b = agent('b')"
@@ -388,6 +390,12 @@ def test_workflow_requires_route_on_each_call(
     tmp_path: Path, strict: bool, script: str
 ) -> None:
     assert decision(run(workflow(script), tmp_path, strict=strict)) == "deny"
+
+
+@pytest.mark.parametrize("strict", [False, True])
+def test_workflow_call_at_script_start_is_scanned(tmp_path: Path, strict: bool) -> None:
+    script = "agent('x', {agentType: 'delegate-free'})"
+    assert decision(run(workflow(script), tmp_path, strict=strict)) == "allow"
 
 
 @pytest.mark.parametrize("strict", [False, True])

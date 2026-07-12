@@ -228,6 +228,14 @@ class TestSettings:
         settings = Settings()
         assert settings.model_delegate_exclusions == ["a/b", "c/d"]
 
+    def test_model_delegate_allowlist_from_env(self, monkeypatch):
+        """MODEL_DELEGATE_ALLOWLIST env var is comma-split with blanks trimmed."""
+        from config.settings import Settings
+
+        monkeypatch.setenv("MODEL_DELEGATE_ALLOWLIST", "a/b, c/d ,")
+        settings = Settings()
+        assert settings.model_delegate_allowlist == ["a/b", "c/d"]
+
     def test_model_delegate_roster_from_env(self, monkeypatch):
         from config.settings import Settings
 

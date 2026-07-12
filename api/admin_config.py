@@ -482,6 +482,20 @@ FIELDS: tuple[ConfigFieldSpec, ...] = (
         ),
     ),
     ConfigFieldSpec(
+        "MODEL_DELEGATE_ALLOWLIST",
+        "Delegate Allowlist",
+        "models",
+        settings_attr="model_delegate_allowlist",
+        description=(
+            "Comma-separated provider/model refs (fnmatch globs, same format as "
+            "exclusions) that DEFINE the closed set of free delegate models. "
+            "When empty, all eligible vendors are free (backward compatible). "
+            "When set, only models matching these patterns (or MODEL_DELEGATE_APPROVAL) "
+            "appear in the delegate catalog. Models matching BOTH allowlist and "
+            "approval become approval (ask)."
+        ),
+    ),
+    ConfigFieldSpec(
         "MODEL_DELEGATE_ROSTER",
         "Delegate Roster",
         "models",

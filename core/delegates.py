@@ -83,6 +83,30 @@ def _matches(
     )
 
 
+def ref_in_catalog_union(
+    ref: str,
+    *,
+    allowlist: list[str],
+    approvals: list[str],
+    normalize_ref: Callable[[str], str],
+) -> bool:
+    """True if ``ref`` would be admitted to the catalog with this allowlist.
+
+    Mirrors the classification in :func:`build_delegate_catalog`: approval
+    matches are always admitted; allowlist matches are admitted only for
+    open (non-US-closed) vendors. With an empty allowlist everything passes
+    (the allowlist gate is inactive).
+    """
+    if _matches(ref, approvals, normalize_ref):
+        return True
+    if not allowlist:
+        return True
+    return (
+        _matches(ref, allowlist, normalize_ref)
+        and delegate_vendor(ref).lower() not in US_CLOSED_VENDORS
+    )
+
+
 def capabilities_for(ref: str) -> list[str]:
     tail = ref.rsplit("/", 1)[-1].lower()
     if tail in CURATED_CAPABILITIES:
@@ -193,16 +217,20 @@ def build_delegate_catalog(
     *,
     exclusions: list[str],
     approvals: list[str],
+    allowlist: list[str] | None = None,
     model_id_for_ref: Callable[[str], str],
     normalize_ref: Callable[[str], str],
     preferred_refs: list[str] | None = None,
 ) -> dict[str, object]:
     classified: list[tuple[str, Literal["delegate", "approval"]]] = []
+    allowlist_active = allowlist is not None and len(allowlist) > 0
     for ref in refs:
         if _matches(ref, exclusions, normalize_ref):
             continue
         if _matches(ref, approvals, normalize_ref):
             classified.append((ref, "approval"))
+        elif allowlist_active and not _matches(ref, allowlist, normalize_ref):
+            continue
         elif delegate_vendor(ref).lower() not in US_CLOSED_VENDORS:
             classified.append((ref, "delegate"))
 

@@ -193,7 +193,7 @@ def _agent_calls(script: str) -> list[str] | None:
             continue
         match = re.match(r"agent\s*\(", script[index:])
         previous = script[index - 1] if index else ""
-        if match is None or previous.isalnum() or previous in "_$":
+        if match is None or previous.isalnum() or (previous and previous in "_$"):
             index += 1
             continue
         call_start = index
@@ -233,7 +233,7 @@ def _routing_values(call: str) -> dict[str, str]:
             continue
         match = re.match(r"(agentType|model)\s*:\s*(['\"])", call[index:])
         previous = call[index - 1] if index else ""
-        if match is None or previous.isalnum() or previous in "_$":
+        if match is None or previous.isalnum() or (previous and previous in "_$"):
             index += 1
             continue
         quote = match.group(2)

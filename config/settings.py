@@ -197,6 +197,15 @@ class Settings(BaseSettings):
         default_factory=list, validation_alias="MODEL_DELEGATE_APPROVAL"
     )
 
+    # Closed-set gate for the free delegate catalog. When non-empty, only
+    # models matching these fnmatch patterns are eligible as free delegates
+    # (alongside any MODEL_DELEGATE_APPROVAL matches). Empty = all eligible
+    # vendors are free (backward compatible). Models only in the allowlist
+    # that also match MODEL_DELEGATE_APPROVAL become approval.
+    model_delegate_allowlist: Annotated[list[str], NoDecode] = Field(
+        default_factory=list, validation_alias="MODEL_DELEGATE_ALLOWLIST"
+    )
+
     # Exact refs placed first in the deterministic delegate roster. Entries
     # remain subject to exclusions and approval policy.
     model_delegate_roster: Annotated[list[str], NoDecode] = Field(
@@ -485,6 +494,7 @@ class Settings(BaseSettings):
         "fallback_models",
         "model_delegate_exclusions",
         "model_delegate_approval",
+        "model_delegate_allowlist",
         "model_delegate_roster",
         mode="before",
     )

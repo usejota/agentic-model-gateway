@@ -17,6 +17,7 @@ from core.anthropic import get_token_count, get_user_facing_error_message
 from core.anthropic.aggregate import aggregate_sse_to_message
 from core.anthropic.image_detection import has_images
 from core.anthropic.sse import ANTHROPIC_SSE_RESPONSE_HEADERS
+from core.delegates import ref_in_catalog_union
 from core.trace import api_messages_request_snapshot, trace_event, traced_async_stream
 from providers.base import BaseProvider
 from providers.exceptions import InvalidRequestError, OverloadedError, ProviderError
@@ -190,6 +191,35 @@ def _enforce_delegate_exclusions(
     )
 
 
+def _enforce_delegate_allowlist(
+    settings: Settings, request: MessagesRequest, provider_model_ref: str
+) -> None:
+    """Hard-block subagent models outside the allowlist + approval union.
+
+    When ``MODEL_DELEGATE_ALLOWLIST`` is configured, only models the catalog
+    would admit (allowlist matches on open vendors, plus any
+    ``MODEL_DELEGATE_APPROVAL`` matches) are permitted for subagent requests.
+    Uses the same matching as ``build_delegate_catalog`` so the gateway and
+    the ``/v1/models/delegates`` endpoint never disagree. Main-loop requests
+    are never blocked.
+    """
+    if not settings.model_delegate_allowlist:
+        return
+    if _is_main_loop_request(request):
+        return
+    if ref_in_catalog_union(
+        _normalize_model_ref(provider_model_ref),
+        allowlist=settings.model_delegate_allowlist,
+        approvals=settings.model_delegate_approval,
+        normalize_ref=_normalize_model_ref,
+    ):
+        return
+    raise InvalidRequestError(
+        f"model '{_normalize_model_ref(provider_model_ref)}' is not in the "
+        "delegate allowlist; set MODEL_DELEGATE_ALLOWLIST or add this model to it"
+    )
+
+
 class ClaudeProxyService:
     """Coordinate request optimization, model routing, token count, and providers."""
 
@@ -217,6 +247,9 @@ class ClaudeProxyService:
             # instead of rerouted to the non-excluded IMAGE_ROUTE.
             routed = self._maybe_reroute_for_images(routed)
             _enforce_delegate_exclusions(
+                self._settings, request_data, routed.resolved.provider_model_ref
+            )
+            _enforce_delegate_allowlist(
                 self._settings, request_data, routed.resolved.provider_model_ref
             )
             if routed.resolved.provider_id in _OPENAI_CHAT_UPSTREAM_IDS:

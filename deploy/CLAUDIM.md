@@ -188,7 +188,8 @@ read-only analysis that doesn't need the shell, omit it and stay sandboxed.
 | `CLAUDIM_CATALOG_PATH` | temporary | full normalized delegate catalog passed from the launcher to the routing hook |
 | `CLAUDIM_ROUTE_SUBAGENTS` | `1` | set `0` to allow generic agents in transparent mode; strict `--delegate` remains enforced |
 | `MODEL_DELEGATE_EXCLUSIONS` | empty | server-side glob patterns removed from every delegate route |
-| `MODEL_DELEGATE_APPROVAL` | empty | server-side glob patterns exposed only as approval agents requiring human confirmation |
+| `MODEL_DELEGATE_APPROVAL` | empty | server-side glob patterns requiring per-spawn human confirmation |
+| `MODEL_DELEGATE_ALLOWLIST` | empty | when set, closes the free delegate set to only these patterns (plus approval); empty = all eligible vendors free |
 | `MODEL_DELEGATE_ROSTER` | empty | exact refs placed first in the bounded native-agent roster; cannot bypass exclusion/approval |
 
 Example — point at a differently-named gateway node:
@@ -306,16 +307,42 @@ open_router/qwen/qwen-coder-plus  # hide a specific model
 A glob without a wildcard is an exact match. The exclusion is checked against
 the full model ref (e.g. `open_router/deepseek/deepseek-v4-flash`).
 
+### MODEL_DELEGATE_ALLOWLIST
+
+Closed-set gate for the free delegate catalog. When **empty** (default), all
+eligible vendors are free delegates — backward compatible. When **set**, only
+models matching the allowlist or `MODEL_DELEGATE_APPROVAL` appear in the
+catalog. Models outside the union are absent from the endpoint, unresolvable,
+and blocked at the gateway for subagent requests.
+
+Decision table:
+
+| Model matches | Result |
+|---|---|
+| `MODEL_DELEGATE_EXCLUSIONS` | absent from catalog + blocked (400) |
+| allowlist AND approval | approval (ask) |
+| approval only | approval (ask) |
+| allowlist only (open vendor) | free delegate |
+| allowlist only (US closed vendor) | absent from catalog |
+| neither (allowlist set) | absent from catalog + blocked (400) |
+| neither (allowlist empty) | legacy: open vendor → free delegate |
+
+### MODEL_DELEGATE_APPROVAL
+
+Premium models requiring per-spawn human confirmation. Same format as
+exclusions and allowlist; models matching these patterns become `approval-*`
+agents. When a model matches **both** allowlist and approval, approval wins.
+
 ### Hard enforcement (subagents only)
 
 Exclusions are enforced at request time by the gateway: any `/v1/messages`
 request whose resolved model matches a `MODEL_DELEGATE_EXCLUSIONS` pattern is
 rejected with an invalid-request error — **unless** it is Claude Code's main
 conversation loop (detected by the CLI's system-prompt marker, `"You are
-Claude Code"`). So the human `/model` picker keeps working for every model,
-while Agent-tool subagents (or any side-channel request) cannot use excluded
-models — even if the session model passes an explicit `model` param or writes
-its own `.claude/agents/*.md`. Caveat: the marker is a heuristic — a client
+Claude Code"`). Likewise, when `MODEL_DELEGATE_ALLOWLIST` is set, models
+outside the allowlist ∪ approval union are blocked for subagents (400). The
+human `/model` picker keeps working for every model regardless.
+Caveat: the marker is a heuristic — a client
 that forges a main-loop system prompt bypasses it, and if a future Claude Code
 release changes its system-prompt opening, the main loop would start being
 blocked too (fix: update `_MAIN_LOOP_MARKERS` in `api/services.py`).

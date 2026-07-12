@@ -6,7 +6,11 @@ from api.dependencies import get_settings
 from api.gateway_model_ids import ONE_M_SUFFIX
 from api.model_router import ModelRouter
 from api.models.anthropic import MessagesRequest
-from api.services import _enforce_delegate_exclusions, _normalize_model_ref
+from api.services import (
+    _enforce_delegate_allowlist,
+    _enforce_delegate_exclusions,
+    _normalize_model_ref,
+)
 from config.settings import Settings
 from providers.exceptions import InvalidRequestError
 from providers.registry import ProviderRegistry
@@ -20,6 +24,7 @@ def _settings(
     model_opus: str | None = None,
     model_delegate_exclusions: list[str] | None = None,
     model_delegate_approval: list[str] | None = None,
+    model_delegate_allowlist: list[str] | None = None,
 ) -> Settings:
     return Settings.model_construct(
         model=model,
@@ -28,6 +33,7 @@ def _settings(
         model_haiku=None,
         model_delegate_exclusions=model_delegate_exclusions or [],
         model_delegate_approval=model_delegate_approval or [],
+        model_delegate_allowlist=model_delegate_allowlist or [],
         anthropic_auth_token="",
     )
 
@@ -306,6 +312,116 @@ def test_enforce_noop_when_no_exclusions():
 
 
 # =============================================================================
+# hard enforcement: _enforce_delegate_allowlist
+# =============================================================================
+
+
+def _enforce_allowlist(settings, model: str, system=None):
+    request = _messages_request(model, system=system)
+    resolved = ModelRouter(settings).resolve(model)
+    _enforce_delegate_allowlist(settings, request, resolved.provider_model_ref)
+
+
+def test_allowlist_enforce_blocks_outside_union_for_subagent():
+    settings = _settings(model_delegate_allowlist=["open_router/deepseek/*"])
+    with pytest.raises(InvalidRequestError, match="delegate allowlist"):
+        _enforce_allowlist(
+            settings,
+            "anthropic/open_router/qwen/qwen-4",
+            system=None,
+        )
+
+
+def test_allowlist_enforce_allows_model_in_allowlist():
+    settings = _settings(model_delegate_allowlist=["open_router/deepseek/*"])
+    _enforce_allowlist(
+        settings,
+        "anthropic/open_router/deepseek/deepseek-v4-pro",
+        system=None,
+    )
+
+
+def test_allowlist_enforce_allows_model_in_approval():
+    settings = _settings(
+        model_delegate_allowlist=["open_router/deepseek/*"],
+        model_delegate_approval=["open_router/qwen/*"],
+    )
+    _enforce_allowlist(
+        settings,
+        "anthropic/open_router/qwen/qwen-4",
+        system=None,
+    )
+
+
+def test_allowlist_enforce_blocks_no_thinking_variant():
+    settings = _settings(model_delegate_allowlist=["open_router/deepseek/*"])
+    with pytest.raises(InvalidRequestError, match="delegate allowlist"):
+        _enforce_allowlist(
+            settings,
+            "claude-3-freecc-no-thinking/open_router/qwen/qwen-4",
+            system=None,
+        )
+
+
+def test_allowlist_enforce_allows_main_loop_even_if_outside_union():
+    settings = _settings(model_delegate_allowlist=["open_router/deepseek/*"])
+    _enforce_allowlist(
+        settings,
+        "anthropic/open_router/qwen/qwen-4",
+        system="You are Claude Code, Anthropic's official CLI",
+    )
+
+
+def test_allowlist_enforce_noop_when_empty():
+    settings = _settings()
+    _enforce_allowlist(
+        settings,
+        "anthropic/open_router/qwen/qwen-4",
+        system=None,
+    )
+
+
+def test_allowlist_enforce_matches_catalog_for_stripped_patterns():
+    """Gateway and catalog agree on vendor-form patterns (``deepseek/*``).
+
+    A pattern written without the provider segment must admit the same refs
+    the catalog admits — otherwise a model listed in /v1/models/delegates
+    would be falsely 400'd at request time."""
+    settings = _settings(model_delegate_allowlist=["deepseek/*"])
+    _enforce_allowlist(
+        settings,
+        "anthropic/open_router/deepseek/deepseek-v4-pro",
+        system=None,
+    )
+    # Direct-provider 2-part ref admitted by the catalog is admitted here too.
+    _enforce_allowlist(settings, "anthropic/deepseek/deepseek-chat", system=None)
+
+
+def test_allowlist_enforce_blocks_closed_vendor_not_in_approval():
+    """A US-closed-vendor model matching only the allowlist is absent from the
+    catalog and must be blocked at the gateway too (no side-channel run)."""
+    settings = _settings(model_delegate_allowlist=["open_router/*"])
+    with pytest.raises(InvalidRequestError, match="delegate allowlist"):
+        _enforce_allowlist(
+            settings,
+            "anthropic/open_router/openai/gpt-oss-120b",
+            system=None,
+        )
+
+
+def test_allowlist_enforce_allows_closed_vendor_via_approval():
+    settings = _settings(
+        model_delegate_allowlist=["open_router/deepseek/*"],
+        model_delegate_approval=["open_router/openai/*"],
+    )
+    _enforce_allowlist(
+        settings,
+        "anthropic/open_router/openai/gpt-oss-120b",
+        system=None,
+    )
+
+
+# =============================================================================
 # MODEL_DELEGATE_APPROVAL — /v1/models/delegates response shape
 # =============================================================================
 
@@ -508,6 +624,39 @@ def test_delegates_approval_null_registry():
     assert f"{PREFIX}open_router/qwen/qwen-3.5" in body["approval"]
     assert f"{PREFIX}deepseek/deepseek-chat" in body["data"]
     assert f"{PREFIX}open_router/qwen/qwen-3.5" not in body["data"]
+
+
+# =============================================================================
+# MODEL_DELEGATE_ALLOWLIST — /v1/models/delegates endpoint shape
+# =============================================================================
+
+
+def test_delegates_allowlist_filters_free_models():
+    """Allowlist set → only matched models are free; approval models still present."""
+    app = create_app(lifespan_enabled=False)
+    settings = _settings(
+        model_opus="open_router/deepseek/deepseek-v4-flash",
+        model_delegate_allowlist=["open_router/deepseek/*"],
+        model_delegate_approval=["open_router/qwen/*"],
+    )
+    registry = ProviderRegistry()
+    registry.cache_model_ids("open_router", {"qwen/qwen-4", "ministral/mistral-small"})
+
+    body = _delegates_full(app, settings, registry=registry)
+
+    # DeepSeek models are in allowlist → free
+    assert f"{PREFIX}open_router/deepseek/deepseek-v4-flash" in body["data"]
+    assert f"{PREFIX}deepseek/deepseek-chat" in body["data"]
+    # Qwen matches approval → approval
+    assert f"{PREFIX}open_router/qwen/qwen-4" in body["approval"]
+    assert f"{PREFIX}open_router/qwen/qwen-4" not in body["data"]
+    # Ministral is outside the union → absent
+    assert f"{PREFIX}open_router/ministral/mistral-small" not in body["data"]
+    assert f"{PREFIX}open_router/ministral/mistral-small" not in body["approval"]
+    # Shape unchanged
+    assert "data" in body
+    assert "approval" in body
+    assert "models" in body
 
 
 # =============================================================================
