@@ -519,6 +519,19 @@ FIELDS: tuple[ConfigFieldSpec, ...] = (
         ),
     ),
     ConfigFieldSpec(
+        "CLASSIFIER_ROUTE",
+        "Classifier Route",
+        "models",
+        settings_attr="classifier_route",
+        description=(
+            "Optional provider/model route for Claude Code auto-mode safety "
+            "classifier side-queries. These small non-streaming requests fire on "
+            "every sensitive action; route them to a fast/cheap/stable model to "
+            "keep auto mode responsive (e.g. open_router/google/gemini-2.5-flash). "
+            "Empty uses the session model."
+        ),
+    ),
+    ConfigFieldSpec(
         "ENABLE_MODEL_THINKING",
         "Enable Thinking",
         "thinking",

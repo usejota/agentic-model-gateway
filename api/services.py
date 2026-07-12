@@ -21,6 +21,7 @@ from core.trace import api_messages_request_snapshot, trace_event, traced_async_
 from providers.base import BaseProvider
 from providers.exceptions import InvalidRequestError, OverloadedError, ProviderError
 
+from .detection import is_safety_classifier_request
 from .gateway_model_ids import ONE_M_SUFFIX, decode_gateway_model_id
 from .model_router import ModelRouter, RoutedMessagesRequest
 from .models.anthropic import MessagesRequest, TokenCountRequest
@@ -234,6 +235,7 @@ class ClaudeProxyService:
             _require_non_empty_messages(request_data.messages)
 
             routed = self._model_router.resolve_messages_request(request_data)
+            routed = self._maybe_reroute_for_classifier(routed)
             # Reroute image-bearing requests to the vision model BEFORE
             # enforcing delegate exclusions: a subagent image turn whose
             # primary model is excluded would otherwise be rejected (400)
@@ -461,6 +463,51 @@ class ClaudeProxyService:
         trace_event(
             stage="routing",
             event="api.route.image_reroute",
+            source="api",
+            provider_id=resolved.provider_id,
+            provider_model=resolved.provider_model,
+            original_provider_id=routed.resolved.provider_id,
+            original_provider_model=routed.resolved.provider_model,
+            gateway_model=routed.request.model,
+        )
+        return RoutedMessagesRequest(request=new_request, resolved=resolved)
+
+    def _maybe_reroute_for_classifier(
+        self, routed: RoutedMessagesRequest
+    ) -> RoutedMessagesRequest:
+        """Swap the primary provider to ``CLASSIFIER_ROUTE`` for safety classifier requests.
+
+        No-op when ``CLASSIFIER_ROUTE`` is unset or the request doesn't match the
+        safety classifier signature. When triggered, the request body is deep-copied
+        and re-pointed to the CLASSIFIER_ROUTE provider/model so the rest of the
+        pipeline (preflight, dispatch, fallback) sees the new target.
+        """
+        classifier_route = self._settings.classifier_route_parts
+        if classifier_route is None:
+            return routed
+        if not is_safety_classifier_request(routed.request):
+            return routed
+
+        target_provider_id, target_model = classifier_route
+        if (
+            routed.resolved.provider_id == target_provider_id
+            and routed.resolved.provider_model == target_model
+        ):
+            return routed
+
+        resolved = self._model_router.resolve(f"{target_provider_id}/{target_model}")
+        new_request = routed.request.model_copy(deep=True)
+        new_request.model = resolved.provider_model
+        logger.info(
+            "Classifier reroute: provider={} model={} (from provider={} model={})",
+            resolved.provider_id,
+            resolved.provider_model,
+            routed.resolved.provider_id,
+            routed.resolved.provider_model,
+        )
+        trace_event(
+            stage="routing",
+            event="api.route.classifier_reroute",
             source="api",
             provider_id=resolved.provider_id,
             provider_model=resolved.provider_model,
