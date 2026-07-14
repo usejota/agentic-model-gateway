@@ -1,32 +1,32 @@
 #!/usr/bin/env sh
 #
-# install-claudim.sh — install the `claudim` launcher globally so developers can
+# install-buxexa.sh — install the `buxexa` launcher globally so developers can
 # run Claude Code against the Jota AI Gateway from anywhere.
 #
 # One-liner (no repo clone needed):
-#   curl -fsSL https://raw.githubusercontent.com/usejota/agentic-model-gateway/main/scripts/install-claudim.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/usejota/agentic-model-gateway/main/scripts/install-buxexa.sh | sh
 #
-# Renameable: set CLAUDIM_NAME=loclaudim (or any [A-Za-z0-9_-]+ name) to install
+# Renameable: set BUXEXA_NAME=lobuxexa (or any [A-Za-z0-9_-]+ name) to install
 # side-by-side under that name. The launcher derives its own name from $0 at
 # runtime, so a different install name just works. Local-test wrapper:
-#   CLAUDIM_NAME=loclaudim CLAUDIM_DEFAULT_BASE_URL=http://localhost:8082 \
-#     bash scripts/install-claudim.sh
+#   BUXEXA_NAME=lobuxexa BUXEXA_DEFAULT_BASE_URL=http://localhost:8082 \
+#     bash scripts/install-buxexa.sh
 #
-# Installs to ~/.local/bin/${CLAUDIM_NAME:-claudim} (override with CLAUDIM_BIN_DIR).
+# Installs to ~/.local/bin/${BUXEXA_NAME:-buxexa} (override with BUXEXA_BIN_DIR).
 # Pre-reqs the dev still needs: Tailscale (logged in to jota.ai) and Claude Code
 # (`npm install -g @anthropic-ai/claude-code`). The script warns if either is missing.
 set -eu
 
 REPO_RAW="https://raw.githubusercontent.com/usejota/agentic-model-gateway/main"
-SRC="${CLAUDIM_SRC:-${REPO_RAW}/deploy/claudim}"
-BIN_DIR="${CLAUDIM_BIN_DIR:-${HOME}/.local/bin}"
+SRC="${BUXEXA_SRC:-${REPO_RAW}/deploy/buxexa}"
+BIN_DIR="${BUXEXA_BIN_DIR:-${HOME}/.local/bin}"
 # Install NAME — parameterizes the launcher so it is renameable. Defaults to
-# `claudim` (retro-compat: unchanged behavior). Set CLAUDIM_NAME=loclaudim (or
+# `buxexa` (retro-compat: unchanged behavior). Set BUXEXA_NAME=lobuxexa (or
 # any name) to install side-by-side under that name; the launcher derives its
 # own name from $0 at runtime, so a different install name just works. The repo
-# SOURCE file keeps its canonical filename (deploy/claudim); only the installed
+# SOURCE file keeps its canonical filename (deploy/buxexa); only the installed
 # binary takes NAME.
-NAME="${CLAUDIM_NAME:-claudim}"
+NAME="${BUXEXA_NAME:-buxexa}"
 DEST="${BIN_DIR}/${NAME}"
 
 say()  { printf '==> %s\n' "$*"; }
@@ -39,7 +39,7 @@ fail() { printf 'error: %s\n' "$*" >&2; exit 1; }
 # directory. Runs after fail() is defined so the clear message prints (validation
 # before any mkdir/fetch).
 case "${NAME}" in
-  *[!A-Za-z0-9_-]* | "" ) fail "CLAUDIM_NAME must match [A-Za-z0-9_-]+ (got: '${NAME}')" ;;
+  *[!A-Za-z0-9_-]* | "" ) fail "BUXEXA_NAME must match [A-Za-z0-9_-]+ (got: '${NAME}')" ;;
 esac
 
 # fetch URL DEST — curl or wget, picked once. Returns 0 on success, 1 on failure
@@ -47,7 +47,7 @@ esac
 # sibling temp file and atomically moves on success, so a mid-stream failure
 # (flaky link, transient 404) leaves any existing destination intact instead of
 # truncating it to a partial/empty file — a corrupt launcher would break every
-# later claudim run.
+# later buxexa run.
 fetch() {
   _ftmp="$2.tmp.$$"
   if command -v curl >/dev/null 2>&1; then
@@ -63,14 +63,14 @@ mkdir -p "${BIN_DIR}"
 say "Installing ${NAME} to ${DEST}"
 fetch "${SRC}" "${DEST}" || fail "download failed from ${SRC}"
 # Bake a default gateway URL into the installed launcher when
-# CLAUDIM_DEFAULT_BASE_URL is set. This lets a side-by-side local-test wrapper
-# (e.g. CLAUDIM_NAME=loclaudim) point at its own gateway without env vars, while
-# CLAUDIM_BASE_URL at runtime still wins if set.
-if [ -n "${CLAUDIM_DEFAULT_BASE_URL:-}" ]; then
-  say "Baking default gateway URL: ${CLAUDIM_DEFAULT_BASE_URL}"
-  _esc="$(printf '%s' "${CLAUDIM_DEFAULT_BASE_URL}" | sed 's/[&\\/]/\\&/g')"
-  sed -i.bak "s|^CLAUDIM_BAKED_BASE_URL=\"\"|CLAUDIM_BAKED_BASE_URL=\"${_esc}\"|" "${DEST}" && rm -f "${DEST}.bak"
-  grep -q "^CLAUDIM_BAKED_BASE_URL=\"${_esc}\"" "${DEST}" || fail "failed to bake CLAUDIM_DEFAULT_BASE_URL into ${DEST}"
+# BUXEXA_DEFAULT_BASE_URL is set. This lets a side-by-side local-test wrapper
+# (e.g. BUXEXA_NAME=lobuxexa) point at its own gateway without env vars, while
+# BUXEXA_BASE_URL at runtime still wins if set.
+if [ -n "${BUXEXA_DEFAULT_BASE_URL:-}" ]; then
+  say "Baking default gateway URL: ${BUXEXA_DEFAULT_BASE_URL}"
+  _esc="$(printf '%s' "${BUXEXA_DEFAULT_BASE_URL}" | sed 's/[&\\/]/\\&/g')"
+  sed -i.bak "s|^BUXEXA_BAKED_BASE_URL=\"\"|BUXEXA_BAKED_BASE_URL=\"${_esc}\"|" "${DEST}" && rm -f "${DEST}.bak"
+  grep -q "^BUXEXA_BAKED_BASE_URL=\"${_esc}\"" "${DEST}" || fail "failed to bake BUXEXA_DEFAULT_BASE_URL into ${DEST}"
 fi
 chmod +x "${DEST}"
 say "Installed."
@@ -98,9 +98,9 @@ ${NAME} installed. Next:
        ${NAME}
        ${NAME} "explain this repo"
   Args pass straight through to Claude Code. Override the gateway host/tailnet
-  with CLAUDIM_HOST / CLAUDIM_TAILNET if needed (see \`${NAME}\` header comments).
+  with BUXEXA_HOST / BUXEXA_TAILNET if needed (see \`${NAME}\` header comments).
   Local-test wrapper (side-by-side with prod): install a second copy under
   another name pointing at your local gateway, e.g.:
-    CLAUDIM_NAME=loclaudim CLAUDIM_DEFAULT_BASE_URL=http://localhost:8082 bash scripts/install-claudim.sh
+    BUXEXA_NAME=lobuxexa BUXEXA_DEFAULT_BASE_URL=http://localhost:8082 bash scripts/install-buxexa.sh
   Update ${NAME} later with: ${NAME} upgrade
 NEXT

@@ -127,27 +127,27 @@ pkill -f 'compute start-iap-tunnel'   # kill stale tunnels
 fcc-connect                           # reconnect
 ```
 
-## Renaming & local-test installs (claudim)
+## Renaming & local-test installs (buxexa)
 
-The `claudim` wrapper derives its name from `$0` at runtime — the name is not
-a hard dependency. **`CLAUDIM_NAME`** at install time produces a different
+The `buxexa` wrapper derives its name from `$0` at runtime — the name is not
+a hard dependency. **`BUXEXA_NAME`** at install time produces a different
 binary name, skill names, and allowlist:
 
 ```sh
-CLAUDIM_NAME=buxexa bash scripts/install-claudim.sh  # → command `buxexa`
+BUXEXA_NAME=buxexa bash scripts/install-buxexa.sh  # → command `buxexa`
 ```
 
-**`loclaudim`** is a **convention** for a local-test install, not the canonical
+**`lobuxexa`** is a **convention** for a local-test install, not the canonical
 name:
 
 ```sh
-CLAUDIM_NAME=loclaudim CLAUDIM_DEFAULT_BASE_URL=http://localhost:8082 \
-  bash scripts/install-claudim.sh
+BUXEXA_NAME=lobuxexa BUXEXA_DEFAULT_BASE_URL=http://localhost:8082 \
+  bash scripts/install-buxexa.sh
 ```
 
-Gateway URL precedence: `CLAUDIM_BASE_URL` (env) > baked `CLAUDIM_DEFAULT_BASE_URL` > `http://<host>.<tailnet>:<port>`.
+Gateway URL precedence: `BUXEXA_BASE_URL` (env) > baked `BUXEXA_DEFAULT_BASE_URL` > `http://<host>.<tailnet>:<port>`.
 
-Env vars keep the `CLAUDIM_` prefix regardless of binary name (stable interface).
+Env vars keep the `BUXEXA_` prefix regardless of binary name (stable interface).
 
 ## Verification checklist
 
