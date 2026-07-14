@@ -14,7 +14,11 @@ from loguru import logger
 from config.settings import Settings
 from core.anthropic import get_token_count, get_user_facing_error_message
 from core.anthropic.aggregate import aggregate_sse_to_message
-from core.anthropic.image_detection import has_images
+from core.anthropic.image_detection import (
+    has_image_in_last_user_turn,
+    has_images,
+    strip_to_placeholders,
+)
 from core.anthropic.sse import ANTHROPIC_SSE_RESPONSE_HEADERS
 from core.trace import api_messages_request_snapshot, trace_event, traced_async_stream
 from providers.base import BaseProvider
@@ -85,6 +89,40 @@ def _log_unexpected_service_exception(
 def _require_non_empty_messages(messages: list[Any]) -> None:
     if not messages:
         raise InvalidRequestError("messages cannot be empty")
+
+
+def _strip_old_images_in_request(
+    request: MessagesRequest,
+) -> tuple[MessagesRequest, int]:
+    """Return a copy of ``request`` with all image blocks replaced by placeholders.
+
+    Used when the service decides NOT to reroute to ``IMAGE_ROUTE`` (the current
+    user turn is text-only) but older turns still carry image content. Text-only
+    primary models would 400 on raw image blocks; stripping on the deep-copied
+    request keeps the session on a text-only model and lets the user continue
+    the conversation.
+
+    The roundtrip is via ``model_dump`` + ``model_validate`` so the pure-dict
+    :func:`strip_to_placeholders` utility can do the work without needing to
+    know about the Pydantic ``Message`` schema. The image ``ImageCache`` is
+    discarded — this is a one-way strip; we never restore the images (the
+    vision reroute, when the user actually needs to see them, builds a fresh
+    request carrying the original bytes).
+
+    Returns the (possibly unchanged) request and the count of image blocks
+    replaced. A count of 0 means the input had no images and the request is
+    returned unchanged.
+    """
+    data = request.model_dump()
+    messages = data.get("messages") or []
+    if not has_images(messages):
+        return request, 0
+    stripped, cache = strip_to_placeholders(messages)
+    if len(cache) == 0:
+        return request, 0
+    data["messages"] = stripped
+    new_request = MessagesRequest.model_validate(data)
+    return new_request, len(cache)
 
 
 class ClaudeProxyService:
@@ -182,7 +220,7 @@ class ClaudeProxyService:
                 # Wrap with cross-model fallback: if the primary stream errors with an
                 # overload/5xx failure *before any output*, retry FALLBACK_MODELS in
                 # order. Once any byte streams, we commit and pass through unchanged.
-                fallbacks = self._fallback_candidates(request_data)
+                fallbacks = self._fallback_candidates(routed.request)
                 streamed = self._stream_with_fallback(
                     primary, fallbacks, input_tokens, request_id
                 )
@@ -260,59 +298,91 @@ class ClaudeProxyService:
     def _maybe_reroute_for_images(
         self, routed: RoutedMessagesRequest
     ) -> RoutedMessagesRequest:
-        """Swap the primary provider to ``IMAGE_ROUTE`` when the request has images.
+        """Swap the primary provider to ``IMAGE_ROUTE`` when the *current* turn
+        carries an image.
 
-        No-op when ``IMAGE_ROUTE`` is unset (current behavior preserved) or the
-        request carries no image content. When triggered, the request body is
-        deep-copied and re-pointed to the IMAGE_ROUTE provider/model so the rest
-        of the pipeline (preflight, dispatch, fallback) sees the new target.
-        Messages pass through verbatim — the multimodal provider sees the real
-        base64 source, no stripping.
+        Rerouting is scoped to the last user turn, not the full history: Claude
+        Code re-sends the entire conversation on every turn, so a single image
+        pasted in a previous turn would otherwise lock every subsequent turn
+        (including text-only follow-ups) to the vision model. Long text-only
+        turns routed to ``IMAGE_ROUTE`` are wasted tokens AND can hit vision
+        providers that truncate tool-heavy streams — the gateway's been
+        logging 100% truncation rate for one of the common vision targets
+        (qwen3-vl-235b) on Opus + max-effort sessions with old images in
+        history. Scoping to the last user turn fixes that.
 
-        The contract is intentionally simple: ``IMAGE_ROUTE`` set + image in
-        request → reroute. The user opts in by setting the var; if they want a
-        vision-capable primary (e.g. Claude) to handle images themselves, they
-        leave ``IMAGE_ROUTE`` unset and rely on whatever the primary picks. We
-        don't introspect provider/model capabilities because the transport
-        (``native_anthropic`` vs ``openai_chat``) doesn't predict whether the
-        *model* accepts images — DeepSeek on the Anthropic-format transport is
-        text-only, while OpenRouter routes to all kinds of models.
+        Three cases, in order:
+        - ``IMAGE_ROUTE`` unset → no-op (preserves behavior).
+        - Last user turn has an image → reroute to the vision model (preserves
+          the contract for the case that actually needs vision).
+        - Last user turn is text-only, but the history has images → strip old
+          images to ``[Image #N]`` placeholders on a deep-copied request so
+          the text-only primary doesn't 400. No model swap; the primary sees
+          the placeholder, the user keeps the session on a text-only model
+          for the duration of the conversation.
+        - No images anywhere → no-op (preserves behavior).
         """
         image_route = self._settings.image_route_parts
         if image_route is None:
             return routed
+
+        if has_image_in_last_user_turn(routed.request.messages):
+            # The current turn carries the image — reroute as before.
+            target_provider_id, target_model = image_route
+            if (
+                routed.resolved.provider_id == target_provider_id
+                and routed.resolved.provider_model == target_model
+            ):
+                # Already targeting the exact image_route provider+model.
+                return routed
+
+            resolved = self._model_router.resolve(
+                f"{target_provider_id}/{target_model}"
+            )
+            new_request = routed.request.model_copy(deep=True)
+            new_request.model = resolved.provider_model
+            logger.info(
+                "Image reroute: provider={} model={} (from provider={} model={})",
+                resolved.provider_id,
+                resolved.provider_model,
+                routed.resolved.provider_id,
+                routed.resolved.provider_model,
+            )
+            trace_event(
+                stage="routing",
+                event="api.route.image_reroute",
+                source="api",
+                provider_id=resolved.provider_id,
+                provider_model=resolved.provider_model,
+                original_provider_id=routed.resolved.provider_id,
+                original_provider_model=routed.resolved.provider_model,
+                gateway_model=routed.request.model,
+            )
+            return RoutedMessagesRequest(request=new_request, resolved=resolved)
+
         if not has_images(routed.request.messages):
             return routed
 
-        target_provider_id, target_model = image_route
-        if (
-            routed.resolved.provider_id == target_provider_id
-            and routed.resolved.provider_model == target_model
-        ):
-            # Already targeting the exact image_route provider+model.
+        # Last user turn is text-only but older turns still have images. Strip
+        # the old images to placeholders so the text-only primary can serve
+        # this turn without a 400. The vision model isn't needed here — the
+        # user isn't asking about the image in this turn.
+        stripped_request, stripped_count = _strip_old_images_in_request(routed.request)
+        if stripped_count == 0:
             return routed
-
-        resolved = self._model_router.resolve(f"{target_provider_id}/{target_model}")
-        new_request = routed.request.model_copy(deep=True)
-        new_request.model = resolved.provider_model
         logger.info(
-            "Image reroute: provider={} model={} (from provider={} model={})",
-            resolved.provider_id,
-            resolved.provider_model,
-            routed.resolved.provider_id,
-            routed.resolved.provider_model,
+            "Image strip (no reroute): stripped={} (current turn text-only, "
+            "history had images)",
+            stripped_count,
         )
         trace_event(
             stage="routing",
-            event="api.route.image_reroute",
+            event="api.route.image_strip",
             source="api",
-            provider_id=resolved.provider_id,
-            provider_model=resolved.provider_model,
-            original_provider_id=routed.resolved.provider_id,
-            original_provider_model=routed.resolved.provider_model,
+            stripped_count=stripped_count,
             gateway_model=routed.request.model,
         )
-        return RoutedMessagesRequest(request=new_request, resolved=resolved)
+        return RoutedMessagesRequest(request=stripped_request, resolved=routed.resolved)
 
     def _maybe_reroute_for_classifier(
         self, routed: RoutedMessagesRequest

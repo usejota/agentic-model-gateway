@@ -17,6 +17,8 @@ import json
 from collections.abc import AsyncIterator
 from typing import Any
 
+from .errors import StreamErrorEnvelope
+
 
 def _parse_sse(chunk: str) -> list[dict[str, Any]]:
     """Parse ``data:`` JSON payloads out of one SSE text chunk.
@@ -107,6 +109,16 @@ async def aggregate_sse_to_message(
                     stop_sequence = delta.get("stop_sequence")
                 if isinstance(event.get("usage"), dict):
                     usage.update(event["usage"])
+
+            elif etype == "error":
+                # A top-level ``event: error`` is a transport failure, NOT part
+                # of the assistant's response. The non-streaming Messages path
+                # (the auto-mode safety classifier, count_tokens, etc.) must
+                # fail-closed: a 200 with an empty body would silently pass
+                # auto-mode's token check. Raising here causes the route
+                # handler to return HTTP 5xx (the same behavior as a streaming
+                # client receiving the event from the SDK).
+                raise StreamErrorEnvelope(event)
 
     # Finalize tool_use blocks: parse the accumulated partial_json into `input`.
     for index, parts in tool_json_parts.items():

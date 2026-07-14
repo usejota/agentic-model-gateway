@@ -389,18 +389,29 @@ class SSEBuilder:
         yield self.content_block_delta(error_index, "text_delta", error_message)
         yield self.content_block_stop(error_index)
 
-    def emit_top_level_error(self, error_message: str) -> str:
-        """Emit a top-level ``event: error`` (not assistant text) for transport failures."""
-        return self._format_event(
-            "error",
-            {
-                "type": "error",
-                "error": {
-                    "type": "api_error",
-                    "message": error_message,
-                },
+    def emit_top_level_error(
+        self,
+        error_message: str,
+        *,
+        error_type: str = "api_error",
+    ) -> str:
+        """Emit a top-level ``event: error`` (not assistant text) for transport failures.
+
+        ``error_type`` follows the Anthropic ``ProviderError`` taxonomy
+        (``api_error``, ``overloaded_error``, ``rate_limit_error``, …). The
+        message id is included when known so the client can correlate the
+        error with any in-flight ``message_start`` it already received.
+        """
+        envelope: dict[str, Any] = {
+            "type": "error",
+            "error": {
+                "type": error_type,
+                "message": error_message,
             },
-        )
+        }
+        if self.message_id is not None:
+            envelope["message_id"] = self.message_id
+        return self._format_event("error", envelope)
 
     @property
     def accumulated_text(self) -> str:

@@ -324,7 +324,23 @@ class EmittedNativeSseTracker:
         input_tokens: int,
         log_raw_sse_events: bool,
     ) -> Iterator[str]:
-        """Close dangling blocks, emit a text error block at a fresh index, then message tail."""
+        """Emit a top-level ``event: error`` then the message tail.
+
+        The Anthropic SDK treats a top-level ``event: error`` as a transport
+        failure (NOT part of the assistant's response). Earlier versions of
+        this helper emitted the error as a ``content_block`` of type ``text``
+        — Claude Code then rendered that text as if the model had said it,
+        killing the user's turn. The new top-level shape surfaces the failure
+        correctly: the partial response (the content blocks already streamed)
+        is abandoned and the failure is reported.
+
+        ``iter_close_unclosed_blocks`` is called by the transport BEFORE this
+        method so the partial state is consistent (no dangling text/tool blocks)
+        before the error is declared. ``message_start`` was already emitted
+        with this tracker's ``message_id``; the new error data includes the
+        same id so the client can correlate the failure with the in-flight
+        message.
+        """
         mid = self.message_id or f"msg_{uuid.uuid4()}"
         model = self.model or (getattr(request, "model", "") or "")
         sse = SSEBuilder(
@@ -333,8 +349,7 @@ class EmittedNativeSseTracker:
             input_tokens,
             log_raw_events=log_raw_sse_events,
         )
-        sse.blocks.next_index = self.next_content_index()
-        yield from sse.emit_error(error_message)
+        yield sse.emit_top_level_error(error_message)
         yield sse.message_delta("end_turn", 1)
         yield sse.message_stop()
 
