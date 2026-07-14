@@ -437,6 +437,13 @@ FIELDS: tuple[ConfigFieldSpec, ...] = (
         description="Optional provider/model route for Haiku requests.",
     ),
     ConfigFieldSpec(
+        "MODEL_FABLE",
+        "Fable Override",
+        "models",
+        settings_attr="model_fable",
+        description="Optional provider/model route for Fable requests.",
+    ),
+    ConfigFieldSpec(
         "FALLBACK_MODELS",
         "Fallback Models",
         "models",
@@ -492,6 +499,14 @@ FIELDS: tuple[ConfigFieldSpec, ...] = (
         "thinking",
         "tri_boolean",
         settings_attr="enable_haiku_thinking",
+        description="Blank inherits Enable Thinking.",
+    ),
+    ConfigFieldSpec(
+        "ENABLE_FABLE_THINKING",
+        "Fable Thinking",
+        "thinking",
+        "tri_boolean",
+        settings_attr="enable_fable_thinking",
         description="Blank inherits Enable Thinking.",
     ),
     ConfigFieldSpec(

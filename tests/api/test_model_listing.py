@@ -11,13 +11,16 @@ def _settings(
     *,
     model: str = "deepseek/deepseek-chat",
     model_opus: str | None = "open_router/anthropic/claude-opus",
+    model_sonnet: str | None = None,
     model_haiku: str | None = "deepseek/deepseek-chat",
+    model_fable: str | None = None,
 ) -> Settings:
     return Settings.model_construct(
         model=model,
         model_opus=model_opus,
-        model_sonnet=None,
+        model_sonnet=model_sonnet,
         model_haiku=model_haiku,
+        model_fable=model_fable,
         anthropic_auth_token="",
     )
 
@@ -224,3 +227,83 @@ def test_models_list_works_without_provider_registry():
         "claude-3-freecc-no-thinking/open_router/anthropic/claude-opus",
     ]
     assert "claude-sonnet-4-20250514" in ids
+
+
+def test_fable_alias_advertised_as_1m_when_override_supports_it():
+    app = create_app(lifespan_enabled=False)
+    settings = _settings(
+        model_opus=None,
+        model_fable="open_router/big-model",
+    )
+    registry = ProviderRegistry()
+    registry.cache_model_infos(
+        "open_router",
+        {
+            ProviderModelInfo(
+                "big-model", supports_thinking=True, context_window=1_000_000
+            ),
+        },
+    )
+    app.state.provider_registry = registry
+    app.dependency_overrides[get_settings] = lambda: settings
+
+    try:
+        response = TestClient(app).get("/v1/models")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    ids = [item["id"] for item in data]
+    display_names = {item["id"]: item["display_name"] for item in data}
+
+    assert "claude-fable-5[1m]" in ids
+    assert "claude-fable-5" not in ids
+    assert display_names["claude-fable-5[1m]"] == "Fable"
+
+
+def test_fable_alias_stays_bare_without_1m_override():
+    app = create_app(lifespan_enabled=False)
+    settings = _settings(
+        model_opus=None,
+        model_fable="open_router/small-model",
+    )
+    registry = ProviderRegistry()
+    registry.cache_model_infos(
+        "open_router",
+        {
+            ProviderModelInfo(
+                "small-model", supports_thinking=True, context_window=200_000
+            ),
+        },
+    )
+    app.state.provider_registry = registry
+    app.dependency_overrides[get_settings] = lambda: settings
+
+    try:
+        response = TestClient(app).get("/v1/models")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    ids = [item["id"] for item in response.json()["data"]]
+
+    assert "claude-fable-5" in ids
+    assert "claude-fable-5[1m]" not in ids
+
+
+def test_fable_alias_stays_bare_when_override_unset():
+    app = create_app(lifespan_enabled=False)
+    settings = _settings(model_opus=None, model_fable=None)
+    app.dependency_overrides[get_settings] = lambda: settings
+
+    try:
+        response = TestClient(app).get("/v1/models")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    ids = [item["id"] for item in response.json()["data"]]
+
+    assert "claude-fable-5" in ids
+    assert "claude-fable-5[1m]" not in ids

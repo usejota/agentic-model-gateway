@@ -42,6 +42,20 @@ class ModelRouter:
         self._settings = settings
 
     def resolve(self, claude_model_name: str) -> ResolvedModel:
+        # Claude Code's ``has1mContext()`` checks the model name it sent for a
+        # ``[1m]`` suffix. When the picker exposes the Fable override as
+        # ``claude-fable-5[1m]`` (see routes._append_alias_1m_if_override_supports),
+        # the request arrives here carrying that suffix. Strip it before
+        # resolve_model so the alias maps to MODEL_FABLE like the bare
+        # ``claude-fable-5`` does, and propagate one_m_context=True so the
+        # response-side metadata reflects the user's pick.
+        one_m_from_alias = claude_model_name.endswith(ONE_M_SUFFIX)
+        alias_for_resolution = (
+            claude_model_name[: -len(ONE_M_SUFFIX)]
+            if one_m_from_alias
+            else claude_model_name
+        )
+
         (
             direct_provider_id,
             direct_provider_model,
@@ -71,11 +85,11 @@ class ModelRouter:
                 one_m_context=one_m_context,
             )
 
-        provider_model_ref = self._settings.resolve_model(claude_model_name)
-        thinking_enabled = self._settings.resolve_thinking(claude_model_name)
+        provider_model_ref = self._settings.resolve_model(alias_for_resolution)
+        thinking_enabled = self._settings.resolve_thinking(alias_for_resolution)
         provider_id = Settings.parse_provider_type(provider_model_ref)
         provider_model = Settings.parse_model_name(provider_model_ref)
-        if provider_model != claude_model_name:
+        if provider_model != alias_for_resolution:
             logger.debug(
                 "MODEL MAPPING: '{}' -> '{}'", claude_model_name, provider_model
             )
@@ -85,6 +99,7 @@ class ModelRouter:
             provider_model=provider_model,
             provider_model_ref=provider_model_ref,
             thinking_enabled=thinking_enabled,
+            one_m_context=one_m_from_alias or one_m_context,
         )
 
     def _direct_provider_model(
