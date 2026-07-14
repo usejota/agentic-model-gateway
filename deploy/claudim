@@ -19,8 +19,27 @@
 #   CLAUDIM_PORT      proxy port                (default: 8082)
 #   CLAUDIM_TOKEN     proxy auth token          (default: freecc)
 #   CLAUDIM_WAIT      seconds to wait for proxy (default: 30)
+#   CLAUDIM_BASE_URL  override the gateway endpoint entirely (e.g.
+#                     http://localhost:8082) for LOCAL TESTING against a
+#                     gateway that is NOT on the tailnet. When set, the
+#                     tailscale-connected check and the nc reachability probe
+#                     are skipped (reachable() falls back to its curl branch).
 #
 set -euo pipefail
+
+# Invocation name — drives user-facing messages and the `upgrade` target.
+# Derived from $0 so the launcher is renameable: install it as `claudim`
+# (default), `loclaudim`, or any other name and every self-reference follows.
+# "claudim" is the default install name, NOT a hard dependency. (CLAUDIM_*
+# env vars stay the stable public interface regardless of the binary name —
+# retro-compat for existing shell configs.)
+SELF="${0##*/}"
+
+# Baked defaults — the installer may stamp these at install time so a named
+# install (e.g. a local-test wrapper) points at its own gateway without env
+# vars. Empty = use CLAUDIM_* env / built-in defaults. DO NOT rename these
+# variables or the marker comments; scripts/install-claudim.sh seds them.
+CLAUDIM_BAKED_BASE_URL=""
 
 HOST="${CLAUDIM_HOST:-fcc-proxy}"
 TAILNET="${CLAUDIM_TAILNET:-tail576af6.ts.net}"
@@ -29,10 +48,10 @@ TOKEN="${CLAUDIM_TOKEN:-freecc}"
 WAIT="${CLAUDIM_WAIT:-30}"
 
 FQDN="${HOST}.${TAILNET}"
-BASE_URL="http://${FQDN}:${PORT}"
+BASE_URL="${CLAUDIM_BASE_URL:-${CLAUDIM_BAKED_BASE_URL:-http://${FQDN}:${PORT}}}"
 
-say()  { echo "[claudim] $*" >&2; }
-die()  { echo "[claudim] error: $*" >&2; exit 1; }
+say()  { echo "[${SELF}] $*" >&2; }
+die()  { echo "[${SELF}] error: $*" >&2; exit 1; }
 
 # Self-update of the claudim launcher ONLY. Intercepted as the bare first arg so it
 # never reaches `claude` (this updates claudim, NOT Claude Code — for the latter use
@@ -40,27 +59,47 @@ die()  { echo "[claudim] error: $*" >&2; exit 1; }
 case "${1:-}" in
   upgrade|--upgrade|self-update|--self-update)
     INSTALLER="${CLAUDIM_INSTALLER:-https://raw.githubusercontent.com/usejota/agentic-model-gateway/main/scripts/install-claudim.sh}"
-    say "upgrading claudim from ${INSTALLER}"
+    say "upgrading ${SELF} from ${INSTALLER}"
+    # Pass CLAUDIM_NAME so the installer reinstalls under the CURRENT binary
+    # name (e.g. `loclaudim upgrade` stays `loclaudim`, doesn't revert to the
+    # default `claudim`). The installer source filename is stable; the install
+    # name is what's parameterized.
+    # Extract any baked gateway URL from the current binary so re-install
+    # preserves it (e.g. a local-test wrapper keeps pointing at localhost).
+    _baked="$(sed -n 's/^CLAUDIM_BAKED_BASE_URL="\(.*\)"$/\1/p' "$0" | head -1)"
+    export CLAUDIM_NAME="${SELF}"
+    [ -n "${_baked}" ] && export CLAUDIM_DEFAULT_BASE_URL="${_baked}"
+    # Shell-quote the installer URL instead of interpolating it into a string the
+    # shell re-parses: CLAUDIM_INSTALLER is user-controlled (env), so a value with
+    # shell metacharacters could otherwise inject commands into the upgrade
+    # subshell. printf %q makes it safe to embed.
+    _installer_q="$(printf '%q' "${INSTALLER}")"
     if command -v curl >/dev/null 2>&1; then
-      exec sh -c "curl -fsSL '${INSTALLER}' | sh"
+      exec sh -c "curl -fsSL ${_installer_q} | sh"
     elif command -v wget >/dev/null 2>&1; then
-      exec sh -c "wget -qO- '${INSTALLER}' | sh"
+      exec sh -c "wget -qO- ${_installer_q} | sh"
     fi
-    die "need curl or wget to upgrade claudim"
+    die "need curl or wget to upgrade ${SELF}"
     ;;
 esac
 
 command -v claude >/dev/null 2>&1 || die "claude not found. Install: npm install -g @anthropic-ai/claude-code"
-command -v tailscale >/dev/null 2>&1 || die "tailscale not found. Install Tailscale and log in to the jota.ai tailnet."
 
-# Must be connected to the tailnet.
-if ! tailscale status >/dev/null 2>&1; then
-  die "not connected to the tailnet. Run 'tailscale up' (or open the Tailscale app) and retry."
+# Tailscale checks only apply to the default tailnet path. When CLAUDIM_BASE_URL
+# overrides the endpoint (local testing against a non-tailnet gateway), skip
+# them and let reachable() probe the URL directly via its curl branch.
+if [ -z "${CLAUDIM_BASE_URL:-}${CLAUDIM_BAKED_BASE_URL}" ]; then
+  command -v tailscale >/dev/null 2>&1 || die "tailscale not found. Install Tailscale and log in to the jota.ai tailnet."
+
+  # Must be connected to the tailnet.
+  if ! tailscale status >/dev/null 2>&1; then
+    die "not connected to the tailnet. Run 'tailscale up' (or open the Tailscale app) and retry."
+  fi
 fi
 
 # Wait for the gateway to be reachable (it may be briefly unreachable; node could be asleep).
 reachable() {
-  if command -v nc >/dev/null 2>&1; then
+  if [ -z "${CLAUDIM_BASE_URL:-}${CLAUDIM_BAKED_BASE_URL}" ] && command -v nc >/dev/null 2>&1; then
     nc -z -w 3 "${FQDN}" "${PORT}" >/dev/null 2>&1
   else
     curl -s -o /dev/null -m 3 "${BASE_URL}/v1/models" -H "x-api-key: ${TOKEN}"
