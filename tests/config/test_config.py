@@ -1106,3 +1106,41 @@ class TestPerModelMapping:
         assert refs[2].provider_id == "open_router"
         assert refs[2].model_id == "anthropic/claude-opus"
         assert refs[2].sources == ("MODEL_OPUS",)
+
+
+class TestProxyUserTokens:
+    def test_empty_yields_empty_mapping(self, monkeypatch):
+        from free_claude_code.config.settings import Settings
+
+        monkeypatch.setitem(Settings.model_config, "env_file", ())
+        monkeypatch.delenv("PROXY_USER_TOKENS", raising=False)
+        assert Settings().proxy_user_tokens == {}
+
+    def test_comma_separated_pairs(self, monkeypatch):
+        from free_claude_code.config.settings import Settings
+
+        monkeypatch.setitem(Settings.model_config, "env_file", ())
+        monkeypatch.setenv("PROXY_USER_TOKENS", "alice:tok-a, bob:tok-b")
+        assert Settings().proxy_user_tokens == {"alice": "tok-a", "bob": "tok-b"}
+
+    def test_token_may_contain_colons(self, monkeypatch):
+        from free_claude_code.config.settings import Settings
+
+        monkeypatch.setitem(Settings.model_config, "env_file", ())
+        monkeypatch.setenv("PROXY_USER_TOKENS", "alice:tok:with:colons")
+        assert Settings().proxy_user_tokens == {"alice": "tok:with:colons"}
+
+    def test_json_object_form(self, monkeypatch):
+        from free_claude_code.config.settings import Settings
+
+        monkeypatch.setitem(Settings.model_config, "env_file", ())
+        monkeypatch.setenv("PROXY_USER_TOKENS", '{"alice": "tok-a"}')
+        assert Settings().proxy_user_tokens == {"alice": "tok-a"}
+
+    def test_invalid_pair_raises(self, monkeypatch):
+        from free_claude_code.config.settings import Settings
+
+        monkeypatch.setitem(Settings.model_config, "env_file", ())
+        monkeypatch.setenv("PROXY_USER_TOKENS", "no-colon-here")
+        with pytest.raises(ValidationError):
+            Settings()

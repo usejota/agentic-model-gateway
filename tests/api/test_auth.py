@@ -147,3 +147,69 @@ def test_root_get_requires_auth_but_root_probes_are_public():
     assert options.headers["Allow"] == "GET, HEAD, OPTIONS"
 
     app.dependency_overrides.clear()
+
+
+def test_per_user_token_authenticates_and_shared_token_still_works():
+    client = TestClient(app)
+    settings = Settings()
+    settings.anthropic_auth_token = "shared-token"
+    settings.proxy_user_tokens = {"alice": "tok-a", "bob": "tok-b"}
+    app.dependency_overrides[get_settings] = lambda: settings
+
+    payload = {
+        "model": "claude-3-sonnet",
+        "messages": [{"role": "user", "content": "hello"}],
+    }
+
+    with patch("free_claude_code.api.routes.get_token_count", return_value=1):
+        # A per-user token authenticates.
+        r = client.post(
+            "/v1/messages/count_tokens",
+            json=payload,
+            headers={"Authorization": "Bearer tok-a"},
+        )
+        assert r.status_code == 200
+
+        # The shared token still authenticates.
+        r = client.post(
+            "/v1/messages/count_tokens",
+            json=payload,
+            headers={"Authorization": "Bearer shared-token"},
+        )
+        assert r.status_code == 200
+
+        # An unknown token is rejected.
+        r = client.post(
+            "/v1/messages/count_tokens",
+            json=payload,
+            headers={"Authorization": "Bearer nope"},
+        )
+        assert r.status_code == 401
+
+    app.dependency_overrides.clear()
+
+
+def test_per_user_token_works_without_shared_token():
+    client = TestClient(app)
+    settings = Settings()
+    settings.anthropic_auth_token = ""
+    settings.proxy_user_tokens = {"alice": "tok-a"}
+    app.dependency_overrides[get_settings] = lambda: settings
+
+    payload = {
+        "model": "claude-3-sonnet",
+        "messages": [{"role": "user", "content": "hello"}],
+    }
+
+    with patch("free_claude_code.api.routes.get_token_count", return_value=1):
+        r = client.post(
+            "/v1/messages/count_tokens",
+            json=payload,
+            headers={"Authorization": "Bearer tok-a"},
+        )
+        assert r.status_code == 200
+
+        r = client.post("/v1/messages/count_tokens", json=payload)
+        assert r.status_code == 401
+
+    app.dependency_overrides.clear()

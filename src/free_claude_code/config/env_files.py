@@ -28,14 +28,20 @@ def explicit_env_path(env: Mapping[str, str] | None = None) -> Path | None:
 
 
 def settings_env_files(env: Mapping[str, str] | None = None) -> tuple[Path, ...]:
-    """Return Settings dotenv files in low-to-high precedence order."""
+    """Return Settings dotenv files in low-to-high precedence order.
 
-    files: list[Path] = [
-        repo_env_path(),
-        managed_env_path(),
-    ]
+    The managed env is listed **last** (highest precedence), after any explicit
+    ``FCC_ENV_FILE``. Admin UI writes go to the managed env, so this makes those
+    edits stick while ``FCC_ENV_FILE`` still seeds fresh installs / defaults.
+    The common case where ``FCC_ENV_FILE`` points at the managed env just reads
+    the same file twice (harmless), but the admin source classification treats
+    it as ``managed_env`` (unlocked) rather than the locked ``explicit_env_file``.
+    """
+
+    files: list[Path] = [repo_env_path()]
     if explicit := explicit_env_path(env):
         files.append(explicit)
+    files.append(managed_env_path())
     return tuple(files)
 
 

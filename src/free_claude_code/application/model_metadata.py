@@ -9,6 +9,7 @@ class ProviderModelInfo:
 
     model_id: str
     supports_thinking: bool | None = None
+    context_window: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

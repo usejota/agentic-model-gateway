@@ -61,6 +61,13 @@ class ProviderModelCache:
             return None
         return info.supports_thinking
 
+    def cached_context_window(self, provider_id: str, model_id: str) -> int | None:
+        """Return cached context window (tokens) when a provider exposes it."""
+        info = self._model_infos_by_provider.get(provider_id, {}).get(model_id)
+        if info is None:
+            return None
+        return info.context_window
+
     def cached_prefixed_model_refs(self) -> tuple[str, ...]:
         """Return cached provider models in user-selectable ``provider/model`` form."""
         return tuple(info.model_id for info in self.cached_prefixed_model_infos())
@@ -74,6 +81,7 @@ class ProviderModelCache:
                 ProviderModelInfo(
                     model_id=f"{provider_id}/{info.model_id}",
                     supports_thinking=info.supports_thinking,
+                    context_window=info.context_window,
                 )
                 for info in sorted(
                     provider_infos.values(), key=lambda item: item.model_id

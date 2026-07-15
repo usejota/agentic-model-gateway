@@ -61,6 +61,43 @@ def test_admin_page_is_loopback_only(monkeypatch, tmp_path):
     assert remote_client.get("/admin").status_code == 403
 
 
+def test_admin_requires_token_when_admin_api_token_set(monkeypatch, tmp_path):
+    _set_home(monkeypatch, tmp_path)
+    app = create_test_app()
+    settings = Settings()
+    settings.admin_api_token = "adm-secret"
+
+    with patch("free_claude_code.api.admin_auth.get_settings", return_value=settings):
+        # Loopback but no token -> 401 (loopback alone is not enough now).
+        assert _local_client(app).get("/admin").status_code == 401
+        # Matching token via either header form -> 200.
+        assert (
+            _local_client(app)
+            .get("/admin", headers={"X-Admin-Token": "adm-secret"})
+            .status_code
+            == 200
+        )
+        assert (
+            _local_client(app)
+            .get("/admin", headers={"Authorization": "Bearer adm-secret"})
+            .status_code
+            == 200
+        )
+        # Wrong token -> 401.
+        assert (
+            _local_client(app)
+            .get("/admin", headers={"X-Admin-Token": "nope"})
+            .status_code
+            == 401
+        )
+        # Remote host is still rejected before the token check.
+        remote = TestClient(app, client=("203.0.113.10", 50000))
+        assert (
+            remote.get("/admin", headers={"X-Admin-Token": "adm-secret"}).status_code
+            == 403
+        )
+
+
 def test_admin_page_no_longer_renders_generated_env_panel(monkeypatch, tmp_path):
     _set_home(monkeypatch, tmp_path)
     app = create_test_app()

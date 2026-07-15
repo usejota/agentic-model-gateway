@@ -268,6 +268,19 @@ _NON_PROVIDER_FIELDS: tuple[ConfigFieldSpec, ...] = (
         description="Open the Admin UI after the next fcc-server launch becomes healthy.",
     ),
     ConfigFieldSpec(
+        "CLAUDE_CODE_AUTO_COMPACT_WINDOW",
+        "Auto-Compact Window",
+        "runtime",
+        "number",
+        settings_attr="claude_code_auto_compact_window",
+        default="1000000",
+        restart_required=True,
+        description=(
+            "Token budget handed to gateway-launched Claude Code. High by "
+            "default; Claude Code clamps it to each model's real context window."
+        ),
+    ),
+    ConfigFieldSpec(
         "MESSAGING_PLATFORM",
         "Messaging Platform",
         "messaging",

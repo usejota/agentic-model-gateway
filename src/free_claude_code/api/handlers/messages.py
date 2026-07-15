@@ -45,6 +45,7 @@ from free_claude_code.core.anthropic import (
     anthropic_status_for_error_type,
     get_token_count,
 )
+from free_claude_code.core.anthropic.image_detection import has_images
 from free_claude_code.core.diagnostics import safe_exception_message
 from free_claude_code.core.failures import ExecutionFailure, find_execution_failure
 from free_claude_code.core.trace import trace_event
@@ -269,6 +270,8 @@ class MessagesHandler:
     def _apply_message_routing_policies(
         self, routed: RoutedMessagesRequest
     ) -> RoutedMessagesRequest:
+        routed = self._maybe_reroute_for_classifier(routed)
+        routed = self._maybe_reroute_for_images(routed)
         if not is_safety_classifier_request(routed.request):
             return routed
         changed = routed.resolved.thinking_enabled
@@ -285,6 +288,98 @@ class MessagesHandler:
             request=routed.request,
             resolved=replace(routed.resolved, thinking_enabled=False),
         )
+
+    def _maybe_reroute_for_images(
+        self, routed: RoutedMessagesRequest
+    ) -> RoutedMessagesRequest:
+        """Swap the primary provider to ``IMAGE_ROUTE`` when the request has images.
+
+        No-op when ``IMAGE_ROUTE`` is unset or the request carries no image
+        content. When triggered, the request is deep-copied and re-pointed to the
+        IMAGE_ROUTE provider/model; messages pass through verbatim so the
+        multimodal provider sees the real base64 source. The user opts in by
+        setting the var — no provider/model capability introspection, since the
+        transport does not predict whether the model itself accepts images.
+        """
+        image_route = self._settings.image_route_parts
+        if image_route is None:
+            return routed
+        if not has_images(routed.request.messages):
+            return routed
+
+        target_provider_id, target_model = image_route
+        if (
+            routed.resolved.provider_id == target_provider_id
+            and routed.resolved.provider_model == target_model
+        ):
+            return routed
+
+        resolved = self._model_router.resolve(f"{target_provider_id}/{target_model}")
+        new_request = routed.request.model_copy(deep=True)
+        new_request.model = resolved.provider_model
+        logger.info(
+            "Image reroute: provider={} model={} (from provider={} model={})",
+            resolved.provider_id,
+            resolved.provider_model,
+            routed.resolved.provider_id,
+            routed.resolved.provider_model,
+        )
+        trace_event(
+            stage="routing",
+            event="free_claude_code.api.route.image_reroute",
+            source="api",
+            provider_id=resolved.provider_id,
+            provider_model=resolved.provider_model,
+            original_provider_id=routed.resolved.provider_id,
+            original_provider_model=routed.resolved.provider_model,
+            gateway_model=routed.request.model,
+        )
+        return RoutedMessagesRequest(request=new_request, resolved=resolved)
+
+    def _maybe_reroute_for_classifier(
+        self, routed: RoutedMessagesRequest
+    ) -> RoutedMessagesRequest:
+        """Swap the primary provider to ``CLASSIFIER_ROUTE`` for classifier requests.
+
+        No-op when ``CLASSIFIER_ROUTE`` is unset or the request doesn't match the
+        safety classifier signature. When triggered, the request is deep-copied
+        and re-pointed to the CLASSIFIER_ROUTE provider/model so the rest of the
+        pipeline (preflight, dispatch, fallback) sees the new target.
+        """
+        classifier_route = self._settings.classifier_route_parts
+        if classifier_route is None:
+            return routed
+        if not is_safety_classifier_request(routed.request):
+            return routed
+
+        target_provider_id, target_model = classifier_route
+        if (
+            routed.resolved.provider_id == target_provider_id
+            and routed.resolved.provider_model == target_model
+        ):
+            return routed
+
+        resolved = self._model_router.resolve(f"{target_provider_id}/{target_model}")
+        new_request = routed.request.model_copy(deep=True)
+        new_request.model = resolved.provider_model
+        logger.info(
+            "Classifier reroute: provider={} model={} (from provider={} model={})",
+            resolved.provider_id,
+            resolved.provider_model,
+            routed.resolved.provider_id,
+            routed.resolved.provider_model,
+        )
+        trace_event(
+            stage="routing",
+            event="free_claude_code.api.route.classifier_reroute",
+            source="api",
+            provider_id=resolved.provider_id,
+            provider_model=resolved.provider_model,
+            original_provider_id=routed.resolved.provider_id,
+            original_provider_model=routed.resolved.provider_model,
+            gateway_model=routed.request.model,
+        )
+        return RoutedMessagesRequest(request=new_request, resolved=resolved)
 
     def _run_message_intercepts(
         self, routed: RoutedMessagesRequest

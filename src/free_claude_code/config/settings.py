@@ -1,10 +1,11 @@
 """Flat application settings schema loaded by Pydantic Settings."""
 
+from collections.abc import Mapping
 from functools import lru_cache
-from typing import Any
+from typing import Annotated, Any
 
 from pydantic import Field, field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from .constants import HTTP_CONNECT_TIMEOUT_DEFAULT
 from .env_files import (
@@ -12,8 +13,10 @@ from .env_files import (
     env_file_override,
     settings_env_files,
 )
+from .model_refs import parse_model_name, parse_provider_type
 from .nim import NimSettings
-from .provider_catalog import SUPPORTED_PROVIDER_IDS
+from .provider_catalog import PROVIDER_CATALOG, SUPPORTED_PROVIDER_IDS
+from .secret_source import SecretManagerError, fetch_secret
 
 
 class Settings(BaseSettings):
@@ -124,6 +127,24 @@ class Settings(BaseSettings):
     # All Claude model requests are mapped to this single model (fallback)
     # Format: provider_type/model/name
     model: str = "nvidia_nim/nvidia/nemotron-3-super-120b-a12b"
+
+    # Optional image reroute. When a request carries image content (in the user
+    # message or nested in a tool_result) AND the resolved primary model doesn't
+    # accept images, this provider+model handles just that turn.
+    # Format: a single ``provider/model`` ref, same form as MODEL,
+    # e.g. ``open_router/minimax/minimax-m3``. Empty = no reroute.
+    image_route: str | None = Field(default=None, validation_alias="IMAGE_ROUTE")
+
+    # Optional classifier reroute. When a request matches the auto-mode safety
+    # classifier side-query signature (no tools, security-monitor system prompt),
+    # this provider+model handles just that turn instead of the session model.
+    # Format: a single ``provider/model`` ref, e.g.
+    # ``open_router/google/gemini-2.5-flash``. Empty = no reroute (the classifier
+    # uses the session model). A fast/cheap/stable model keeps auto mode
+    # responsive even when the main model is slow or flaky.
+    classifier_route: str | None = Field(
+        default=None, validation_alias="CLASSIFIER_ROUTE"
+    )
 
     # Per-model overrides (optional, falls back to MODEL)
     # Each can use a different provider
@@ -283,10 +304,46 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 8082
     open_admin_browser: bool = Field(default=True, validation_alias="FCC_OPEN_BROWSER")
+    # Auto-compact window (tokens) handed to Claude Code launched via the gateway.
+    # High by default: Claude Code clamps it to each model's real context window,
+    # so 1M ([1m]) models compact near 1M while smaller models self-clamp to ~200K.
+    claude_code_auto_compact_window: int = Field(
+        default=1_000_000, validation_alias="CLAUDE_CODE_AUTO_COMPACT_WINDOW"
+    )
     # Optional proxy bearer token protecting public API endpoints.
     # Set via env `ANTHROPIC_AUTH_TOKEN`. When empty, no auth is required.
     anthropic_auth_token: str = Field(
         default="", validation_alias="ANTHROPIC_AUTH_TOKEN"
+    )
+    # Optional admin UI secret. When empty, the admin UI stays loopback-only.
+    # When set, every /admin route additionally requires a matching token
+    # (`X-Admin-Token` or `Authorization: Bearer ...`). Set via env
+    # `ADMIN_API_TOKEN`; intentionally not editable through the admin UI itself.
+    admin_api_token: str = Field(default="", validation_alias="ADMIN_API_TOKEN")
+    # Optional per-user proxy tokens for per-user audit logging. When set, each
+    # token authenticates as a named identity so logs can attribute a request to
+    # an individual. The shared ``anthropic_auth_token`` (if set) keeps working.
+    #
+    # Format (env ``PROXY_USER_TOKENS``): comma-separated ``name:token`` pairs,
+    # e.g. ``alice:tok-a,bob:tok-b``. A JSON object mapping name->token is also
+    # accepted, e.g. ``{"alice": "tok-a", "bob": "tok-b"}``. The token itself may
+    # contain colons (only the first colon splits name from token in pair form).
+    proxy_user_tokens: Annotated[dict[str, str], NoDecode] = Field(
+        default_factory=dict, validation_alias="PROXY_USER_TOKENS"
+    )
+
+    # ==================== Provider key secret source (GCP) ====================
+    # Optionally fetch a provider API key from GCP Secret Manager at runtime
+    # instead of persisting it in a plaintext .env on disk. Requires the
+    # optional ``gcp`` extra. Value: a version resource, e.g.
+    # ``projects/<project>/secrets/<name>/versions/latest``.
+    provider_key_secret_resource: str = Field(
+        default="", validation_alias="PROVIDER_KEY_SECRET_RESOURCE"
+    )
+    # Settings field to populate with the fetched secret. When empty, the active
+    # provider's credential attribute (derived from ``model``) is used.
+    provider_key_secret_target: str = Field(
+        default="", validation_alias="PROVIDER_KEY_SECRET_TARGET"
     )
 
     # Handle empty strings for optional string fields
@@ -317,6 +374,80 @@ class Settings(BaseSettings):
         if v == "" or v is None:
             return None
         return v
+
+    @field_validator("image_route", "classifier_route", mode="before")
+    @classmethod
+    def parse_route(cls, v: Any) -> Any:
+        """Parse ``IMAGE_ROUTE`` / ``CLASSIFIER_ROUTE`` as one ``provider/model`` ref.
+
+        Empty/blank → ``None`` (reroute disabled). Otherwise validated for shape
+        (must contain a ``/`` and the provider must be a known one).
+        """
+        if v is None:
+            return None
+        if not isinstance(v, str):
+            return v
+        text = v.strip()
+        if not text:
+            return None
+        if "/" not in text:
+            raise ValueError(f"Route must be a single 'provider/model' ref, got {v!r}")
+        provider = text.split("/", 1)[0]
+        if provider not in SUPPORTED_PROVIDER_IDS:
+            supported = ", ".join(f"'{p}'" for p in SUPPORTED_PROVIDER_IDS)
+            raise ValueError(
+                f"Invalid route provider: '{provider}'. Supported: {supported}"
+            )
+        return text
+
+    @field_validator("proxy_user_tokens", mode="before")
+    @classmethod
+    def parse_proxy_user_tokens(cls, v: Any) -> Any:
+        """Parse per-user proxy tokens from a string or pass through a mapping.
+
+        Accepts either a JSON object string (``{"alice": "tok-a"}``) or a
+        comma-separated list of ``name:token`` pairs (``alice:tok-a,bob:tok-b``).
+        Only the first colon in each pair splits name from token, so tokens may
+        themselves contain colons. Blank entries and surrounding whitespace are
+        ignored. An empty/blank value yields an empty mapping (no-op).
+        """
+        if v is None or v == "":
+            return {}
+        if isinstance(v, Mapping):
+            return {str(k).strip(): str(val).strip() for k, val in v.items()}
+        if not isinstance(v, str):
+            return v
+
+        text = v.strip()
+        if not text:
+            return {}
+        if text.startswith("{"):
+            import json
+
+            parsed = json.loads(text)
+            if not isinstance(parsed, Mapping):
+                raise ValueError("PROXY_USER_TOKENS JSON must be an object")
+            return {str(k).strip(): str(val).strip() for k, val in parsed.items()}
+
+        result: dict[str, str] = {}
+        for pair in text.split(","):
+            entry = pair.strip()
+            if not entry:
+                continue
+            if ":" not in entry:
+                raise ValueError(
+                    f"Invalid PROXY_USER_TOKENS entry {entry!r}; expected 'name:token'"
+                )
+            name, token = entry.split(":", 1)
+            name = name.strip()
+            token = token.strip()
+            if not name or not token:
+                raise ValueError(
+                    f"Invalid PROXY_USER_TOKENS entry {entry!r}; "
+                    "name and token must be non-empty"
+                )
+            result[name] = token
+        return result
 
     @field_validator("whisper_device")
     @classmethod
@@ -401,6 +532,66 @@ class Settings(BaseSettings):
         dotenv_value = env_file_override(self.model_config, ANTHROPIC_AUTH_TOKEN_ENV)
         if dotenv_value is not None:
             self.anthropic_auth_token = dotenv_value
+        return self
+
+    @property
+    def image_route_parts(self) -> tuple[str, str] | None:
+        """Return ``(provider_id, model_name)`` for ``IMAGE_ROUTE``, or None."""
+        if not self.image_route:
+            return None
+        return (
+            parse_provider_type(self.image_route),
+            parse_model_name(self.image_route),
+        )
+
+    @property
+    def classifier_route_parts(self) -> tuple[str, str] | None:
+        """Return ``(provider_id, model_name)`` for ``CLASSIFIER_ROUTE``, or None."""
+        if not self.classifier_route:
+            return None
+        return (
+            parse_provider_type(self.classifier_route),
+            parse_model_name(self.classifier_route),
+        )
+
+    def _resolve_secret_target_attr(self) -> str:
+        """Return the Settings attribute name to populate from Secret Manager."""
+        if self.provider_key_secret_target:
+            target = self.provider_key_secret_target
+            if not hasattr(self, target):
+                raise ValueError(
+                    f"PROVIDER_KEY_SECRET_TARGET={target!r} is not a known "
+                    f"settings field."
+                )
+            return target
+
+        descriptor = PROVIDER_CATALOG.get(parse_provider_type(self.model))
+        if descriptor is None or descriptor.credential_attr is None:
+            raise ValueError(
+                f"Cannot resolve provider key target for provider "
+                f"{parse_provider_type(self.model)!r}; set "
+                f"PROVIDER_KEY_SECRET_TARGET explicitly."
+            )
+        return descriptor.credential_attr
+
+    @model_validator(mode="after")
+    def resolve_provider_key_from_secret_manager(self) -> Settings:
+        """Populate a provider key from GCP Secret Manager when configured.
+
+        No-op when ``PROVIDER_KEY_SECRET_RESOURCE`` is unset, preserving the
+        default disk/env-based behavior.
+        """
+        if not self.provider_key_secret_resource.strip():
+            return self
+
+        target = self._resolve_secret_target_attr()
+        secret = fetch_secret(self.provider_key_secret_resource)
+        if not secret.strip():
+            raise SecretManagerError(
+                f"Secret Manager resource "
+                f"{self.provider_key_secret_resource!r} returned an empty value."
+            )
+        setattr(self, target, secret)
         return self
 
     model_config = SettingsConfigDict(

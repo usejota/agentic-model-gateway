@@ -470,6 +470,126 @@ async def test_messages_handler_keeps_existing_no_thinking_for_classifier() -> N
 
 
 @pytest.mark.asyncio
+async def test_messages_handler_reroutes_classifier_to_classifier_route() -> None:
+    provider = FakeProvider()
+    resolved_providers: list[str] = []
+
+    def resolver(provider_id: str):
+        resolved_providers.append(provider_id)
+        return provider
+
+    settings = Settings()
+    settings.classifier_route = "open_router/some/classifier-model"
+    handler = MessagesHandler(settings, provider_resolver=resolver)
+    request = MessagesRequest(
+        model="nvidia_nim/test-model",
+        max_tokens=100,
+        stream=True,
+        system=_CLASSIFIER_SYSTEM,
+        messages=[Message(role="user", content=_CLASSIFIER_USER)],
+    )
+
+    with patch("free_claude_code.api.handlers.messages.trace_event"):
+        response = await handler.create(request)
+        assert isinstance(response, StreamingResponse)
+        await _streaming_body_text(response)
+
+    # The classifier turn was rerouted to the CLASSIFIER_ROUTE provider/model.
+    assert "open_router" in resolved_providers
+    assert provider.requests[0].model == "some/classifier-model"
+    # No-thinking policy still applies to the rerouted classifier request.
+    assert provider.stream_kwargs[0]["thinking_enabled"] is False
+
+
+@pytest.mark.asyncio
+async def test_messages_handler_reroutes_image_request_to_image_route() -> None:
+    provider = FakeProvider()
+    resolved_providers: list[str] = []
+
+    def resolver(provider_id: str):
+        resolved_providers.append(provider_id)
+        return provider
+
+    settings = Settings()
+    settings.image_route = "open_router/vision/model"
+    handler = MessagesHandler(settings, provider_resolver=resolver)
+    request = MessagesRequest.model_validate(
+        {
+            "model": "deepseek/text-only",
+            "max_tokens": 100,
+            "stream": True,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "what's this?"},
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/png",
+                                "data": "AAAA",
+                            },
+                        },
+                    ],
+                }
+            ],
+        }
+    )
+
+    with patch("free_claude_code.api.handlers.messages.trace_event"):
+        response = await handler.create(request)
+        assert isinstance(response, StreamingResponse)
+        await _streaming_body_text(response)
+
+    assert "open_router" in resolved_providers
+    assert provider.requests[0].model == "vision/model"
+
+
+@pytest.mark.asyncio
+async def test_messages_handler_no_image_reroute_for_text_request() -> None:
+    provider = FakeProvider()
+    settings = Settings()
+    settings.image_route = "open_router/vision/model"
+    handler = MessagesHandler(settings, provider_resolver=lambda _: provider)
+    request = MessagesRequest(
+        model="nvidia_nim/test-model",
+        max_tokens=100,
+        stream=True,
+        messages=[Message(role="user", content="plain text, no image")],
+    )
+
+    with patch("free_claude_code.api.handlers.messages.trace_event"):
+        response = await handler.create(request)
+        assert isinstance(response, StreamingResponse)
+        await _streaming_body_text(response)
+
+    assert provider.requests[0].model == "test-model"
+
+
+@pytest.mark.asyncio
+async def test_messages_handler_no_classifier_reroute_for_non_classifier() -> None:
+    provider = FakeProvider()
+    settings = Settings()
+    settings.classifier_route = "open_router/some/classifier-model"
+    handler = MessagesHandler(settings, provider_resolver=lambda _: provider)
+    request = MessagesRequest(
+        model="nvidia_nim/test-model",
+        max_tokens=100,
+        stream=True,
+        messages=[Message(role="user", content="just a normal question")],
+    )
+
+    with patch("free_claude_code.api.handlers.messages.trace_event"):
+        response = await handler.create(request)
+        assert isinstance(response, StreamingResponse)
+        await _streaming_body_text(response)
+
+    # Non-classifier request keeps the session model (no reroute).
+    assert provider.requests[0].model == "test-model"
+
+
+@pytest.mark.asyncio
 async def test_messages_handler_optimization_intercepts_before_provider_execution() -> (
     None
 ):

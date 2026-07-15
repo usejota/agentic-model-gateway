@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "free-claude-code"
-version = "4.6.3"
+version = "4.7.0"
 description = "Local proxy connecting coding agents to OpenAI-compatible AI providers"
 readme = "README.md"
 requires-python = ">=3.14.0"
@@ -44,6 +44,9 @@ voice_local = [
     "transformers>=5.13.0",
     "accelerate>=1.14.0",
     "librosa>=0.10.0",
+]
+gcp = [
+    "google-cloud-secret-manager>=2.20.0",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -128,4 +131,12 @@ python-version = "3.14"
 [tool.ty.analysis]
 # Optional voice_local extra: torch, transformers, librosa for local whisper transcription
 # Optional voice extra: nvidia-riva-client for nvidia_nim transcription provider
-allowed-unresolved-imports = ["torch", "transformers", "librosa", "riva.client"]
+# Optional gcp extra: google-cloud-secret-manager for runtime provider-key fetch
+allowed-unresolved-imports = [
+    "torch",
+    "transformers",
+    "librosa",
+    "riva.client",
+    "google.cloud",
+    "google.cloud.secretmanager",
+]

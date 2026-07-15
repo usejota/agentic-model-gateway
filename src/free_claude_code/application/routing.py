@@ -12,7 +12,10 @@ from free_claude_code.config.provider_catalog import (
 )
 from free_claude_code.config.settings import Settings
 from free_claude_code.core.anthropic import MessagesRequest, TokenCountRequest
-from free_claude_code.core.gateway_model_ids import decode_gateway_model_id
+from free_claude_code.core.gateway_model_ids import (
+    ONE_M_SUFFIX,
+    decode_gateway_model_id,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,6 +114,10 @@ class ModelRouter:
             return None, None, None
         if not provider_model:
             return None, None, None
+        # A raw ``provider/model[1m]`` ref carries Claude Code's 1M signal; it is
+        # never part of a real upstream model id, so strip it before forwarding.
+        if provider_model.endswith(ONE_M_SUFFIX):
+            provider_model = provider_model[: -len(ONE_M_SUFFIX)]
         return provider_id, provider_model, None
 
     def _resolve_model_ref(self, claude_model_name: str) -> str:

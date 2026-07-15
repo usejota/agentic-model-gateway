@@ -48,9 +48,16 @@ def require_proxy_auth(
     request: Request,
     settings: Settings = Depends(get_settings),
 ) -> None:
-    """Require the configured proxy token as HTTP bearer authorization."""
-    anthropic_auth_token = settings.anthropic_auth_token.strip()
-    if not anthropic_auth_token:
+    """Require the configured proxy token as HTTP bearer authorization.
+
+    Accepts the shared ``anthropic_auth_token`` and, when configured, any
+    per-user token from ``proxy_user_tokens``. A matched per-user token records
+    the identity on ``request.state.proxy_user`` and logs it so requests can be
+    attributed to an individual.
+    """
+    shared_token = settings.anthropic_auth_token.strip()
+    user_tokens = settings.proxy_user_tokens
+    if not shared_token and not user_tokens:
         return
 
     authorization = request.headers.get("authorization")
@@ -67,12 +74,31 @@ def require_proxy_auth(
             detail="Invalid proxy authentication token",
         )
     token = parts[1].strip()
-
-    if not token or not secrets.compare_digest(
-        token.encode("utf-8"),
-        anthropic_auth_token.encode("utf-8"),
-    ):
+    if not token:
         raise HTTPException(
             status_code=401,
             detail="Invalid proxy authentication token",
         )
+    token_bytes = token.encode("utf-8")
+
+    # Per-user tokens first so a matched request gets an audit identity. Compare
+    # every entry (no early exit) to keep the check constant-time (CWE-208).
+    matched_user: str | None = None
+    for name, user_token in user_tokens.items():
+        if secrets.compare_digest(token_bytes, user_token.strip().encode("utf-8")):
+            matched_user = name
+    if matched_user is not None:
+        request.state.proxy_user = matched_user
+        logger.info("Authenticated proxy request as user '{}'", matched_user)
+        return
+
+    if shared_token and secrets.compare_digest(
+        token_bytes,
+        shared_token.encode("utf-8"),
+    ):
+        return
+
+    raise HTTPException(
+        status_code=401,
+        detail="Invalid proxy authentication token",
+    )

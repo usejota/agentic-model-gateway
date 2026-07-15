@@ -100,7 +100,7 @@ SYSTEMD_ENV_LINES=()
 SYSTEMD_ENV_LINES+=("Environment=PORT=${PORT}")
 SYSTEMD_ENV_LINES+=("Environment=HOST=0.0.0.0")
 # Headless VM: never try to open a browser for the admin UI.
-SYSTEMD_ENV_LINES+=("Environment=OPEN_ADMIN_BROWSER=false")
+SYSTEMD_ENV_LINES+=("Environment=FCC_OPEN_BROWSER=false")
 SYSTEMD_ENV_LINES+=("Environment=ANTHROPIC_AUTH_TOKEN=freecc")
 
 if [ "${USE_TMPFS_ENV}" = "TRUE" ]; then

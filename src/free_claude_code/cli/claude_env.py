@@ -4,7 +4,11 @@ from collections.abc import Mapping
 
 from free_claude_code.cli.proxy_auth import proxy_auth_token
 
-CLAUDE_CODE_AUTO_COMPACT_WINDOW = "190000"
+# High default so Claude Code clamps it down to each model's real context window:
+# 1M ([1m]) models compact near 1M while smaller models self-clamp to ~200K, with
+# no per-model env needed. Overridable via the CLAUDE_CODE_AUTO_COMPACT_WINDOW
+# setting; a caller's own shell value (in ``base_env``) still wins.
+DEFAULT_AUTO_COMPACT_WINDOW = 1_000_000
 CLAUDE_BINARY_NAME = "claude"
 
 
@@ -13,6 +17,7 @@ def build_claude_proxy_env(
     proxy_root_url: str,
     auth_token: str,
     base_env: Mapping[str, str],
+    auto_compact_window: int = DEFAULT_AUTO_COMPACT_WINDOW,
 ) -> dict[str, str]:
     """Return the canonical environment for Claude Code proxy sessions."""
 
@@ -26,7 +31,9 @@ def build_claude_proxy_env(
     env["ANTHROPIC_BASE_URL"] = proxy_root_url
     env["ANTHROPIC_AUTH_TOKEN"] = proxy_auth_token(auth_token)
     env["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] = "1"
-    env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = CLAUDE_CODE_AUTO_COMPACT_WINDOW
+    # A caller's own shell value wins over the gateway default.
+    if not env.get("CLAUDE_CODE_AUTO_COMPACT_WINDOW"):
+        env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = str(auto_compact_window)
     env["DISABLE_AUTOUPDATER"] = "1"
     env["DISABLE_FEEDBACK_COMMAND"] = "1"
     env["DISABLE_ERROR_REPORTING"] = "1"

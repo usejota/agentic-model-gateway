@@ -13,10 +13,8 @@ from free_claude_code.config.env_files import (
 from free_claude_code.config.env_files import (
     repo_env_path as configured_repo_env_path,
 )
-from free_claude_code.config.env_files import (
-    settings_env_files,
-)
 from free_claude_code.config.env_template import load_env_template_or_empty
+from free_claude_code.config.paths import managed_env_path
 
 from .manifest import FIELDS
 
@@ -43,14 +41,31 @@ def explicit_env_path() -> Path | None:
 
 
 def configured_env_files() -> tuple[tuple[SourceType, Path], ...]:
-    """Return dotenv files in low-to-high precedence order."""
+    """Return dotenv files in low-to-high precedence order.
 
-    source_names: tuple[SourceType, ...] = (
-        "repo_env",
-        "managed_env",
-        "explicit_env_file",
-    )
-    return tuple(zip(source_names, settings_env_files(), strict=False))
+    Mirrors :func:`~free_claude_code.config.env_files.settings_env_files`: the
+    managed env is highest precedence. When ``FCC_ENV_FILE`` resolves to the
+    same file as the managed env, it is listed once as ``managed_env`` (not the
+    locked ``explicit_env_file``) so admin edits to that file are not treated as
+    read-only.
+    """
+
+    managed = managed_env_path()
+    entries: list[tuple[SourceType, Path]] = [("repo_env", repo_env_path())]
+    explicit = explicit_env_path()
+    if explicit is not None and not _same_path(explicit, managed):
+        entries.append(("explicit_env_file", explicit))
+    entries.append(("managed_env", managed))
+    return tuple(entries)
+
+
+def _same_path(a: Path, b: Path) -> bool:
+    """Return whether two paths point at the same file (best-effort)."""
+
+    try:
+        return a.resolve() == b.resolve()
+    except OSError:
+        return a == b
 
 
 def dotenv_values_from_text(text: str) -> dict[str, str]:
@@ -79,6 +94,11 @@ def dotenv_values_from_file(path: Path) -> dict[str, str]:
 
 
 def is_locked_source(source: SourceType) -> bool:
-    """Return whether an admin value source must not be overwritten."""
+    """Return whether an admin value source must not be overwritten.
 
-    return source in {"process", "explicit_env_file"}
+    Only ``process`` (a live shell/systemd env var) is truly immutable from the
+    admin UI. ``explicit_env_file`` is overridable because the managed env has
+    higher runtime precedence, so an admin write to the managed env still wins.
+    """
+
+    return source == "process"

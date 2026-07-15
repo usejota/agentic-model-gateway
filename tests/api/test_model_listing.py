@@ -134,6 +134,75 @@ def test_models_list_includes_cached_wafer_models():
     assert "claude-3-freecc-no-thinking/wafer/MiniMax-M2.7" in ids
 
 
+def test_models_list_appends_1m_variant_for_manual_override_context():
+    """A configured ref with a manual 1M context override gets a [1m] variant."""
+    app = create_test_app(
+        _settings(
+            model="deepseek/deepseek-v4-pro",
+            model_opus=None,
+            model_haiku=None,
+        )
+    )
+
+    ids = [item["id"] for item in TestClient(app).get("/v1/models").json()["data"]]
+    assert "anthropic/deepseek/deepseek-v4-pro" in ids
+    assert "anthropic/deepseek/deepseek-v4-pro[1m]" in ids
+
+
+def test_models_list_appends_1m_variant_from_openrouter_context_length():
+    """An OpenRouter model advertising >=1M context_length gets a [1m] variant."""
+    app = create_test_app(
+        _settings(model="open_router/big", model_opus=None, model_haiku=None)
+    )
+    provider_manager_for_app(app).cache_model_infos(
+        "open_router",
+        {ProviderModelInfo("big", supports_thinking=True, context_window=1_000_000)},
+    )
+
+    ids = [item["id"] for item in TestClient(app).get("/v1/models").json()["data"]]
+    assert "anthropic/open_router/big[1m]" in ids
+
+
+def test_models_list_no_1m_variant_below_threshold():
+    app = create_test_app(
+        _settings(model="open_router/small", model_opus=None, model_haiku=None)
+    )
+    provider_manager_for_app(app).cache_model_infos(
+        "open_router",
+        {ProviderModelInfo("small", supports_thinking=True, context_window=200_000)},
+    )
+
+    ids = [item["id"] for item in TestClient(app).get("/v1/models").json()["data"]]
+    assert "anthropic/open_router/small[1m]" not in ids
+
+
+def test_models_list_appends_alias_1m_for_1m_capable_fable_override():
+    app = create_test_app(
+        _settings(
+            model_fable="deepseek/deepseek-v4-pro",
+            model_opus=None,
+            model_haiku=None,
+        )
+    )
+
+    ids = [item["id"] for item in TestClient(app).get("/v1/models").json()["data"]]
+    assert "claude-fable-5[1m]" in ids
+    assert "claude-fable-5" in ids
+
+
+def test_models_list_no_alias_1m_when_override_not_1m():
+    app = create_test_app(
+        _settings(
+            model_fable="open_router/anthropic/claude-opus",
+            model_opus=None,
+            model_haiku=None,
+        )
+    )
+
+    ids = [item["id"] for item in TestClient(app).get("/v1/models").json()["data"]]
+    assert "claude-fable-5[1m]" not in ids
+
+
 def test_models_list_works_with_empty_discovery_catalog():
     app = create_test_app(_settings())
 

@@ -187,6 +187,36 @@ def test_model_router_routes_gateway_encoded_provider_model_directly(settings):
     )
 
 
+def test_model_router_strips_1m_suffix_from_gateway_encoded_model(settings):
+    """A [1m]-suffixed gateway id forwards a clean upstream model id."""
+    routed = ModelRouter(settings).resolve_messages_request(
+        MessagesRequest(
+            model="anthropic/open_router/minimax/minimax-m3[1m]",
+            max_tokens=100,
+            messages=[Message(role="user", content="hello")],
+        )
+    )
+
+    assert routed.request.model == "minimax/minimax-m3"
+    assert routed.resolved.provider_id == "open_router"
+    assert routed.resolved.provider_model == "minimax/minimax-m3"
+
+
+def test_model_router_strips_1m_suffix_from_raw_prefixed_model(settings):
+    """A raw provider/model[1m] ref must not leak the [1m] signal upstream."""
+    routed = ModelRouter(settings).resolve_messages_request(
+        MessagesRequest(
+            model="open_router/minimax/minimax-m3[1m]",
+            max_tokens=100,
+            messages=[Message(role="user", content="hello")],
+        )
+    )
+
+    assert routed.request.model == "minimax/minimax-m3"
+    assert routed.resolved.provider_id == "open_router"
+    assert routed.resolved.provider_model == "minimax/minimax-m3"
+
+
 def test_model_router_routes_no_thinking_gateway_model_directly(settings):
     settings.enable_model_thinking = True
 

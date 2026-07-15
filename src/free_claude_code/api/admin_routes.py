@@ -16,6 +16,7 @@ from free_claude_code.config.admin.persistence import validate_updates
 from free_claude_code.config.admin.values import load_config_response
 from free_claude_code.config.model_refs import configured_chat_model_refs
 
+from .admin_auth import require_admin_token
 from .dependencies import get_services
 from .ports import ApiServices
 
@@ -55,7 +56,13 @@ def _origin_is_local(origin: str | None) -> bool:
 
 
 def require_loopback_admin(request: Request) -> None:
-    """Allow admin access only from the local machine."""
+    """Allow admin access only from the local machine.
+
+    When ``ADMIN_API_TOKEN`` is set, a matching token is additionally required.
+    This is the single chokepoint every admin handler already routes through, so
+    the token check applies uniformly (and covers tunneled access, e.g. GCP IAP,
+    where the loopback check passes because the tunnel terminates on loopback).
+    """
 
     client_host = request.client.host if request.client else None
     if not _is_loopback_host(client_host):
@@ -64,6 +71,8 @@ def require_loopback_admin(request: Request) -> None:
     origin = request.headers.get("origin")
     if not _origin_is_local(origin):
         raise HTTPException(status_code=403, detail="Admin UI is local-only")
+
+    require_admin_token(request)
 
 
 def _asset_response(filename: str) -> FileResponse:
