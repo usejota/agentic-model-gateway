@@ -51,7 +51,11 @@ from free_claude_code.core.anthropic.image_detection import (
     strip_to_placeholders,
 )
 from free_claude_code.core.diagnostics import safe_exception_message
-from free_claude_code.core.failures import ExecutionFailure, find_execution_failure
+from free_claude_code.core.failures import (
+    ExecutionFailure,
+    FailureKind,
+    find_execution_failure,
+)
 from free_claude_code.core.trace import trace_event
 
 
@@ -139,15 +143,20 @@ class MessagesHandler:
             result = self._run_message_intercepts(routed)
             if result is None:
                 logger.debug("No optimization matched, routing to provider")
-                result = _MessagesStreamResult(
-                    self._provider_executor.stream(
+                fallbacks = self._fallback_candidates(routed.request)
+                if fallbacks:
+                    body = self._stream_with_fallback(
+                        routed, fallbacks, request_id=request_id
+                    )
+                else:
+                    body = self._provider_executor.stream(
                         routed,
                         wire_api="messages",
                         raw_log_label="FULL_PAYLOAD",
                         raw_log_payload=routed.request.model_dump(),
                         request_id=request_id,
                     )
-                )
+                result = _MessagesStreamResult(body)
             return await self._to_public_response(
                 result,
                 stream=request_data.stream,
@@ -320,6 +329,115 @@ class MessagesHandler:
         return RoutedMessagesRequest(
             request=routed.request,
             resolved=replace(routed.resolved, thinking_enabled=False),
+        )
+
+    def _fallback_candidates(
+        self, request_data: MessagesRequest
+    ) -> list[RoutedMessagesRequest]:
+        """Resolve ``FALLBACK_MODELS`` into routed requests for the same payload.
+
+        Each fallback ref is resolved through the same router as the primary, so a
+        fallback can target any provider/model. Returns ``[]`` when unset (no-op).
+        When the request carries images and ``IMAGE_ROUTE`` is set, fallbacks that
+        target a different provider are dropped — they would 400 on the image, so
+        there is no point preflighting them.
+        """
+        candidates: list[RoutedMessagesRequest] = []
+        image_route_target = self._settings.image_route_parts
+        for ref in self._settings.fallback_models:
+            resolved = self._model_router.resolve(ref)
+            routed = request_data.model_copy(deep=True)
+            routed.model = resolved.provider_model
+            if (
+                has_images(routed.messages)
+                and image_route_target is not None
+                and resolved.provider_id != image_route_target[0]
+            ):
+                continue
+            candidates.append(RoutedMessagesRequest(request=routed, resolved=resolved))
+        return candidates
+
+    async def _stream_with_fallback(
+        self,
+        primary: RoutedMessagesRequest,
+        fallbacks: list[RoutedMessagesRequest],
+        *,
+        request_id: str,
+    ) -> AsyncIterator[str]:
+        """Stream the primary; on a pre-output overload, fall back across models.
+
+        Each candidate is opened (preflight is synchronous, so a preflight
+        overload raises here) and its first event awaited. If a candidate raises
+        an ``OVERLOADED`` failure *before* producing any output, the next
+        candidate is tried. Once any candidate yields its first event we commit
+        to it and pass the rest through unchanged — never switching mid-stream.
+        If every candidate overloads, the last error is re-raised so the
+        fail-closed contract (e.g. auto-mode classifier) is preserved.
+        """
+        candidates = [primary, *fallbacks]
+        last_error: BaseException | None = None
+        for index, cand in enumerate(candidates):
+            is_last = index == len(candidates) - 1
+            try:
+                stream = self._provider_executor.stream(
+                    cand,
+                    wire_api="messages",
+                    raw_log_label="FULL_PAYLOAD",
+                    raw_log_payload=cand.request.model_dump(),
+                    request_id=request_id,
+                )
+            except ExecutionFailure as exc:
+                if is_last or exc.kind != FailureKind.OVERLOADED:
+                    raise
+                last_error = exc
+                self._trace_fallback(cand, index, request_id, "preflight_overload")
+                continue
+
+            iterator = stream.__aiter__()
+            try:
+                first = await iterator.__anext__()
+            except StopAsyncIteration:
+                return
+            except GeneratorExit, asyncio.CancelledError:
+                raise
+            except BaseException as exc:
+                failure = find_execution_failure(exc)
+                if is_last or failure is None or failure.kind != FailureKind.OVERLOADED:
+                    raise
+                last_error = exc
+                self._trace_fallback(cand, index, request_id, "stream_overload")
+                continue
+
+            yield first
+            async for chunk in iterator:
+                yield chunk
+            return
+
+        if last_error is not None:
+            raise last_error
+
+    def _trace_fallback(
+        self,
+        routed: RoutedMessagesRequest,
+        index: int,
+        request_id: str,
+        reason: str,
+    ) -> None:
+        logger.warning(
+            "Model '{}' overloaded before output ({}); trying next candidate",
+            routed.request.model,
+            reason,
+        )
+        trace_event(
+            stage="routing",
+            event="free_claude_code.api.route.fallback",
+            source="api",
+            provider_id=routed.resolved.provider_id,
+            provider_model=routed.resolved.provider_model,
+            gateway_model=routed.request.model,
+            fallback_index=index,
+            reason=reason,
+            request_id=request_id,
         )
 
     def _maybe_reroute_for_images(

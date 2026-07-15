@@ -146,6 +146,16 @@ class Settings(BaseSettings):
         default=None, validation_alias="CLASSIFIER_ROUTE"
     )
 
+    # Optional cross-model fallback chain. When the primary model errors with an
+    # overload *before* producing any output, each ref here is tried in order
+    # until one streams. Once any output is produced the gateway commits to that
+    # model (never switches mid-stream). Empty = no fallback.
+    # Format: comma-separated ``provider/model`` refs, e.g.
+    # ``open_router/deepseek/deepseek-chat,groq/llama-3.3-70b``.
+    fallback_models: Annotated[list[str], NoDecode] = Field(
+        default_factory=list, validation_alias="FALLBACK_MODELS"
+    )
+
     # Per-model overrides (optional, falls back to MODEL)
     # Each can use a different provider
     model_fable: str | None = Field(default=None, validation_alias="MODEL_FABLE")
@@ -374,6 +384,22 @@ class Settings(BaseSettings):
         if v == "" or v is None:
             return None
         return v
+
+    @field_validator("fallback_models", mode="before")
+    @classmethod
+    def parse_fallback_models(cls, v: Any) -> Any:
+        """Parse the fallback model chain from a comma-separated string or list.
+
+        Blank entries and surrounding whitespace are ignored. An empty/blank
+        value yields an empty list (fallback disabled).
+        """
+        if v is None or v == "":
+            return []
+        if isinstance(v, (list, tuple)):
+            return [str(item).strip() for item in v if str(item).strip()]
+        if not isinstance(v, str):
+            return v
+        return [entry.strip() for entry in v.split(",") if entry.strip()]
 
     @field_validator("image_route", "classifier_route", mode="before")
     @classmethod

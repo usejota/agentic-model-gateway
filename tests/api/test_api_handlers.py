@@ -620,6 +620,37 @@ async def test_messages_handler_strips_old_images_when_last_turn_text_only() -> 
 
 
 @pytest.mark.asyncio
+async def test_messages_handler_classifier_already_on_target_no_reroute() -> None:
+    """Classifier request already routed to the CLASSIFIER_ROUTE target: no swap."""
+    provider = FakeProvider()
+    resolved_providers: list[str] = []
+
+    def resolver(provider_id: str):
+        resolved_providers.append(provider_id)
+        return provider
+
+    settings = Settings()
+    settings.classifier_route = "open_router/some/classifier-model"
+    handler = MessagesHandler(settings, provider_resolver=resolver)
+    # The incoming model already resolves to the classifier target.
+    request = MessagesRequest(
+        model="open_router/some/classifier-model",
+        max_tokens=100,
+        stream=True,
+        system=_CLASSIFIER_SYSTEM,
+        messages=[Message(role="user", content=_CLASSIFIER_USER)],
+    )
+
+    with patch("free_claude_code.api.handlers.messages.trace_event"):
+        response = await handler.create(request)
+        assert isinstance(response, StreamingResponse)
+        await _streaming_body_text(response)
+
+    # Forwarded model is unchanged (no reroute churn).
+    assert provider.requests[0].model == "some/classifier-model"
+
+
+@pytest.mark.asyncio
 async def test_messages_handler_no_classifier_reroute_for_non_classifier() -> None:
     provider = FakeProvider()
     settings = Settings()

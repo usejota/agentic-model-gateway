@@ -1144,3 +1144,67 @@ class TestProxyUserTokens:
         monkeypatch.setenv("PROXY_USER_TOKENS", "no-colon-here")
         with pytest.raises(ValidationError):
             Settings()
+
+
+class TestRouteParsing:
+    """CLASSIFIER_ROUTE / IMAGE_ROUTE validator (Settings.parse_route)."""
+
+    def test_empty_route_is_none(self, monkeypatch):
+        from free_claude_code.config.settings import Settings
+
+        monkeypatch.setitem(Settings.model_config, "env_file", ())
+        monkeypatch.setenv("CLASSIFIER_ROUTE", "")
+        monkeypatch.setenv("IMAGE_ROUTE", "   ")
+        settings = Settings()
+        assert settings.classifier_route is None
+        assert settings.image_route is None
+
+    def test_classifier_route_missing_slash_raises(self, monkeypatch):
+        from free_claude_code.config.settings import Settings
+
+        monkeypatch.setitem(Settings.model_config, "env_file", ())
+        monkeypatch.setenv("CLASSIFIER_ROUTE", "just-a-model")
+        with pytest.raises(ValidationError):
+            Settings()
+
+    def test_image_route_missing_slash_raises(self, monkeypatch):
+        from free_claude_code.config.settings import Settings
+
+        monkeypatch.setitem(Settings.model_config, "env_file", ())
+        monkeypatch.setenv("IMAGE_ROUTE", "noslash")
+        with pytest.raises(ValidationError):
+            Settings()
+
+    def test_route_unknown_provider_raises(self, monkeypatch):
+        from free_claude_code.config.settings import Settings
+
+        monkeypatch.setitem(Settings.model_config, "env_file", ())
+        monkeypatch.setenv("CLASSIFIER_ROUTE", "nope/model")
+        with pytest.raises(ValidationError):
+            Settings()
+
+    def test_classifier_route_parts(self, monkeypatch):
+        from free_claude_code.config.settings import Settings
+
+        monkeypatch.setitem(Settings.model_config, "env_file", ())
+        monkeypatch.setenv("CLASSIFIER_ROUTE", "open_router/qwen/qwen3-30b")
+        settings = Settings()
+        assert settings.classifier_route_parts == ("open_router", "qwen/qwen3-30b")
+
+    def test_image_route_parts(self, monkeypatch):
+        from free_claude_code.config.settings import Settings
+
+        monkeypatch.setitem(Settings.model_config, "env_file", ())
+        monkeypatch.setenv("IMAGE_ROUTE", "open_router/vision/model")
+        settings = Settings()
+        assert settings.image_route_parts == ("open_router", "vision/model")
+
+    def test_route_parts_none_when_unset(self, monkeypatch):
+        from free_claude_code.config.settings import Settings
+
+        monkeypatch.setitem(Settings.model_config, "env_file", ())
+        monkeypatch.delenv("CLASSIFIER_ROUTE", raising=False)
+        monkeypatch.delenv("IMAGE_ROUTE", raising=False)
+        settings = Settings()
+        assert settings.classifier_route_parts is None
+        assert settings.image_route_parts is None
