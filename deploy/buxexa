@@ -1,0 +1,130 @@
+#!/usr/bin/env bash
+#
+# buxexa — launch Claude Code against the Jota AI Gateway (free-claude-code proxy)
+# over Tailscale. Install once (see scripts/install-buxexa.sh), then run `buxexa`
+# from any directory like you would `claude`.
+#
+#   buxexa                 # interactive Claude Code, pointed at the gateway
+#   buxexa "fix this bug"  # all args pass straight through to claude
+#   buxexa upgrade         # update buxexa itself (re-runs the installer)
+#
+# Requirements on the dev machine:
+#   - Tailscale: installed and logged in to the company tailnet (jota.ai),
+#     and your user permitted by the tailnet ACL to reach tag:fcc-proxy.
+#   - Claude Code: `npm install -g @anthropic-ai/claude-code`.
+#
+# Override any default with an env var (e.g. in your shell rc):
+#   BUXEXA_HOST      proxy MagicDNS host       (default: fcc-proxy)
+#   BUXEXA_TAILNET   tailnet DNS suffix        (default: tail576af6.ts.net)
+#   BUXEXA_PORT      proxy port                (default: 8082)
+#   BUXEXA_TOKEN     proxy auth token          (default: freecc)
+#   BUXEXA_WAIT      seconds to wait for proxy (default: 30)
+#   BUXEXA_BASE_URL  override the gateway endpoint entirely (e.g.
+#                     http://localhost:8082) for LOCAL TESTING against a
+#                     gateway that is NOT on the tailnet. When set, the
+#                     tailscale-connected check and the nc reachability probe
+#                     are skipped (reachable() falls back to its curl branch).
+#
+set -euo pipefail
+
+# Invocation name — drives user-facing messages and the `upgrade` target.
+# Derived from $0 so the launcher is renameable: install it as `buxexa`
+# (default), `lobuxexa`, or any other name and every self-reference follows.
+# "buxexa" is the default install name, NOT a hard dependency. (BUXEXA_*
+# env vars stay the stable public interface regardless of the binary name —
+# retro-compat for existing shell configs.)
+SELF="${0##*/}"
+
+# Baked defaults — the installer may stamp these at install time so a named
+# install (e.g. a local-test wrapper) points at its own gateway without env
+# vars. Empty = use BUXEXA_* env / built-in defaults. DO NOT rename these
+# variables or the marker comments; scripts/install-buxexa.sh seds them.
+BUXEXA_BAKED_BASE_URL=""
+
+HOST="${BUXEXA_HOST:-fcc-proxy}"
+TAILNET="${BUXEXA_TAILNET:-tail576af6.ts.net}"
+PORT="${BUXEXA_PORT:-8082}"
+TOKEN="${BUXEXA_TOKEN:-freecc}"
+WAIT="${BUXEXA_WAIT:-30}"
+
+FQDN="${HOST}.${TAILNET}"
+BASE_URL="${BUXEXA_BASE_URL:-${BUXEXA_BAKED_BASE_URL:-http://${FQDN}:${PORT}}}"
+
+say()  { echo "[${SELF}] $*" >&2; }
+die()  { echo "[${SELF}] error: $*" >&2; exit 1; }
+
+# Self-update of the buxexa launcher ONLY. Intercepted as the bare first arg so it
+# never reaches `claude` (this updates buxexa, NOT Claude Code — for the latter use
+# `claude update`). Runs before the claude/tailscale checks so it works regardless.
+case "${1:-}" in
+  upgrade|--upgrade|self-update|--self-update)
+    INSTALLER="${BUXEXA_INSTALLER:-https://raw.githubusercontent.com/usejota/agentic-model-gateway/main/scripts/install-buxexa.sh}"
+    say "upgrading ${SELF} from ${INSTALLER}"
+    # Pass BUXEXA_NAME so the installer reinstalls under the CURRENT binary
+    # name (e.g. `lobuxexa upgrade` stays `lobuxexa`, doesn't revert to the
+    # default `buxexa`). The installer source filename is stable; the install
+    # name is what's parameterized.
+    # Extract any baked gateway URL from the current binary so re-install
+    # preserves it (e.g. a local-test wrapper keeps pointing at localhost).
+    _baked="$(sed -n 's/^BUXEXA_BAKED_BASE_URL="\(.*\)"$/\1/p' "$0" | head -1)"
+    export BUXEXA_NAME="${SELF}"
+    [ -n "${_baked}" ] && export BUXEXA_DEFAULT_BASE_URL="${_baked}"
+    # Shell-quote the installer URL instead of interpolating it into a string the
+    # shell re-parses: BUXEXA_INSTALLER is user-controlled (env), so a value with
+    # shell metacharacters could otherwise inject commands into the upgrade
+    # subshell. printf %q makes it safe to embed.
+    _installer_q="$(printf '%q' "${INSTALLER}")"
+    if command -v curl >/dev/null 2>&1; then
+      exec sh -c "curl -fsSL ${_installer_q} | sh"
+    elif command -v wget >/dev/null 2>&1; then
+      exec sh -c "wget -qO- ${_installer_q} | sh"
+    fi
+    die "need curl or wget to upgrade ${SELF}"
+    ;;
+esac
+
+command -v claude >/dev/null 2>&1 || die "claude not found. Install: npm install -g @anthropic-ai/claude-code"
+
+# Tailscale checks only apply to the default tailnet path. When BUXEXA_BASE_URL
+# overrides the endpoint (local testing against a non-tailnet gateway), skip
+# them and let reachable() probe the URL directly via its curl branch.
+if [ -z "${BUXEXA_BASE_URL:-}${BUXEXA_BAKED_BASE_URL}" ]; then
+  command -v tailscale >/dev/null 2>&1 || die "tailscale not found. Install Tailscale and log in to the jota.ai tailnet."
+
+  # Must be connected to the tailnet.
+  if ! tailscale status >/dev/null 2>&1; then
+    die "not connected to the tailnet. Run 'tailscale up' (or open the Tailscale app) and retry."
+  fi
+fi
+
+# Wait for the gateway to be reachable (it may be briefly unreachable; node could be asleep).
+reachable() {
+  if [ -z "${BUXEXA_BASE_URL:-}${BUXEXA_BAKED_BASE_URL}" ] && command -v nc >/dev/null 2>&1; then
+    nc -z -w 3 "${FQDN}" "${PORT}" >/dev/null 2>&1
+  else
+    curl -s -o /dev/null -m 3 "${BASE_URL}/v1/models" -H "x-api-key: ${TOKEN}"
+  fi
+}
+
+deadline=$(( $(date +%s) + WAIT ))
+until reachable; do
+  if [ "$(date +%s)" -ge "${deadline}" ]; then
+    die "AI Gateway ${FQDN}:${PORT} not reachable within ${WAIT}s.
+  Check: 'tailscale status' shows you connected and lists '${HOST}';
+  the tailnet ACL permits you to reach tag:fcc-proxy on tcp:${PORT};
+  the gateway is up (ask an admin). Override host/tailnet with BUXEXA_HOST / BUXEXA_TAILNET."
+  fi
+  sleep 1
+done
+
+export ANTHROPIC_BASE_URL="${BASE_URL}"
+export ANTHROPIC_AUTH_TOKEN="${TOKEN}"
+export CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1   # enables the /model picker
+
+# High default; Claude Code clamps it to each model's real context window, so 1M
+# ([1m]) models compact near 1M and smaller models clamp down to ~200K on their
+# own. Lower it (or export in your shell) to force earlier compaction.
+export CLAUDE_CODE_AUTO_COMPACT_WINDOW="${CLAUDE_CODE_AUTO_COMPACT_WINDOW:-1000000}"
+
+say "gateway ${BASE_URL} — launching claude"
+exec claude "$@"

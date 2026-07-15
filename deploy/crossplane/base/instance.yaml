@@ -1,0 +1,71 @@
+---
+# The proxy VM. Hardening (domain_docs/security.md, networking.md, cloud_infra.md):
+#   - NO accessConfig under networkInterface  => no external IP (private only).
+#   - dedicated fcc-sa (serviceAccountRef)    => least privilege via secret-level IAM.
+#   - tags fcc-proxy/fcc-admin                => matched by the tag-scoped firewalls.
+#   - enable-oslogin: "TRUE"                  => SSH gated by OS Login + IAM, not keys.
+#   - PROVIDER_KEY_SECRET_RESOURCE metadata   => app fetches the key at runtime
+#                                                (key never persisted to disk).
+# metadataStartupScript: paste the contents of deploy/startup.sh here (or host it and
+# use metadataStartupScriptUrl). The overlay or operator injects it — see
+# deploy/crossplane/README.md. startup.sh reads the fcc-* / PROVIDER_KEY_* metadata below.
+apiVersion: compute.gcp.upbound.io/v1beta1
+kind: Instance
+metadata:
+  name: fcc-proxy
+  namespace: crossplane-system
+  labels:
+    service: free-claude-code
+    managed-by: crossplane
+  annotations:
+    crossplane.io/external-name: fcc-proxy
+spec:
+  forProvider:
+    project: "" # patched per-env
+    zone: "" # patched per-env (e.g. southamerica-east1-a)
+    machineType: e2-standard-2
+    # OS Login + the Secret Manager resource the app reads at runtime.
+    metadata:
+      enable-oslogin: "TRUE"
+      # PROVIDER_KEY_SECRET_RESOURCE is patched per-env to the full resource name:
+      #   projects/<project>/secrets/fcc-provider-key/versions/latest
+      PROVIDER_KEY_SECRET_RESOURCE: ""
+      fcc-secret-name: fcc-provider-key
+      fcc-port: "8082"
+      # Which repo/branch the VM clones + runs. Defaults in startup.sh point at the
+      # usejota fork main; overlays pin a branch (e.g. the hardening branch in stg).
+      fcc-repo-url: https://github.com/usejota/agentic-model-gateway.git
+      fcc-repo-branch: main
+      # Tailscale: join the tailnet on boot so engineers reach the VM by MagicDNS
+      # name (matches the staging tailscale-fw / PKI access pattern). The OAuth
+      # client secret lives in the fcc-tailscale-oauth Secret Manager secret.
+      fcc-tailscale-enabled: "TRUE"
+      fcc-tailscale-oauth-secret: fcc-tailscale-oauth
+      fcc-tailscale-tags: tag:fcc-proxy
+      fcc-tailscale-hostname: fcc-proxy
+    # Paste deploy/startup.sh contents here (kept empty in base; see README).
+    metadataStartupScript: ""
+    bootDisk:
+      - initializeParams:
+          - image: projects/debian-cloud/global/images/family/debian-12
+            size: 20
+    networkInterface:
+      - subnetworkRef:
+          name: fcc-subnetwork
+        # No accessConfig block => the VM gets no external/public IP.
+    serviceAccount:
+      # Upbound provider-gcp v2.x: the attached SA is referenced by EMAIL
+      # (field `email`/`emailRef`/`emailSelector`), not `serviceAccountRef`.
+      # emailRef pulls the email from the fcc-sa ServiceAccount MR.
+      - emailRef:
+          name: fcc-sa
+        # API scope is broad by convention; effective access is constrained by the
+        # SA's IAM (secret-level accessor + logWriter only). See security.md #2.
+        scopes:
+          - https://www.googleapis.com/auth/cloud-platform
+    tags:
+      - fcc-proxy
+      - fcc-admin
+  providerConfigRef:
+    name: default
+  deletionPolicy: Orphan

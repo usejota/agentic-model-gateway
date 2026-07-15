@@ -1,0 +1,109 @@
+---
+# Secret-LEVEL IAM binding (least privilege): grant the proxy SA accessor on the
+# single provider-key secret only — NOT a project-wide secretmanager role.
+# This is stricter than octopus marble (which uses ProjectIAMMember). See
+# domain_docs/security.md (#2, #9). secretIdRef points at the Secret MR by name.
+apiVersion: secretmanager.gcp.upbound.io/v1beta1
+kind: SecretIAMMember
+metadata:
+  name: fcc-sa-secret-accessor
+  namespace: crossplane-system
+  labels:
+    service: free-claude-code
+    managed-by: crossplane
+spec:
+  forProvider:
+    project: "" # patched per-env
+    role: roles/secretmanager.secretAccessor
+    member: "" # patched per-env: serviceAccount:fcc-sa@<project>.iam.gserviceaccount.com
+    secretIdRef:
+      name: fcc-provider-key
+  providerConfigRef:
+    name: default
+  deletionPolicy: Orphan
+---
+# Secret-level accessor for the Tailscale OAuth client secret (VM reads it at boot
+# to join the tailnet). Same least-privilege pattern as the provider key.
+apiVersion: secretmanager.gcp.upbound.io/v1beta1
+kind: SecretIAMMember
+metadata:
+  name: fcc-sa-tailscale-accessor
+  namespace: crossplane-system
+  labels:
+    service: free-claude-code
+    managed-by: crossplane
+spec:
+  forProvider:
+    project: "" # patched per-env
+    role: roles/secretmanager.secretAccessor
+    member: "" # patched per-env: serviceAccount:fcc-sa@<project>.iam.gserviceaccount.com
+    secretIdRef:
+      name: fcc-tailscale-oauth
+  providerConfigRef:
+    name: default
+  deletionPolicy: Orphan
+---
+# Allow the proxy SA to write Cloud Logging entries (loguru -> journald -> Cloud
+# Logging). Project-level is the supported scope for this role.
+apiVersion: cloudplatform.gcp.upbound.io/v1beta1
+kind: ProjectIAMMember
+metadata:
+  name: fcc-sa-log-writer
+  namespace: crossplane-system
+  labels:
+    service: free-claude-code
+    managed-by: crossplane
+spec:
+  forProvider:
+    project: "" # patched per-env
+    role: roles/logging.logWriter
+    member: "" # patched per-env: serviceAccount:fcc-sa@<project>.iam.gserviceaccount.com
+  providerConfigRef:
+    name: default
+  deletionPolicy: Orphan
+---
+# ACCESS CONTROL (declarative) — instance-level IAM gating who may reach the VM.
+# Tunnel users: the eng group may open IAP TCP tunnels to the proxy. This is the
+# entire access surface — not in the group => IAP rejects before any byte reaches
+# the proxy. See domain_docs/networking.md / free-claude-code-gcp-plan.md §4.
+apiVersion: compute.gcp.upbound.io/v1beta1
+kind: InstanceIAMMember
+metadata:
+  name: fcc-iap-tunnel-users
+  namespace: crossplane-system
+  labels:
+    service: free-claude-code
+    managed-by: crossplane
+spec:
+  forProvider:
+    project: "" # patched per-env
+    zone: "" # patched per-env
+    instanceNameRef:
+      name: fcc-proxy
+    role: roles/iap.tunnelResourceAccessor
+    member: "" # patched per-env: group:ai-gateway@jota.ai
+  providerConfigRef:
+    name: default
+  deletionPolicy: Orphan
+---
+# Admin SSH: a smaller admins group gets OS Login on the VM (SSH over IAP for
+# config/maintenance). Gated by OS Login + IAM, not SSH keys. See security.md #10.
+apiVersion: compute.gcp.upbound.io/v1beta1
+kind: InstanceIAMMember
+metadata:
+  name: fcc-oslogin-admins
+  namespace: crossplane-system
+  labels:
+    service: free-claude-code
+    managed-by: crossplane
+spec:
+  forProvider:
+    project: "" # patched per-env
+    zone: "" # patched per-env
+    instanceNameRef:
+      name: fcc-proxy
+    role: roles/compute.osLogin
+    member: "" # patched per-env: group:ai-gateway-admins@jota.ai
+  providerConfigRef:
+    name: default
+  deletionPolicy: Orphan
