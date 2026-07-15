@@ -568,6 +568,58 @@ async def test_messages_handler_no_image_reroute_for_text_request() -> None:
 
 
 @pytest.mark.asyncio
+async def test_messages_handler_strips_old_images_when_last_turn_text_only() -> None:
+    """Old history image + text-only current turn → strip, no reroute to vision."""
+    provider = FakeProvider()
+    resolved_providers: list[str] = []
+
+    def resolver(provider_id: str):
+        resolved_providers.append(provider_id)
+        return provider
+
+    settings = Settings()
+    settings.image_route = "open_router/vision/model"
+    handler = MessagesHandler(settings, provider_resolver=resolver)
+    request = MessagesRequest.model_validate(
+        {
+            "model": "deepseek/text-only",
+            "max_tokens": 100,
+            "stream": True,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "what's this?"},
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/png",
+                                "data": "AAAA",
+                            },
+                        },
+                    ],
+                },
+                {"role": "assistant", "content": "a red pixel"},
+                {"role": "user", "content": "thanks, now a follow-up question"},
+            ],
+        }
+    )
+
+    with patch("free_claude_code.api.handlers.messages.trace_event"):
+        response = await handler.create(request)
+        assert isinstance(response, StreamingResponse)
+        await _streaming_body_text(response)
+
+    # Stayed on the text-only primary (no vision reroute)...
+    assert "open_router" not in resolved_providers
+    assert provider.requests[0].model == "text-only"
+    # ...and the old image was replaced by a text placeholder so it won't 400.
+    forwarded = provider.requests[0].model_dump()
+    assert '"type": "image"' not in json.dumps(forwarded)
+
+
+@pytest.mark.asyncio
 async def test_messages_handler_no_classifier_reroute_for_non_classifier() -> None:
     provider = FakeProvider()
     settings = Settings()
