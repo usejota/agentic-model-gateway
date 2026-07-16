@@ -47,13 +47,12 @@ def test_models_list_includes_configured_refs_cached_provider_models_and_aliases
     assert response.status_code == 200
     data = response.json()
     ids = [item["id"] for item in data["data"]]
-    assert ids[:6] == [
-        "anthropic/deepseek/deepseek-chat",
-        "claude-3-freecc-no-thinking/deepseek/deepseek-chat",
-        "anthropic/open_router/anthropic/claude-opus",
-        "claude-3-freecc-no-thinking/open_router/anthropic/claude-opus",
-        "anthropic/open_router/meta/llama-3.3",
-        "claude-3-freecc-no-thinking/open_router/meta/llama-3.3",
+    # Pinned Claude aliases come first (Opus base, no [1m] since override is 200K).
+    assert ids[:4] == [
+        "claude-opus-4-20250514",
+        "claude-fable-5",
+        "claude-sonnet-4-20250514",
+        "claude-haiku-4-20250514",
     ]
     assert ids.count("anthropic/deepseek/deepseek-chat") == 1
     assert ids.count("anthropic/open_router/anthropic/claude-opus") == 1
@@ -112,7 +111,8 @@ def test_models_list_uses_cached_metadata_for_configured_refs():
 
     ids = [item["id"] for item in response.json()["data"]]
     assert "anthropic/open_router/plain-model" not in ids
-    assert ids[0] == "claude-3-freecc-no-thinking/open_router/plain-model"
+    assert ids[0] == "claude-opus-4-20250514"
+    assert "claude-3-freecc-no-thinking/open_router/plain-model" in ids
 
 
 def test_models_list_includes_cached_wafer_models():
@@ -211,9 +211,62 @@ def test_models_list_works_with_empty_discovery_catalog():
     assert response.status_code == 200
     ids = [item["id"] for item in response.json()["data"]]
     assert ids[:4] == [
-        "anthropic/deepseek/deepseek-chat",
-        "claude-3-freecc-no-thinking/deepseek/deepseek-chat",
-        "anthropic/open_router/anthropic/claude-opus",
-        "claude-3-freecc-no-thinking/open_router/anthropic/claude-opus",
+        "claude-opus-4-20250514",
+        "claude-fable-5",
+        "claude-sonnet-4-20250514",
+        "claude-haiku-4-20250514",
     ]
     assert "claude-sonnet-4-20250514" in ids
+
+
+def test_pinned_models_come_first_and_remaining_are_alphabetical():
+    app = create_test_app(_settings())
+    _cache_models(app, "deepseek", "deepseek-chat")
+    _cache_models(app, "open_router", "meta/llama-3.3", "anthropic/claude-opus")
+
+    items = TestClient(app).get("/v1/models").json()["data"]
+    ids = [item["id"] for item in items]
+
+    pinned = ids[:4]
+    assert pinned == [
+        "claude-opus-4-20250514",
+        "claude-fable-5",
+        "claude-sonnet-4-20250514",
+        "claude-haiku-4-20250514",
+    ]
+
+    remaining = ids[4:]
+    remaining_display = [
+        item["display_name"] for item in items if item["id"] in remaining
+    ]
+    assert remaining_display == sorted(remaining_display, key=str.casefold)
+
+    assert len(ids) == len(set(ids))
+
+
+def test_pinned_prefers_1m_alias_over_base_for_opus_and_fable():
+    app = create_test_app(
+        _settings(
+            model_fable="deepseek/deepseek-v4-pro",
+            model_opus="deepseek/deepseek-v4-pro",
+            model_haiku=None,
+        )
+    )
+
+    ids = [item["id"] for item in TestClient(app).get("/v1/models").json()["data"]]
+
+    assert ids[0] == "claude-opus-4-20250514[1m]"
+    assert ids[1] == "claude-fable-5[1m]"
+
+
+def test_pinned_falls_back_to_base_when_no_1m_override():
+    app = create_test_app(_settings(model_opus="open_router/small", model_haiku=None))
+    provider_manager_for_app(app).cache_model_infos(
+        "open_router",
+        {ProviderModelInfo("small", supports_thinking=True, context_window=200_000)},
+    )
+
+    ids = [item["id"] for item in TestClient(app).get("/v1/models").json()["data"]]
+
+    assert ids[0] == "claude-opus-4-20250514"
+    assert ids[1] == "claude-fable-5"
