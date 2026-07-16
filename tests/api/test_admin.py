@@ -172,6 +172,9 @@ def test_admin_config_masks_secrets_and_exposes_manifest(monkeypatch, tmp_path):
     keys = {field["key"] for field in body["fields"]}
     assert "MODEL_FABLE" in keys
     assert "ENABLE_FABLE_THINKING" in keys
+    assert "FALLBACK_MODELS" in keys
+    assert "IMAGE_ROUTE" in keys
+    assert "CLASSIFIER_ROUTE" in keys
     assert "ANTHROPIC_AUTH_TOKEN" in keys
     assert "OPENROUTER_API_KEY" in keys
     assert "FIREWORKS_API_KEY" in keys
@@ -209,7 +212,15 @@ def test_admin_config_masks_secrets_and_exposes_manifest(monkeypatch, tmp_path):
         field["key"]: field["type"]
         for field in body["fields"]
         if field["key"]
-        in {"MODEL", "MODEL_FABLE", "MODEL_OPUS", "MODEL_SONNET", "MODEL_HAIKU"}
+        in {
+            "MODEL",
+            "MODEL_FABLE",
+            "MODEL_OPUS",
+            "MODEL_SONNET",
+            "MODEL_HAIKU",
+            "IMAGE_ROUTE",
+            "CLASSIFIER_ROUTE",
+        }
     }
     assert model_field_types == {
         "MODEL": "model",
@@ -217,6 +228,8 @@ def test_admin_config_masks_secrets_and_exposes_manifest(monkeypatch, tmp_path):
         "MODEL_OPUS": "optional_model",
         "MODEL_SONNET": "optional_model",
         "MODEL_HAIKU": "optional_model",
+        "IMAGE_ROUTE": "optional_model",
+        "CLASSIFIER_ROUTE": "optional_model",
     }
     restart_required = {
         field["key"] for field in body["fields"] if field["restart_required"] is True
@@ -322,6 +335,32 @@ def test_admin_config_preserves_managed_env_source_contract(monkeypatch, tmp_pat
     model_field = next(field for field in body["fields"] if field["key"] == "MODEL")
     assert model_field["source"] == "managed_env"
     assert model_field["locked"] is False
+
+
+def test_admin_apply_preserves_route_overrides_in_managed_env(monkeypatch, tmp_path):
+    _set_home(monkeypatch, tmp_path)
+    _clear_process_config(monkeypatch)
+    env_file = tmp_path / ".fcc" / ".env"
+    env_file.parent.mkdir(parents=True)
+    env_file.write_text(
+        "CLASSIFIER_ROUTE=open_router/google/gemini-2.5-flash\n"
+        "IMAGE_ROUTE=open_router/qwen/qwen3-vl-8b-instruct\n"
+        "FALLBACK_MODELS=open_router/deepseek/deepseek-chat\n",
+        encoding="utf-8",
+    )
+    app = create_test_app()
+
+    response = _local_client(app).post(
+        "/admin/api/config/apply",
+        json={"values": {"FCC_OPEN_BROWSER": False}},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["applied"] is True
+    written = env_file.read_text(encoding="utf-8")
+    assert "CLASSIFIER_ROUTE=open_router/google/gemini-2.5-flash" in written
+    assert "IMAGE_ROUTE=open_router/qwen/qwen3-vl-8b-instruct" in written
+    assert "FALLBACK_MODELS=open_router/deepseek/deepseek-chat" in written
 
 
 def test_admin_apply_persists_open_browser_for_next_launch(monkeypatch, tmp_path):

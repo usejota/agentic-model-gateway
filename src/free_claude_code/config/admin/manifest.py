@@ -143,6 +143,47 @@ _NON_PROVIDER_FIELDS: tuple[ConfigFieldSpec, ...] = (
         description="Select None to use the Default Model for Haiku requests.",
     ),
     ConfigFieldSpec(
+        "FALLBACK_MODELS",
+        "Fallback Models",
+        "models",
+        settings_attr="fallback_models",
+        description=(
+            "Comma-separated provider/model routes tried in order when a request's "
+            "backend is overloaded/unavailable before any output (e.g. "
+            "open_router/deepseek/deepseek-chat,groq/llama-3.3-70b). Empty disables "
+            "fallback. Makes auto-mode's safety classifier resilient to a single "
+            "backend being briefly down."
+        ),
+    ),
+    ConfigFieldSpec(
+        "IMAGE_ROUTE",
+        "Image Route",
+        "models",
+        "optional_model",
+        settings_attr="image_route",
+        description=(
+            "Optional provider/model route used when the request carries image "
+            "content (top-level or nested in a tool_result). Set this to a "
+            "vision-capable model to keep a cheap text-only primary while still "
+            "handling pasted screenshots (e.g. open_router/minimax/minimax-m3). "
+            "Select None to disable the reroute."
+        ),
+    ),
+    ConfigFieldSpec(
+        "CLASSIFIER_ROUTE",
+        "Classifier Route",
+        "models",
+        "optional_model",
+        settings_attr="classifier_route",
+        description=(
+            "Optional provider/model route for Claude Code auto-mode safety "
+            "classifier side-queries. These small non-streaming requests fire on "
+            "every sensitive action; route them to a fast/cheap/stable model to "
+            "keep auto mode responsive (e.g. open_router/google/gemini-2.5-flash). "
+            "Select None to use the session model."
+        ),
+    ),
+    ConfigFieldSpec(
         "ENABLE_MODEL_THINKING",
         "Enable Thinking",
         "thinking",
