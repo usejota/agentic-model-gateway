@@ -143,6 +143,30 @@ _NON_PROVIDER_FIELDS: tuple[ConfigFieldSpec, ...] = (
         description="Select None to use the Default Model for Haiku requests.",
     ),
     ConfigFieldSpec(
+        "IMAGE_ROUTE",
+        "Image Route",
+        "models",
+        "optional_model",
+        settings_attr="image_route",
+        description=(
+            "Optional vision-capable route for requests carrying image content "
+            "(top-level or nested in a tool_result), so a cheap text-only primary "
+            "can still handle pasted screenshots. Select None to disable the reroute."
+        ),
+    ),
+    ConfigFieldSpec(
+        "CLASSIFIER_ROUTE",
+        "Classifier Route",
+        "models",
+        "optional_model",
+        settings_attr="classifier_route",
+        description=(
+            "Optional fast/cheap/stable route for Claude Code auto-mode safety "
+            "classifier side-queries (small non-streaming requests on every "
+            "sensitive action). Select None to use the session model."
+        ),
+    ),
+    ConfigFieldSpec(
         "ENABLE_MODEL_THINKING",
         "Enable Thinking",
         "thinking",
