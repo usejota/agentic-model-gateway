@@ -5,8 +5,6 @@ is needed and the real ``~/.local/bin`` is never touched. Pairs with the static
 launcher-renameability + upgrade-hardening checks on ``deploy/buxexa``.
 """
 
-from __future__ import annotations
-
 import os
 import subprocess
 from pathlib import Path

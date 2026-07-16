@@ -4,11 +4,9 @@ Covers: detection (top-level + nested), placeholder strip round-trip, and
 cache scoping. The module is pure — no provider knowledge, no I/O.
 """
 
-from __future__ import annotations
-
 import copy
 
-from core.anthropic.image_detection import (
+from free_claude_code.core.anthropic.image_detection import (
     ImageCache,
     has_image_in_last_user_turn,
     has_images,
@@ -33,7 +31,7 @@ def _image_block(media_type: str = "image/png", data: str = "BASE64DATA") -> dic
 # --------------------------------------------------------------------------
 def test_has_images_empty_messages() -> None:
     assert has_images([]) is False
-    assert has_images(None) is False  # type: ignore[arg-type]
+    assert has_images(None) is False
 
 
 def test_has_images_string_content() -> None:
@@ -89,9 +87,9 @@ def test_has_images_tool_result_text_only_is_false() -> None:
 
 def test_has_images_unvalidated_input_is_safe() -> None:
     """Anything that doesn't match the spec returns False, never raises."""
-    assert has_images({"not": "a list"}) is False  # type: ignore[arg-type]
-    assert has_images([{"role": "user", "content": 42}]) is False  # type: ignore[list-item]
-    assert has_images("a string") is False  # type: ignore[arg-type]
+    assert has_images({"not": "a list"}) is False
+    assert has_images([{"role": "user", "content": 42}]) is False
+    assert has_images("a string") is False
 
 
 # --------------------------------------------------------------------------
@@ -354,4 +352,4 @@ def test_only_one_user_turn_with_image_returns_true() -> None:
 
 def test_empty_messages_returns_false() -> None:
     assert has_image_in_last_user_turn([]) is False
-    assert has_image_in_last_user_turn(None) is False  # type: ignore[arg-type]
+    assert has_image_in_last_user_turn(None) is False

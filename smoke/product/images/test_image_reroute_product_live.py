@@ -14,8 +14,6 @@ tiny PNG and asserts the response came back successfully (vision model
 processed the image, not 400ed).
 """
 
-from __future__ import annotations
-
 import os
 
 import pytest

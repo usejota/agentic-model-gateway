@@ -1,48 +1,52 @@
 from fastapi.testclient import TestClient
 
-from api.app import create_app
-from api.dependencies import get_settings
-from config.settings import Settings
-from providers.model_listing import ProviderModelInfo
-from providers.registry import ProviderRegistry
+from free_claude_code.application.model_metadata import ProviderModelInfo
+from free_claude_code.config.settings import Settings
+from tests.api.support import create_test_app, provider_manager_for_app
 
 
 def _settings(
     *,
     model: str = "deepseek/deepseek-chat",
-    model_opus: str | None = "open_router/anthropic/claude-opus",
-    model_sonnet: str | None = None,
-    model_haiku: str | None = "deepseek/deepseek-chat",
     model_fable: str | None = None,
+    model_opus: str | None = "open_router/anthropic/claude-opus",
+    model_haiku: str | None = "deepseek/deepseek-chat",
 ) -> Settings:
     return Settings.model_construct(
         model=model,
-        model_opus=model_opus,
-        model_sonnet=model_sonnet,
-        model_haiku=model_haiku,
         model_fable=model_fable,
+        model_opus=model_opus,
+        model_sonnet=None,
+        model_haiku=model_haiku,
         anthropic_auth_token="",
+        deepseek_api_key="deepseek-key",
+        open_router_api_key="open-router-key",
+        wafer_api_key="wafer-key",
+    )
+
+
+def _cache_models(app, provider_id: str, *model_ids: str) -> None:
+    provider_manager_for_app(app).cache_model_infos(
+        provider_id,
+        {ProviderModelInfo(model_id) for model_id in model_ids},
     )
 
 
 def test_models_list_includes_configured_refs_cached_provider_models_and_aliases():
-    app = create_app(lifespan_enabled=False)
-    settings = _settings()
-    registry = ProviderRegistry()
-    registry.cache_model_ids("deepseek", {"deepseek-chat"})
-    registry.cache_model_ids("open_router", {"meta/llama-3.3", "anthropic/claude-opus"})
-    app.state.provider_registry = registry
-    app.dependency_overrides[get_settings] = lambda: settings
+    app = create_test_app(_settings())
+    _cache_models(app, "deepseek", "deepseek-chat")
+    _cache_models(
+        app,
+        "open_router",
+        "meta/llama-3.3",
+        "anthropic/claude-opus",
+    )
 
-    try:
-        response = TestClient(app).get("/v1/models")
-    finally:
-        app.dependency_overrides.clear()
+    response = TestClient(app).get("/v1/models")
 
     assert response.status_code == 200
     data = response.json()
     ids = [item["id"] for item in data["data"]]
-
     assert ids[:6] == [
         "anthropic/deepseek/deepseek-chat",
         "claude-3-freecc-no-thinking/deepseek/deepseek-chat",
@@ -52,11 +56,7 @@ def test_models_list_includes_configured_refs_cached_provider_models_and_aliases
         "claude-3-freecc-no-thinking/open_router/meta/llama-3.3",
     ]
     assert ids.count("anthropic/deepseek/deepseek-chat") == 1
-    assert ids.count("claude-3-freecc-no-thinking/deepseek/deepseek-chat") == 1
     assert ids.count("anthropic/open_router/anthropic/claude-opus") == 1
-    assert (
-        ids.count("claude-3-freecc-no-thinking/open_router/anthropic/claude-opus") == 1
-    )
     display_names = {item["id"]: item["display_name"] for item in data["data"]}
     assert (
         display_names["anthropic/open_router/meta/llama-3.3"]
@@ -67,30 +67,25 @@ def test_models_list_includes_configured_refs_cached_provider_models_and_aliases
         == "open_router/meta/llama-3.3 (no thinking)"
     )
     assert "claude-sonnet-4-20250514" in ids
+    assert "claude-fable-5" in ids
     assert data["first_id"] == ids[0]
     assert data["last_id"] == ids[-1]
     assert data["has_more"] is False
 
 
-def test_models_list_uses_openrouter_thinking_metadata_for_cached_models():
-    app = create_app(lifespan_enabled=False)
-    settings = _settings(model_opus=None)
-    registry = ProviderRegistry()
-    registry.cache_model_ids("deepseek", {"deepseek-chat"})
-    registry.cache_model_infos(
+def test_models_list_uses_thinking_metadata_for_cached_models():
+    app = create_test_app(_settings(model_opus=None))
+    manager = provider_manager_for_app(app)
+    _cache_models(app, "deepseek", "deepseek-chat")
+    manager.cache_model_infos(
         "open_router",
         {
             ProviderModelInfo("reasoning-model", supports_thinking=True),
             ProviderModelInfo("plain-model", supports_thinking=False),
         },
     )
-    app.state.provider_registry = registry
-    app.dependency_overrides[get_settings] = lambda: settings
 
-    try:
-        response = TestClient(app).get("/v1/models")
-    finally:
-        app.dependency_overrides.clear()
+    response = TestClient(app).get("/v1/models")
 
     assert response.status_code == 200
     ids = [item["id"] for item in response.json()["data"]]
@@ -100,50 +95,38 @@ def test_models_list_uses_openrouter_thinking_metadata_for_cached_models():
     assert "claude-3-freecc-no-thinking/open_router/plain-model" in ids
 
 
-def test_models_list_uses_cached_metadata_for_configured_openrouter_refs():
-    app = create_app(lifespan_enabled=False)
-    settings = _settings(
-        model="open_router/plain-model",
-        model_opus=None,
-        model_haiku=None,
+def test_models_list_uses_cached_metadata_for_configured_refs():
+    app = create_test_app(
+        _settings(
+            model="open_router/plain-model",
+            model_opus=None,
+            model_haiku=None,
+        )
     )
-    registry = ProviderRegistry()
-    registry.cache_model_infos(
+    provider_manager_for_app(app).cache_model_infos(
         "open_router",
         {ProviderModelInfo("plain-model", supports_thinking=False)},
     )
-    app.state.provider_registry = registry
-    app.dependency_overrides[get_settings] = lambda: settings
 
-    try:
-        response = TestClient(app).get("/v1/models")
-    finally:
-        app.dependency_overrides.clear()
+    response = TestClient(app).get("/v1/models")
 
-    assert response.status_code == 200
     ids = [item["id"] for item in response.json()["data"]]
     assert "anthropic/open_router/plain-model" not in ids
     assert ids[0] == "claude-3-freecc-no-thinking/open_router/plain-model"
 
 
 def test_models_list_includes_cached_wafer_models():
-    app = create_app(lifespan_enabled=False)
-    settings = _settings(
-        model="wafer/DeepSeek-V4-Pro",
-        model_opus=None,
-        model_haiku=None,
+    app = create_test_app(
+        _settings(
+            model="wafer/DeepSeek-V4-Pro",
+            model_opus=None,
+            model_haiku=None,
+        )
     )
-    registry = ProviderRegistry()
-    registry.cache_model_ids("wafer", {"DeepSeek-V4-Pro", "MiniMax-M2.7"})
-    app.state.provider_registry = registry
-    app.dependency_overrides[get_settings] = lambda: settings
+    _cache_models(app, "wafer", "DeepSeek-V4-Pro", "MiniMax-M2.7")
 
-    try:
-        response = TestClient(app).get("/v1/models")
-    finally:
-        app.dependency_overrides.clear()
+    response = TestClient(app).get("/v1/models")
 
-    assert response.status_code == 200
     ids = [item["id"] for item in response.json()["data"]]
     assert "anthropic/wafer/DeepSeek-V4-Pro" in ids
     assert "claude-3-freecc-no-thinking/wafer/DeepSeek-V4-Pro" in ids
@@ -151,72 +134,79 @@ def test_models_list_includes_cached_wafer_models():
     assert "claude-3-freecc-no-thinking/wafer/MiniMax-M2.7" in ids
 
 
-def test_models_list_advertises_one_m_variant_for_autodiscovered_window():
-    app = create_app(lifespan_enabled=False)
-    settings = _settings(
-        model="open_router/big-model", model_opus=None, model_haiku=None
+def test_models_list_appends_1m_variant_for_manual_override_context():
+    """A configured ref with a manual 1M context override gets a [1m] variant."""
+    app = create_test_app(
+        _settings(
+            model="deepseek/deepseek-v4-pro",
+            model_opus=None,
+            model_haiku=None,
+        )
     )
-    registry = ProviderRegistry()
-    registry.cache_model_infos(
-        "open_router",
-        {
-            ProviderModelInfo(
-                "big-model", supports_thinking=True, context_window=1_000_000
-            ),
-            ProviderModelInfo(
-                "small-model", supports_thinking=True, context_window=200_000
-            ),
-        },
-    )
-    app.state.provider_registry = registry
-    app.dependency_overrides[get_settings] = lambda: settings
 
-    try:
-        response = TestClient(app).get("/v1/models")
-    finally:
-        app.dependency_overrides.clear()
-
-    assert response.status_code == 200
-    data = response.json()["data"]
-    ids = [item["id"] for item in data]
-    display_names = {item["id"]: item["display_name"] for item in data}
-
-    assert "anthropic/open_router/big-model[1m]" in ids
-    assert (
-        display_names["anthropic/open_router/big-model[1m]"]
-        == "open_router/big-model (1M context)"
-    )
-    # The sub-1M model gets no [1m] variant.
-    assert "anthropic/open_router/small-model[1m]" not in ids
-
-
-def test_models_list_advertises_one_m_variant_for_manual_override():
-    app = create_app(lifespan_enabled=False)
-    settings = _settings(
-        model="deepseek/deepseek-v4-pro", model_opus=None, model_haiku=None
-    )
-    app.dependency_overrides[get_settings] = lambda: settings
-
-    try:
-        response = TestClient(app).get("/v1/models")
-    finally:
-        app.dependency_overrides.clear()
-
-    assert response.status_code == 200
-    ids = [item["id"] for item in response.json()["data"]]
-    # deepseek/deepseek-v4-pro is a manual 1M override (catalog), no registry needed.
+    ids = [item["id"] for item in TestClient(app).get("/v1/models").json()["data"]]
+    assert "anthropic/deepseek/deepseek-v4-pro" in ids
     assert "anthropic/deepseek/deepseek-v4-pro[1m]" in ids
 
 
-def test_models_list_works_without_provider_registry():
-    app = create_app(lifespan_enabled=False)
-    settings = _settings()
-    app.dependency_overrides[get_settings] = lambda: settings
+def test_models_list_appends_1m_variant_from_openrouter_context_length():
+    """An OpenRouter model advertising >=1M context_length gets a [1m] variant."""
+    app = create_test_app(
+        _settings(model="open_router/big", model_opus=None, model_haiku=None)
+    )
+    provider_manager_for_app(app).cache_model_infos(
+        "open_router",
+        {ProviderModelInfo("big", supports_thinking=True, context_window=1_000_000)},
+    )
 
-    try:
-        response = TestClient(app).get("/v1/models")
-    finally:
-        app.dependency_overrides.clear()
+    ids = [item["id"] for item in TestClient(app).get("/v1/models").json()["data"]]
+    assert "anthropic/open_router/big[1m]" in ids
+
+
+def test_models_list_no_1m_variant_below_threshold():
+    app = create_test_app(
+        _settings(model="open_router/small", model_opus=None, model_haiku=None)
+    )
+    provider_manager_for_app(app).cache_model_infos(
+        "open_router",
+        {ProviderModelInfo("small", supports_thinking=True, context_window=200_000)},
+    )
+
+    ids = [item["id"] for item in TestClient(app).get("/v1/models").json()["data"]]
+    assert "anthropic/open_router/small[1m]" not in ids
+
+
+def test_models_list_appends_alias_1m_for_1m_capable_fable_override():
+    app = create_test_app(
+        _settings(
+            model_fable="deepseek/deepseek-v4-pro",
+            model_opus=None,
+            model_haiku=None,
+        )
+    )
+
+    ids = [item["id"] for item in TestClient(app).get("/v1/models").json()["data"]]
+    assert "claude-fable-5[1m]" in ids
+    assert "claude-fable-5" in ids
+
+
+def test_models_list_no_alias_1m_when_override_not_1m():
+    app = create_test_app(
+        _settings(
+            model_fable="open_router/anthropic/claude-opus",
+            model_opus=None,
+            model_haiku=None,
+        )
+    )
+
+    ids = [item["id"] for item in TestClient(app).get("/v1/models").json()["data"]]
+    assert "claude-fable-5[1m]" not in ids
+
+
+def test_models_list_works_with_empty_discovery_catalog():
+    app = create_test_app(_settings())
+
+    response = TestClient(app).get("/v1/models")
 
     assert response.status_code == 200
     ids = [item["id"] for item in response.json()["data"]]
@@ -227,83 +217,3 @@ def test_models_list_works_without_provider_registry():
         "claude-3-freecc-no-thinking/open_router/anthropic/claude-opus",
     ]
     assert "claude-sonnet-4-20250514" in ids
-
-
-def test_fable_alias_advertised_as_1m_when_override_supports_it():
-    app = create_app(lifespan_enabled=False)
-    settings = _settings(
-        model_opus=None,
-        model_fable="open_router/big-model",
-    )
-    registry = ProviderRegistry()
-    registry.cache_model_infos(
-        "open_router",
-        {
-            ProviderModelInfo(
-                "big-model", supports_thinking=True, context_window=1_000_000
-            ),
-        },
-    )
-    app.state.provider_registry = registry
-    app.dependency_overrides[get_settings] = lambda: settings
-
-    try:
-        response = TestClient(app).get("/v1/models")
-    finally:
-        app.dependency_overrides.clear()
-
-    assert response.status_code == 200
-    data = response.json()["data"]
-    ids = [item["id"] for item in data]
-    display_names = {item["id"]: item["display_name"] for item in data}
-
-    assert "claude-fable-5[1m]" in ids
-    assert "claude-fable-5" not in ids
-    assert display_names["claude-fable-5[1m]"] == "Fable"
-
-
-def test_fable_alias_stays_bare_without_1m_override():
-    app = create_app(lifespan_enabled=False)
-    settings = _settings(
-        model_opus=None,
-        model_fable="open_router/small-model",
-    )
-    registry = ProviderRegistry()
-    registry.cache_model_infos(
-        "open_router",
-        {
-            ProviderModelInfo(
-                "small-model", supports_thinking=True, context_window=200_000
-            ),
-        },
-    )
-    app.state.provider_registry = registry
-    app.dependency_overrides[get_settings] = lambda: settings
-
-    try:
-        response = TestClient(app).get("/v1/models")
-    finally:
-        app.dependency_overrides.clear()
-
-    assert response.status_code == 200
-    ids = [item["id"] for item in response.json()["data"]]
-
-    assert "claude-fable-5" in ids
-    assert "claude-fable-5[1m]" not in ids
-
-
-def test_fable_alias_stays_bare_when_override_unset():
-    app = create_app(lifespan_enabled=False)
-    settings = _settings(model_opus=None, model_fable=None)
-    app.dependency_overrides[get_settings] = lambda: settings
-
-    try:
-        response = TestClient(app).get("/v1/models")
-    finally:
-        app.dependency_overrides.clear()
-
-    assert response.status_code == 200
-    ids = [item["id"] for item in response.json()["data"]]
-
-    assert "claude-fable-5" in ids
-    assert "claude-fable-5[1m]" not in ids

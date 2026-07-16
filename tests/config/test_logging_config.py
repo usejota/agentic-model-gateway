@@ -7,7 +7,7 @@ from pathlib import Path
 
 from loguru import logger
 
-from config.logging_config import configure_logging
+from free_claude_code.config.logging_config import configure_logging
 
 
 def test_configure_logging_creates_parent_directories(tmp_path) -> None:
@@ -112,7 +112,7 @@ def _capture_json_stdout(tmp_path, monkeypatch) -> io.StringIO:
     """
     buffer = io.StringIO()
     monkeypatch.setenv("FCC_JSON_LOGS", "1")
-    monkeypatch.setattr("config.logging_config.sys.stdout", buffer)
+    monkeypatch.setattr("free_claude_code.config.logging_config.sys.stdout", buffer)
 
     log_file = str(tmp_path / "json.log")
     configure_logging(log_file, force=True)
@@ -123,7 +123,7 @@ def test_json_logs_disabled_by_default(tmp_path, monkeypatch) -> None:
     """Default (env unset): no stdout JSON sink is added; file-only behavior."""
     buffer = io.StringIO()
     monkeypatch.delenv("FCC_JSON_LOGS", raising=False)
-    monkeypatch.setattr("config.logging_config.sys.stdout", buffer)
+    monkeypatch.setattr("free_claude_code.config.logging_config.sys.stdout", buffer)
 
     log_file = str(tmp_path / "default.log")
     configure_logging(log_file, force=True)
@@ -184,7 +184,7 @@ def test_json_logs_safe_when_context_absent(tmp_path, monkeypatch) -> None:
 
 def test_json_logs_env_accepts_truthy_variants(monkeypatch) -> None:
     """Truthy string variants (true/yes/on) all enable the stdout JSON sink."""
-    from config.logging_config import _json_logs_enabled
+    from free_claude_code.config.logging_config import _json_logs_enabled
 
     for value in ("1", "true", "TRUE", "Yes", "on"):
         monkeypatch.setenv("FCC_JSON_LOGS", value)

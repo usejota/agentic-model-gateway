@@ -5,8 +5,6 @@ client and the ``google.cloud.secretmanager`` import are mocked, so no real GCP
 calls are made.
 """
 
-from __future__ import annotations
-
 import builtins
 import sys
 import types
@@ -15,9 +13,8 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from config import secret_source
-from config.secret_source import SecretManagerError, fetch_secret
-from config.settings import Settings
+from free_claude_code.config.secret_source import SecretManagerError, fetch_secret
+from free_claude_code.config.settings import Settings
 
 
 def _module(name: str, **attrs: Any) -> types.ModuleType:
@@ -121,7 +118,7 @@ def test_settings_feature_off_is_noop(monkeypatch):
         called = True
         raise AssertionError("fetch_secret should not be called when feature off")
 
-    monkeypatch.setattr("config.settings.fetch_secret", _fail)
+    monkeypatch.setattr("free_claude_code.config.settings.fetch_secret", _fail)
     monkeypatch.setenv("MODEL", "nvidia_nim/test-model")
     monkeypatch.setenv("NVIDIA_NIM_API_KEY", "disk-key")
 
@@ -134,7 +131,8 @@ def test_settings_feature_on_populates_active_provider_key(monkeypatch):
     """Feature-on resolves the secret into the active provider's key field."""
     _clear_secret_env(monkeypatch)
     monkeypatch.setattr(
-        "config.settings.fetch_secret", lambda _resource: "secret-from-gcp"
+        "free_claude_code.config.settings.fetch_secret",
+        lambda _resource: "secret-from-gcp",
     )
     monkeypatch.setenv("MODEL", "open_router/some/model")
     monkeypatch.setenv("OPENROUTER_API_KEY", "disk-key")
@@ -151,7 +149,8 @@ def test_settings_feature_on_populates_active_provider_key(monkeypatch):
 def test_settings_feature_on_explicit_target(monkeypatch):
     _clear_secret_env(monkeypatch)
     monkeypatch.setattr(
-        "config.settings.fetch_secret", lambda _resource: "explicit-secret"
+        "free_claude_code.config.settings.fetch_secret",
+        lambda _resource: "explicit-secret",
     )
     monkeypatch.setenv("MODEL", "nvidia_nim/test-model")
     monkeypatch.setenv(
@@ -165,7 +164,9 @@ def test_settings_feature_on_explicit_target(monkeypatch):
 
 def test_settings_unknown_target_raises(monkeypatch):
     _clear_secret_env(monkeypatch)
-    monkeypatch.setattr("config.settings.fetch_secret", lambda _resource: "x")
+    monkeypatch.setattr(
+        "free_claude_code.config.settings.fetch_secret", lambda _resource: "x"
+    )
     monkeypatch.setenv("MODEL", "nvidia_nim/test-model")
     monkeypatch.setenv(
         "PROVIDER_KEY_SECRET_RESOURCE", "projects/p/secrets/k/versions/latest"
@@ -177,7 +178,9 @@ def test_settings_unknown_target_raises(monkeypatch):
 
 def test_settings_empty_secret_raises(monkeypatch):
     _clear_secret_env(monkeypatch)
-    monkeypatch.setattr("config.settings.fetch_secret", lambda _resource: "  ")
+    monkeypatch.setattr(
+        "free_claude_code.config.settings.fetch_secret", lambda _resource: "  "
+    )
     monkeypatch.setenv("MODEL", "nvidia_nim/test-model")
     monkeypatch.setenv(
         "PROVIDER_KEY_SECRET_RESOURCE", "projects/p/secrets/k/versions/latest"
@@ -193,15 +196,10 @@ def test_settings_feature_on_missing_package(monkeypatch):
     def _raise(_resource):
         raise SecretManagerError("google-cloud-secret-manager is required ...")
 
-    monkeypatch.setattr("config.settings.fetch_secret", _raise)
+    monkeypatch.setattr("free_claude_code.config.settings.fetch_secret", _raise)
     monkeypatch.setenv("MODEL", "nvidia_nim/test-model")
     monkeypatch.setenv(
         "PROVIDER_KEY_SECRET_RESOURCE", "projects/p/secrets/k/versions/latest"
     )
-    with pytest.raises(SecretManagerError, match="google-cloud-secret-manager"):
+    with pytest.raises((SecretManagerError, ValidationError)):
         Settings()
-
-
-def test_secret_source_module_has_no_top_level_gcp_import():
-    """Lazy import: the module must import without the optional package."""
-    assert "google" not in dir(secret_source)

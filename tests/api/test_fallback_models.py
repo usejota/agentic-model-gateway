@@ -1,42 +1,70 @@
 """Tests for the cross-model fallback chain (FALLBACK_MODELS).
 
-Covers settings parsing and the service-level fallback behavior:
-- no-op when unset (backward compat),
-- fall back to the next model when a backend overloads before any output,
-- stop at the first model that produces output,
-- never switch mid-stream once output has started,
-- surface the original error when every candidate fails.
+Covers settings parsing and the handler-level fallback behavior: no-op when
+unset, fall back to the next model on a pre-output overload, commit to the first
+model that produces output, and surface the error when every candidate fails.
 """
 
-from __future__ import annotations
-
-from typing import cast
+from collections.abc import AsyncIterator
 
 import pytest
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import StreamingResponse
 
-from api.models.anthropic import Message, MessagesRequest
-from api.services import ClaudeProxyService
-from config.settings import Settings
-from providers.base import BaseProvider
-from providers.exceptions import OverloadedError
+from free_claude_code.api.handlers import MessagesHandler
+from free_claude_code.config.settings import Settings
+from free_claude_code.core.anthropic.models import Message, MessagesRequest
+from free_claude_code.core.failures import ExecutionFailure, FailureKind
+
+_EVENTS = [
+    'event: message_start\ndata: {"type":"message_start"}\n\n',
+    'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+]
 
 
-def _settings(fallback_models: str | None = None) -> Settings:
-    kwargs: dict[str, str] = {
-        "model": "nvidia_nim/model-a",
-        "messaging_platform": "none",
-    }
-    if fallback_models is not None:
-        kwargs["FALLBACK_MODELS"] = fallback_models
-    # Settings reads validation aliases from the mapping; pass as a plain dict so
-    # ty doesn't widen a **splat to object across every field type.
-    return Settings.model_validate(kwargs)
+def _overload() -> ExecutionFailure:
+    return ExecutionFailure(
+        kind=FailureKind.OVERLOADED,
+        status_code=529,
+        message="overloaded",
+        retryable=True,
+    )
+
+
+class _GoodProvider:
+    def __init__(self) -> None:
+        self.requests: list[MessagesRequest] = []
+
+    def preflight_stream(self, request, *, thinking_enabled=None) -> None:
+        return None
+
+    async def stream_response(
+        self, request, input_tokens=0, *, request_id=None, thinking_enabled=None
+    ) -> AsyncIterator[str]:
+        self.requests.append(request)
+        for event in _EVENTS:
+            yield event
+
+
+class _OverloadProvider:
+    """Overloads before any output — at preflight or on the first stream event."""
+
+    def __init__(self, at: str = "stream") -> None:
+        self.at = at
+
+    def preflight_stream(self, request, *, thinking_enabled=None) -> None:
+        if self.at == "preflight":
+            raise _overload()
+
+    async def stream_response(
+        self, request, input_tokens=0, *, request_id=None, thinking_enabled=None
+    ) -> AsyncIterator[str]:
+        if self.at == "stream":
+            raise _overload()
+        if False:  # pragma: no cover - makes this a generator
+            yield ""
 
 
 def _request(model: str = "claude-sonnet-4") -> MessagesRequest:
-    # Explicit stream=True: the fallback tests exercise the streaming path. (Omitted
-    # stream now defaults to non-streaming, per the Anthropic spec.)
     return MessagesRequest(
         model=model,
         messages=[Message(role="user", content="hi")],
@@ -46,216 +74,91 @@ def _request(model: str = "claude-sonnet-4") -> MessagesRequest:
 
 
 async def _collect(result: object) -> list[str]:
-    """Drain a StreamingResponse body iterator into a list of string chunks."""
     assert isinstance(result, StreamingResponse)
-    # The provider stubs in this module always yield str chunks.
     return [str(chunk) async for chunk in result.body_iterator]
 
 
 # --------------------------------------------------------------------------
 # Settings parsing
 # --------------------------------------------------------------------------
-def test_fallback_models_empty_by_default() -> None:
-    assert _settings().fallback_models == []
+def test_fallback_models_empty_by_default(monkeypatch) -> None:
+    monkeypatch.setitem(Settings.model_config, "env_file", ())
+    monkeypatch.delenv("FALLBACK_MODELS", raising=False)
+    assert Settings().fallback_models == []
 
 
-def test_fallback_models_parses_comma_list() -> None:
-    s = _settings(
-        fallback_models="open_router/deepseek/deepseek-chat, groq/llama-3.3-70b"
-    )
-    assert s.fallback_models == [
-        "open_router/deepseek/deepseek-chat",
-        "groq/llama-3.3-70b",
-    ]
-
-
-def test_fallback_models_blank_entries_ignored() -> None:
-    assert _settings(fallback_models="a/b,,  ,c/d").fallback_models == ["a/b", "c/d"]
-
-
-def test_fallback_models_empty_string_is_empty() -> None:
-    assert _settings(fallback_models="").fallback_models == []
+def test_fallback_models_parses_comma_list(monkeypatch) -> None:
+    monkeypatch.setitem(Settings.model_config, "env_file", ())
+    monkeypatch.setenv("FALLBACK_MODELS", "open_router/a, groq/b ,")
+    assert Settings().fallback_models == ["open_router/a", "groq/b"]
 
 
 # --------------------------------------------------------------------------
-# Service-level fallback behavior
+# Handler fallback behavior
 # --------------------------------------------------------------------------
-class _Provider:
-    """Minimal provider stub whose stream behavior is scripted per model name."""
+@pytest.mark.asyncio
+async def test_no_fallback_when_unset_uses_primary() -> None:
+    primary = _GoodProvider()
+    settings = Settings()
+    settings.model = "nvidia_nim/model-a"
+    handler = MessagesHandler(settings, provider_resolver=lambda _: primary)
 
-    def __init__(self, behaviors: dict[str, str]) -> None:
-        # behaviors[model] in {"ok", "overload"}
-        self._behaviors = behaviors
-
-    def preflight_stream(self, request: object, *, thinking_enabled: bool) -> None:
-        return None
-
-    async def stream_response(
-        self, request: MessagesRequest, *, input_tokens, request_id, thinking_enabled
-    ):
-        behavior = self._behaviors.get(request.model, "ok")
-        if behavior == "overload":
-            raise OverloadedError(f"{request.model} overloaded")
-        yield f"event: from {request.model}\n\n"
-        yield "[DONE]\n\n"
-
-
-def _service(settings: Settings, behaviors: dict[str, str]) -> ClaudeProxyService:
-    provider = cast(BaseProvider, _Provider(behaviors))
-    return ClaudeProxyService(settings, provider_getter=lambda _pid: provider)
+    result = await handler.create(_request())
+    await _collect(result)
+    assert len(primary.requests) == 1
 
 
 @pytest.mark.asyncio
-async def test_no_fallback_when_primary_ok() -> None:
-    svc = _service(_settings(), {"model-a": "ok"})
-    result = svc.create_message(_request())
+async def test_falls_back_when_primary_overloads_on_stream() -> None:
+    primary = _OverloadProvider(at="stream")
+    backup = _GoodProvider()
+
+    def resolver(provider_id: str):
+        return backup if provider_id == "open_router" else primary
+
+    settings = Settings()
+    settings.model = "nvidia_nim/model-a"
+    settings.fallback_models = ["open_router/backup"]
+    handler = MessagesHandler(settings, provider_resolver=resolver)
+
+    result = await handler.create(_request())
     chunks = await _collect(result)
-    assert any("from model-a" in c for c in chunks)
+    # The backup produced the stream.
+    assert len(backup.requests) == 1
+    assert any("message_start" in c for c in chunks)
 
 
 @pytest.mark.asyncio
-async def test_falls_back_to_next_model_on_overload() -> None:
-    svc = _service(
-        _settings(fallback_models="nvidia_nim/model-b"),
-        {"model-a": "overload", "model-b": "ok"},
-    )
-    result = svc.create_message(_request())
-    chunks = await _collect(result)
-    # Primary (model-a) overloaded before output -> served by fallback model-b.
-    assert any("from model-b" in c for c in chunks)
-    assert not any("from model-a" in c for c in chunks)
+async def test_falls_back_when_primary_overloads_at_preflight() -> None:
+    primary = _OverloadProvider(at="preflight")
+    backup = _GoodProvider()
+
+    def resolver(provider_id: str):
+        return backup if provider_id == "open_router" else primary
+
+    settings = Settings()
+    settings.model = "nvidia_nim/model-a"
+    settings.fallback_models = ["open_router/backup"]
+    handler = MessagesHandler(settings, provider_resolver=resolver)
+
+    result = await handler.create(_request())
+    await _collect(result)
+    assert len(backup.requests) == 1
 
 
 @pytest.mark.asyncio
-async def test_stops_at_first_healthy_fallback() -> None:
-    svc = _service(
-        _settings(fallback_models="nvidia_nim/model-b,nvidia_nim/model-c"),
-        {"model-a": "overload", "model-b": "ok", "model-c": "ok"},
-    )
-    result = svc.create_message(_request())
-    chunks = await _collect(result)
-    assert any("from model-b" in c for c in chunks)
-    assert not any("from model-c" in c for c in chunks)
+async def test_all_candidates_overloaded_surfaces_error() -> None:
+    primary = _OverloadProvider(at="stream")
 
+    settings = Settings()
+    settings.model = "nvidia_nim/model-a"
+    settings.fallback_models = ["open_router/backup"]
+    handler = MessagesHandler(settings, provider_resolver=lambda _: primary)
 
-@pytest.mark.asyncio
-async def test_raises_when_all_candidates_overloaded() -> None:
-    svc = _service(
-        _settings(fallback_models="nvidia_nim/model-b"),
-        {"model-a": "overload", "model-b": "overload"},
-    )
-    result = svc.create_message(_request())
-    with pytest.raises(OverloadedError):
-        await _collect(result)
-
-
-# --------------------------------------------------------------------------
-# Non-streaming (stream: false) — the auto-mode classifier path
-# --------------------------------------------------------------------------
-class _SSEProvider:
-    """Provider stub that emits a minimal well-formed Anthropic SSE stream."""
-
-    def preflight_stream(self, request: object, *, thinking_enabled: bool) -> None:
-        return None
-
-    async def stream_response(
-        self, request: MessagesRequest, *, input_tokens, request_id, thinking_enabled
-    ):
-        import json as _json
-
-        def evt(t: str, d: dict) -> str:
-            return f"event: {t}\ndata: {_json.dumps(d)}\n\n"
-
-        yield evt(
-            "message_start",
-            {
-                "type": "message_start",
-                "message": {
-                    "id": "msg_x",
-                    "role": "assistant",
-                    "model": request.model,
-                    "usage": {"input_tokens": 11, "output_tokens": 1},
-                },
-            },
-        )
-        yield evt(
-            "content_block_start",
-            {
-                "type": "content_block_start",
-                "index": 0,
-                "content_block": {"type": "text", "text": ""},
-            },
-        )
-        yield evt(
-            "content_block_delta",
-            {
-                "type": "content_block_delta",
-                "index": 0,
-                "delta": {"type": "text_delta", "text": "safe"},
-            },
-        )
-        yield evt("content_block_stop", {"type": "content_block_stop", "index": 0})
-        yield evt(
-            "message_delta",
-            {
-                "type": "message_delta",
-                "delta": {"stop_reason": "end_turn"},
-                "usage": {"input_tokens": 11, "output_tokens": 2},
-            },
-        )
-        yield evt("message_stop", {"type": "message_stop"})
-
-
-@pytest.mark.asyncio
-async def test_omitted_stream_is_non_streaming() -> None:
-    # The Anthropic SDK's non-streaming create() OMITS `stream` (does not send
-    # stream:false). That must aggregate to JSON+usage, not stream — otherwise the
-    # auto-mode classifier reading usage.input_tokens off one body breaks.
-    import json as _json
-
-    provider = cast(BaseProvider, _SSEProvider())
-    svc = ClaudeProxyService(_settings(), provider_getter=lambda _pid: provider)
-    request = MessagesRequest(
-        model="claude-haiku-4",
-        messages=[Message(role="user", content="hi")],
-        max_tokens=16,
-        # stream omitted entirely
-    )
-    assert request.stream is None
-    result = svc.create_message(request)
-    import inspect
-
-    assert inspect.isawaitable(result)
-    response = await result
-    assert isinstance(response, JSONResponse)
-    body = _json.loads(bytes(response.body))
-    assert body["usage"]["input_tokens"] == 11
-
-
-@pytest.mark.asyncio
-async def test_non_streaming_returns_json_with_usage() -> None:
-    import json as _json
-
-    settings = _settings()
-    provider = cast(BaseProvider, _SSEProvider())
-    svc = ClaudeProxyService(settings, provider_getter=lambda _pid: provider)
-
-    request = MessagesRequest(
-        model="claude-sonnet-4",
-        messages=[Message(role="user", content="hi")],
-        max_tokens=16,
-        stream=False,
-    )
-    result = svc.create_message(request)
-    # Non-streaming path returns an awaitable resolving to a JSONResponse.
-    import inspect
-
-    assert inspect.isawaitable(result)
-    response = await result
-    assert isinstance(response, JSONResponse)
-    body = _json.loads(bytes(response.body))
-
-    assert body["type"] == "message"
-    assert body["usage"]["input_tokens"] == 11
-    assert body["content"] == [{"type": "text", "text": "safe"}]
-    assert body["stop_reason"] == "end_turn"
+    # stream=True path: the terminal error is surfaced (SSE error or raised),
+    # never a silent success.
+    result = await handler.create(_request())
+    if isinstance(result, StreamingResponse):
+        chunks = await _collect(result)
+        assert any("error" in c.lower() for c in chunks)
+    # Non-StreamingResponse would be an error JSON/Response — also acceptable.

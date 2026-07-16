@@ -4,43 +4,45 @@ build-backend = "hatchling.build"
 
 [project]
 name = "free-claude-code"
-version = "2.0.1"
-description = "Middleware between Claude Code CLI (Anthropic API) and NVIDIA NIM"
+version = "4.9.0"
+description = "Local proxy connecting coding agents to OpenAI-compatible AI providers"
 readme = "README.md"
 requires-python = ">=3.14.0"
 dependencies = [
-    "fastapi[standard]>=0.136.3",
-    "uvicorn>=0.49.0",
+    "fastapi[standard]>=0.139.0",
+    "uvicorn>=0.50.0",
     "httpx[socks]>=0.28.1",
     "markdown-it-py>=4.2.0",
     "pydantic>=2.13.4",
     "python-dotenv>=1.2.2",
     "tiktoken>=0.13.0",
-    "python-telegram-bot>=22.7",
+    "python-telegram-bot>=22.8",
     "discord.py>=2.7.1",
-    "pydantic-settings>=2.14.1",
-    "openai>=2.41.0",
+    "pydantic-settings>=2.14.2",
+    "openai>=2.44.0",
     "loguru>=0.7.0",
-    "aiohttp>=3.14.0",
+    "aiohttp>=3.14.1",
     "jsonschema>=4.25.0",
 ]
 
 [project.scripts]
-fcc-server = "cli.entrypoints:serve"
-free-claude-code = "cli.entrypoints:serve"
-fcc-init = "cli.entrypoints:init"
-fcc-claude = "cli.entrypoints:launch_claude"
+fcc-server = "free_claude_code.cli.entrypoints:serve"
+free-claude-code = "free_claude_code.cli.entrypoints:serve"
+fcc-init = "free_claude_code.cli.entrypoints:init"
+fcc-claude = "free_claude_code.cli.launchers.claude:launch"
+fcc-codex = "free_claude_code.cli.launchers.codex:launch"
+fcc-pi = "free_claude_code.cli.launchers.pi:launch"
 
 [project.optional-dependencies]
 voice = [
-    "grpcio>=1.81.0",
-    "grpcio-tools>=1.81.0",
+    "grpcio>=1.81.1",
+    "grpcio-tools>=1.81.1",
     "nvidia-riva-client>=2.26.0",
 ]
 voice_local = [
-    "torch>=2.12.0",
-    "transformers>=5.10.2",
-    "accelerate>=1.13.0",
+    "torch>=2.12.1",
+    "transformers>=5.13.0",
+    "accelerate>=1.14.0",
     "librosa>=0.10.0",
 ]
 gcp = [
@@ -48,10 +50,10 @@ gcp = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["api", "cli", "config", "core", "messaging", "providers"]
+packages = ["src/free_claude_code"]
 
 [tool.hatch.build.targets.wheel.force-include]
-".env.example" = "cli/env.example"
+".env.example" = "free_claude_code/config/env.example"
 
 [tool.uv]
 required-version = ">=0.11.0"
@@ -66,11 +68,11 @@ explicit = true
 
 [dependency-groups]
 dev = [
-    "pytest>=9.0.3",
+    "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
     "pytest-cov>=7.1.0",
-    "ty>=0.0.44",
-    "ruff>=0.15.16",
+    "ty>=0.0.56",
+    "ruff>=0.15.20",
     "pytest-xdist>=3.8.0",
 ]
 
@@ -98,7 +100,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.isort]
-known-first-party = ["api", "cli", "config", "core", "messaging", "providers", "smoke"]
+known-first-party = ["free_claude_code", "smoke"]
 
 [tool.ruff.format]
 quote-style = "double"
@@ -107,7 +109,7 @@ line-ending = "auto"
 skip-magic-trailing-comma = false
 
 [tool.pytest.ini_options]
-pythonpath = ["."]
+pythonpath = ["src"]
 addopts = "-n auto"
 testpaths = ["tests"]
 markers = [

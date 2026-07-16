@@ -99,6 +99,8 @@ sudo -u "${FCC_USER}" REPO_URL="${REPO_URL}" REPO_BRANCH="${REPO_BRANCH}" bash -
 SYSTEMD_ENV_LINES=()
 SYSTEMD_ENV_LINES+=("Environment=PORT=${PORT}")
 SYSTEMD_ENV_LINES+=("Environment=HOST=0.0.0.0")
+# Headless VM: never try to open a browser for the admin UI.
+SYSTEMD_ENV_LINES+=("Environment=FCC_OPEN_BROWSER=false")
 SYSTEMD_ENV_LINES+=("Environment=ANTHROPIC_AUTH_TOKEN=freecc")
 
 if [ "${USE_TMPFS_ENV}" = "TRUE" ]; then
@@ -215,7 +217,10 @@ log "Writing systemd unit..."
   for line in "${SYSTEMD_ENV_LINES[@]}"; do
     echo "${line}"
   done
-  echo "ExecStart=${FCC_HOME}/.local/bin/uv run uvicorn server:app --host 0.0.0.0 --port ${PORT} --workers 3"
+  # fcc-server owns the supervised single-process runtime (restart-on-config,
+  # ownership-graph shutdown). It is not compatible with uvicorn --workers, so
+  # run the console script and let it read HOST/PORT from the environment.
+  echo "ExecStart=${FCC_HOME}/.local/bin/uv run fcc-server"
   echo "Restart=always"
   echo "RestartSec=3"
   echo ""
