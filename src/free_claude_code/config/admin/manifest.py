@@ -143,6 +143,25 @@ _NON_PROVIDER_FIELDS: tuple[ConfigFieldSpec, ...] = (
         description="Select None to use the Default Model for Haiku requests.",
     ),
     ConfigFieldSpec(
+        "FALLBACK_MODELS",
+        "Fallback Models",
+        "models",
+        settings_attr="fallback_models",
+        default=(
+            "open_router/qwen/qwen3.7-max,"
+            "open_router/qwen/qwen3.7-plus,"
+            "open_router/minimax/minimax-m3,"
+            "open_router/xiaomi/mimo-v2.5,"
+            "open_router/moonshotai/kimi-k2.7-code"
+        ),
+        description=(
+            "Comma-separated provider/model routes tried in order when a request's "
+            "backend is overloaded/unavailable before any output. Empty disables "
+            "fallback. Makes auto-mode's safety classifier resilient to a single "
+            "backend being briefly down."
+        ),
+    ),
+    ConfigFieldSpec(
         "IMAGE_ROUTE",
         "Image Route",
         "models",
