@@ -191,6 +191,30 @@ async def test_openai_chat_stream_requests_usage_and_uses_provider_prompt_tokens
 
 
 @pytest.mark.asyncio
+async def test_openai_chat_stream_echoes_original_client_model():
+    provider = _UsageTestProvider()
+    request = make_messages_request(model="openai/gpt-5.6-sol")
+    request.original_model = "claude-fable-5[1m]"
+    create = AsyncMock(
+        return_value=_stream([_chunk(content="hi"), _chunk(finish_reason="stop")])
+    )
+
+    with patch.object(provider._client.chat.completions, "create", create):
+        events = [
+            event async for event in provider.stream_response(request, input_tokens=1)
+        ]
+
+    parsed = parse_sse_text("".join(events))
+    start = next(
+        event.data["message"] for event in parsed if event.event == "message_start"
+    )
+    assert start["model"] == "claude-fable-5[1m]"
+    await_args = create.await_args
+    assert await_args is not None
+    assert await_args.kwargs["model"] == "openai/gpt-5.6-sol"
+
+
+@pytest.mark.asyncio
 async def test_openai_chat_stream_retries_without_usage_when_option_is_rejected():
     provider = _UsageTestProvider()
     body = {"model": "m", "messages": [{"role": "user", "content": "x"}]}
