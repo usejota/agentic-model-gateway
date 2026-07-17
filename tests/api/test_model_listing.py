@@ -32,6 +32,21 @@ def _cache_models(app, provider_id: str, *model_ids: str) -> None:
     )
 
 
+_DEFAULT_CONFIGURED_BLOCK = [
+    "anthropic/deepseek/deepseek-chat",
+    "claude-3-freecc-no-thinking/deepseek/deepseek-chat",
+    "anthropic/open_router/anthropic/claude-opus",
+    "claude-3-freecc-no-thinking/open_router/anthropic/claude-opus",
+]
+
+_PINNED_BLOCK = [
+    "claude-opus-4-20250514",
+    "claude-fable-5",
+    "claude-sonnet-4-20250514",
+    "claude-haiku-4-20250514",
+]
+
+
 def test_models_list_includes_configured_refs_cached_provider_models_and_aliases():
     app = create_test_app(_settings())
     _cache_models(app, "deepseek", "deepseek-chat")
@@ -47,13 +62,13 @@ def test_models_list_includes_configured_refs_cached_provider_models_and_aliases
     assert response.status_code == 200
     data = response.json()
     ids = [item["id"] for item in data["data"]]
-    # Pinned Claude aliases come first (Opus base, no [1m] since override is 200K).
-    assert ids[:4] == [
-        "claude-opus-4-20250514",
-        "claude-fable-5",
-        "claude-sonnet-4-20250514",
-        "claude-haiku-4-20250514",
-    ]
+    # Configured routes lead the catalog, then the pinned Claude aliases
+    # (Opus base, no [1m] since override is 200K).
+    assert ids[: len(_DEFAULT_CONFIGURED_BLOCK)] == _DEFAULT_CONFIGURED_BLOCK
+    assert (
+        ids[len(_DEFAULT_CONFIGURED_BLOCK) : len(_DEFAULT_CONFIGURED_BLOCK) + 4]
+        == _PINNED_BLOCK
+    )
     assert ids.count("anthropic/deepseek/deepseek-chat") == 1
     assert ids.count("anthropic/open_router/anthropic/claude-opus") == 1
     display_names = {item["id"]: item["display_name"] for item in data["data"]}
@@ -111,8 +126,7 @@ def test_models_list_uses_cached_metadata_for_configured_refs():
 
     ids = [item["id"] for item in response.json()["data"]]
     assert "anthropic/open_router/plain-model" not in ids
-    assert ids[0] == "claude-opus-4-20250514"
-    assert "claude-3-freecc-no-thinking/open_router/plain-model" in ids
+    assert ids[0] == "claude-3-freecc-no-thinking/open_router/plain-model"
 
 
 def test_models_list_includes_cached_wafer_models():
@@ -210,12 +224,11 @@ def test_models_list_works_with_empty_discovery_catalog():
 
     assert response.status_code == 200
     ids = [item["id"] for item in response.json()["data"]]
-    assert ids[:4] == [
-        "claude-opus-4-20250514",
-        "claude-fable-5",
-        "claude-sonnet-4-20250514",
-        "claude-haiku-4-20250514",
-    ]
+    assert ids[: len(_DEFAULT_CONFIGURED_BLOCK)] == _DEFAULT_CONFIGURED_BLOCK
+    assert (
+        ids[len(_DEFAULT_CONFIGURED_BLOCK) : len(_DEFAULT_CONFIGURED_BLOCK) + 4]
+        == _PINNED_BLOCK
+    )
     assert "claude-sonnet-4-20250514" in ids
 
 
@@ -227,15 +240,11 @@ def test_pinned_models_come_first_and_remaining_are_alphabetical():
     items = TestClient(app).get("/v1/models").json()["data"]
     ids = [item["id"] for item in items]
 
-    pinned = ids[:4]
-    assert pinned == [
-        "claude-opus-4-20250514",
-        "claude-fable-5",
-        "claude-sonnet-4-20250514",
-        "claude-haiku-4-20250514",
-    ]
+    configured_len = len(_DEFAULT_CONFIGURED_BLOCK)
+    assert ids[:configured_len] == _DEFAULT_CONFIGURED_BLOCK
+    assert ids[configured_len : configured_len + 4] == _PINNED_BLOCK
 
-    remaining = ids[4:]
+    remaining = ids[configured_len + 4 :]
     remaining_display = [
         item["display_name"] for item in items if item["id"] in remaining
     ]
@@ -255,8 +264,9 @@ def test_pinned_prefers_1m_alias_over_base_for_opus_and_fable():
 
     ids = [item["id"] for item in TestClient(app).get("/v1/models").json()["data"]]
 
-    assert ids[0] == "claude-opus-4-20250514[1m]"
-    assert ids[1] == "claude-fable-5[1m]"
+    pinned = [i for i in ids if i.startswith(("claude-opus", "claude-fable"))]
+    assert pinned[0] == "claude-opus-4-20250514[1m]"
+    assert pinned[1] == "claude-fable-5[1m]"
 
 
 def test_pinned_falls_back_to_base_when_no_1m_override():
@@ -268,5 +278,28 @@ def test_pinned_falls_back_to_base_when_no_1m_override():
 
     ids = [item["id"] for item in TestClient(app).get("/v1/models").json()["data"]]
 
-    assert ids[0] == "claude-opus-4-20250514"
-    assert ids[1] == "claude-fable-5"
+    pinned = [i for i in ids if i.startswith(("claude-opus", "claude-fable"))]
+    assert pinned[0] == "claude-opus-4-20250514"
+    assert pinned[1] == "claude-fable-5"
+
+
+def test_fable_override_hides_real_upstream_fable_from_catalog():
+    app = create_test_app(
+        _settings(
+            model_fable="deepseek/deepseek-v4-pro",
+            model_opus=None,
+            model_haiku=None,
+        )
+    )
+    _cache_models(
+        app,
+        "open_router",
+        "anthropic/claude-fable-5",
+        "meta/llama-3.3",
+    )
+
+    ids = [item["id"] for item in TestClient(app).get("/v1/models").json()["data"]]
+
+    assert not any("open_router/anthropic/claude-fable-5" in i for i in ids)
+    assert "anthropic/open_router/meta/llama-3.3" in ids
+    assert "claude-fable-5[1m]" in ids or "claude-fable-5" in ids
