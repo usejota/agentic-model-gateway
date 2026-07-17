@@ -134,6 +134,22 @@ def build_models_list_response(
             supports_thinking=supports_thinking,
             context_window=context_window_for(ref.model_ref),
         )
+    # Configured routes stay at the very top of the catalog: Claude Code's
+    # picker surfaces the first gateway entries, so the models the user
+    # explicitly configured must lead the list (pre-#13 fork behavior).
+    configured_ids = [model.id for model in models]
+
+    # When a Fable override is configured, the bare ``claude-fable-5`` alias is
+    # what users should pick (it routes through MODEL_FABLE). Hide the real
+    # upstream ``anthropic/claude-fable-5`` so a casual pick doesn't bypass the
+    # override onto the costly first-party model.
+    if settings.model_fable is not None:
+        cached_infos = [
+            info
+            for info in cached_infos
+            if not info.model_id.endswith("/anthropic/claude-fable-5")
+            and not info.model_id.endswith("~anthropic/claude-fable-latest")
+        ]
 
     for model_info in cached_infos:
         _append_provider_model_variants(
@@ -159,13 +175,21 @@ def build_models_list_response(
     for model in SUPPORTED_CLAUDE_MODELS:
         _append_unique_model(models, seen, model)
 
-    pinned_order = _resolve_pinned_order(seen)
+    configured_id_set = frozenset(configured_ids)
+    pinned_order = [
+        model_id
+        for model_id in _resolve_pinned_order(seen)
+        if model_id not in configured_id_set
+    ]
     pinned_ids = frozenset(pinned_order)
+    configured = [m for m in models if m.id in configured_id_set]
     pinned = [m for m in models if m.id in pinned_ids]
     pinned.sort(key=lambda m: pinned_order.index(m.id))
-    remaining = [m for m in models if m.id not in pinned_ids]
+    remaining = [
+        m for m in models if m.id not in pinned_ids and m.id not in configured_id_set
+    ]
     remaining.sort(key=lambda m: (m.display_name.casefold(), m.id))
-    models = pinned + remaining
+    models = configured + pinned + remaining
 
     return ModelsListResponse(
         data=models,
