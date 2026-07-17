@@ -50,6 +50,18 @@ loguru's default sink is a **file**: `/home/fcc/.fcc/logs/server.log` (rotated;
   sudo grep -iE 'classifier|reroute|TRACE' /home/fcc/.fcc/logs/server.log | tail
   ```
 
+**Query technique — the file sink over the IAP tunnel:** `journalctl -u fcc.service | grep …`
+reliably TIMES OUT over the tunnel (journald replays a huge buffer; a 90-120s SSH command dies).
+Prefer a BOUNDED tail of the file sink, which is fast and complete:
+  ```sh
+  sudo tail -n 4000 /home/fcc/.fcc/logs/server.log | grep -iE '<pattern>'
+  ```
+And NEVER `cat`/dump the whole file (`LOG_RAW_*` payloads make it 25MB+/hr — one query returned
+6.4MB). Aggregate with `grep -c` / `sort | uniq -c`, tail-bound the range, and grep out the
+telemetry noise (`OTEL`, `Datadog`, `No API key`, httpx wire-trace: `start_tls`, `connect_tcp`,
+`send_request`, `receive_response`). For status-code truth, the uvicorn access lines are the
+authority — `grep -c` over multi-line JSON overcounts (a "9841" once meant 2 real 429s).
+
 ## Trace events emitted by the proxy
 
 `trace_event(stage=, event=, source=, **fields)` → `logger.bind(trace_payload=...).info("TRACE {}")`.
