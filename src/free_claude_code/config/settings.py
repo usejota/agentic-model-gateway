@@ -191,12 +191,20 @@ class Settings(BaseSettings):
     ollama_cloud_proxy: str = Field(default="", validation_alias="OLLAMA_CLOUD_PROXY")
 
     # ==================== Provider Rate Limiting ====================
-    provider_rate_limit: int = Field(default=40, validation_alias="PROVIDER_RATE_LIMIT")
+    # Proactive per-provider throttle. Defaults are effectively OFF (very high
+    # ceiling) because the limiter is SHARED across all clients on the gateway —
+    # a low value serializes the whole team behind one slow window. The reactive
+    # limiter (auto-pause on a real upstream 429/5xx) plus max_concurrency are the
+    # real protection; lower this only to match a specific provider account's
+    # hard rate cap.
+    provider_rate_limit: int = Field(
+        default=100000, validation_alias="PROVIDER_RATE_LIMIT"
+    )
     provider_rate_window: int = Field(
         default=60, validation_alias="PROVIDER_RATE_WINDOW"
     )
     provider_max_concurrency: int = Field(
-        default=5, validation_alias="PROVIDER_MAX_CONCURRENCY"
+        default=50, validation_alias="PROVIDER_MAX_CONCURRENCY"
     )
     enable_model_thinking: bool = Field(
         default=True, validation_alias="ENABLE_MODEL_THINKING"
