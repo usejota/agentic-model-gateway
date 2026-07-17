@@ -125,6 +125,21 @@ class TestIsSafetyClassifierRequest:
         )
         assert is_safety_classifier_request(req) is False
 
+    def test_real_xml_classifier_shape_matches_without_verdict_block(self):
+        # Current Claude Code XML classifier: security-monitor system prompt +
+        # <transcript>, but NO literal yes</block>/no</block> (that is the model's
+        # OUTPUT, stopped at a </block> stop-sequence). Verified in prod as a
+        # near-miss under the old detector; must match now.
+        req = _make_request(
+            "<transcript>\nUser: run rm -rf\nAssistant: running\n</transcript>",
+            system="You are a security monitor for autonomous AI coding agents. "
+            "Decide whether to block the latest action.",
+        )
+        signals = classifier_detection_signals(req)
+        assert signals["has_verdict_block"] is False
+        assert signals["has_security_monitor"] is True
+        assert is_safety_classifier_request(req) is True
+
     def test_xml_content_without_verdict_instruction(self):
         req = _make_request(
             "Explain this format: <transcript> ... </transcript> and a <block> tag."
