@@ -3,6 +3,8 @@
 from unittest.mock import patch
 
 from free_claude_code.api.detection import (
+    classifier_detection_signals,
+    is_classifier_shaped,
     is_filepath_extraction_request,
     is_prefix_detection_request,
     is_quota_check_request,
@@ -128,6 +130,37 @@ class TestIsSafetyClassifierRequest:
             "Explain this format: <transcript> ... </transcript> and a <block> tag."
         )
         assert is_safety_classifier_request(req) is False
+
+    def test_signals_expose_each_condition(self):
+        req = _make_request(
+            self._USER,
+            system="You are a security monitor for autonomous AI coding agents. "
+            "Respond with <block>yes</block> or <block>no</block>.",
+        )
+        signals = classifier_detection_signals(req)
+        assert signals == {
+            "no_tools": True,
+            "has_transcript": True,
+            "has_verdict_block": True,
+            "has_security_monitor": True,
+        }
+
+    def test_signals_flag_tools_present(self):
+        req = _make_request(self._USER, system=self._SYSTEM, tools=[{"name": "x"}])
+        assert classifier_detection_signals(req)["no_tools"] is False
+
+    def test_near_miss_is_classifier_shaped_but_not_a_match(self):
+        # transcript marker present, verdict block absent -> shaped, not matched.
+        req = _make_request(
+            "<transcript>\nWebFetch x\n</transcript>", system="just chatting"
+        )
+        signals = classifier_detection_signals(req)
+        assert is_classifier_shaped(signals) is True
+        assert is_safety_classifier_request(req) is False
+
+    def test_ordinary_request_is_not_classifier_shaped(self):
+        req = _make_request("just a normal question", system="you are helpful")
+        assert is_classifier_shaped(classifier_detection_signals(req)) is False
 
 
 class TestIsFilepathExtractionRequest:
