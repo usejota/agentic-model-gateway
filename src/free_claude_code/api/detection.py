@@ -136,12 +136,25 @@ def is_classifier_shaped(signals: dict[str, bool]) -> bool:
 
 
 def is_safety_classifier_request(request_data: MessagesRequest) -> bool:
-    """Return whether this is Claude Code's auto-mode safety classifier prompt."""
+    """Return whether this is Claude Code's auto-mode safety classifier prompt.
+
+    Match = toolless + a ``<transcript>`` + one classifier-verdict marker. The
+    verdict marker is EITHER the ``security monitor for autonomous`` system
+    prompt OR the literal ``yes</block>``/``no</block>`` tokens: the current
+    Claude Code XML classifier ships the security-monitor system prompt but
+    NOT the contiguous verdict-block literals (those are the expected model
+    *output*, gated by a ``</block>`` stop-sequence), while older/other
+    classifier shapes carry the verdict block. Requiring the block literal
+    alone silently missed every real request (verified in prod:
+    has_verdict_block=False, has_security_monitor=True on every near-miss).
+    Both markers are classifier-specific, so either one is a safe, specific
+    signal with no false positive on ordinary chat.
+    """
     signals = classifier_detection_signals(request_data)
     return (
         signals["no_tools"]
         and signals["has_transcript"]
-        and signals["has_verdict_block"]
+        and (signals["has_security_monitor"] or signals["has_verdict_block"])
     )
 
 
