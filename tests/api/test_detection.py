@@ -113,6 +113,23 @@ class TestIsSafetyClassifierRequest:
         req = _make_request(self._USER, system=self._SYSTEM, tools=[{"name": "search"}])
         assert is_safety_classifier_request(req) is False
 
+    def test_severity_format_classifier_detected(self):
+        system = (
+            "You are a security monitor for autonomous AI coding agents.\n"
+            "## Output Format\nOutput <severity>N</severity> where N is an "
+            "integer 0-100 and 50 is exactly the allow/block boundary."
+        )
+        req = _make_request(
+            "<transcript>\nUser: review the repo\n</transcript>", system=system
+        )
+        assert is_safety_classifier_request(req) is True
+
+    def test_severity_format_without_transcript_is_not_classifier(self):
+        req = _make_request(
+            "Output <severity>N</severity> where N is an integer 0-100."
+        )
+        assert is_safety_classifier_request(req) is False
+
     def test_missing_transcript_marker(self):
         req = _make_request("<block> immediately", system=self._SYSTEM)
         assert is_safety_classifier_request(req) is False

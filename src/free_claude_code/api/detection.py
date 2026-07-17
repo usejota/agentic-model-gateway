@@ -110,7 +110,13 @@ def is_safety_classifier_request(request_data: MessagesRequest) -> bool:
         extract_text_from_content(message.content) for message in request_data.messages
     )
     combined = f"{system_text}\n{messages_text}"
-    has_verdict_instruction = "yes</block>" in combined or "no</block>" in combined
+    has_verdict_instruction = (
+        "yes</block>" in combined
+        or "no</block>" in combined
+        # Claude Code >= 2.1.211 replaced the yes/no verdict with a numeric
+        # severity score: "Output <severity>N</severity> where N is an integer".
+        or "<severity>N</severity>" in combined
+    )
     return "<transcript>" in combined and has_verdict_instruction
 
 
