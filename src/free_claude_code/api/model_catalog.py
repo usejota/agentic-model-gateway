@@ -159,12 +159,39 @@ def build_models_list_response(
     for model in SUPPORTED_CLAUDE_MODELS:
         _append_unique_model(models, seen, model)
 
+    pinned_order = _resolve_pinned_order(seen)
+    pinned_ids = frozenset(pinned_order)
+    pinned = [m for m in models if m.id in pinned_ids]
+    pinned.sort(key=lambda m: pinned_order.index(m.id))
+    remaining = [m for m in models if m.id not in pinned_ids]
+    remaining.sort(key=lambda m: (m.display_name.casefold(), m.id))
+    models = pinned + remaining
+
     return ModelsListResponse(
         data=models,
         first_id=models[0].id if models else None,
         has_more=False,
         last_id=models[-1].id if models else None,
     )
+
+
+def _resolve_pinned_order(seen: set[str]) -> list[str]:
+    pinned: list[str] = []
+    if "claude-opus-4-20250514[1m]" in seen:
+        pinned.append("claude-opus-4-20250514[1m]")
+    elif "claude-opus-4-20250514" in seen:
+        pinned.append("claude-opus-4-20250514")
+    if "claude-fable-5[1m]" in seen:
+        pinned.append("claude-fable-5[1m]")
+    elif "claude-fable-5" in seen:
+        pinned.append("claude-fable-5")
+    if "claude-sonnet-4-20250514" in seen:
+        pinned.append("claude-sonnet-4-20250514")
+    if "claude-sonnet-4-20250514[1m]" in seen:
+        pinned.append("claude-sonnet-4-20250514[1m]")
+    if "claude-haiku-4-20250514" in seen:
+        pinned.append("claude-haiku-4-20250514")
+    return pinned
 
 
 def _discovered_model_response(model_id: str, *, display_name: str) -> ModelResponse:
