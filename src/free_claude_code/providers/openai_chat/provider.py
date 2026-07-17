@@ -840,7 +840,7 @@ class _OpenAIChatStreamRunner:
     def _new_ledger(self) -> AnthropicStreamLedger:
         return AnthropicStreamLedger(
             self._message_id,
-            self._request.model,
+            self._request.original_model or self._request.model,
             self._input_tokens,
             log_raw_events=self._provider._config.log_raw_sse_events,
         )

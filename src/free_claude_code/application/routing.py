@@ -154,6 +154,10 @@ class ModelRouter:
         """Return an internal routed request context."""
         resolved = self.resolve(request.model)
         routed = request.model_copy(deep=True)
+        # Preserve the client's model name so responses can echo it back —
+        # Claude Code persists the response model in its session file and
+        # refuses to resume sessions whose model it does not recognize.
+        routed.original_model = request.model
         routed.model = resolved.provider_model
         return RoutedMessagesRequest(request=routed, resolved=resolved)
 

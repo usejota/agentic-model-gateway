@@ -70,6 +70,7 @@ def test_model_router_applies_fable_override(settings):
     assert routed.request.model == "anthropic/claude-fable-5"
     assert routed.resolved.provider_model_ref == "open_router/anthropic/claude-fable-5"
     assert routed.resolved.original_model == "claude-fable-5"
+    assert routed.request.original_model == "claude-fable-5"
 
 
 def test_model_router_resolves_per_model_thinking(settings):
