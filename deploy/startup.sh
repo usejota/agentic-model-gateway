@@ -101,6 +101,11 @@ SYSTEMD_ENV_LINES+=("Environment=PORT=${PORT}")
 SYSTEMD_ENV_LINES+=("Environment=HOST=0.0.0.0")
 # Headless VM: never try to open a browser for the admin UI.
 SYSTEMD_ENV_LINES+=("Environment=FCC_OPEN_BROWSER=false")
+# Emit structured JSON logs to stdout so journald -> Cloud Logging captures the
+# per-request trace fields (routing decisions, classifier reroute/miss, errors).
+# Without this the app logs only to a file sink on the VM, invisible to Cloud
+# Logging.
+SYSTEMD_ENV_LINES+=("Environment=FCC_JSON_LOGS=true")
 SYSTEMD_ENV_LINES+=("Environment=ANTHROPIC_AUTH_TOKEN=freecc")
 
 if [ "${USE_TMPFS_ENV}" = "TRUE" ]; then
