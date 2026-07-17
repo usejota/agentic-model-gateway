@@ -7,7 +7,11 @@ from dataclasses import dataclass, replace
 from fastapi.responses import JSONResponse, Response
 from loguru import logger
 
-from free_claude_code.api.detection import is_safety_classifier_request
+from free_claude_code.api.detection import (
+    classifier_detection_signals,
+    is_classifier_shaped,
+    is_safety_classifier_request,
+)
 from free_claude_code.api.optimization_handlers import try_optimizations
 from free_claude_code.api.request_errors import (
     http_status_for_unexpected_api_exception,
@@ -532,6 +536,23 @@ class MessagesHandler:
         if classifier_route is None:
             return routed
         if not is_safety_classifier_request(routed.request):
+            # Trace near-misses: a request that looks like a classifier attempt
+            # (has a transcript/verdict/security-monitor marker) but fails the
+            # strict match. This is the only visibility into why the reroute
+            # silently no-ops — see the classifier reroute investigation.
+            signals = classifier_detection_signals(routed.request)
+            if is_classifier_shaped(signals):
+                logger.info(
+                    "Classifier near-miss (not rerouted): {}",
+                    signals,
+                )
+                trace_event(
+                    stage="routing",
+                    event="free_claude_code.api.route.classifier_miss",
+                    source="api",
+                    gateway_model=routed.request.model,
+                    **{k: str(v) for k, v in signals.items()},
+                )
             return routed
 
         target_provider_id, target_model = classifier_route

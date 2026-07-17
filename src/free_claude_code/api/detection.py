@@ -98,11 +98,13 @@ def is_prefix_detection_request(request_data: MessagesRequest) -> tuple[bool, st
     return False, ""
 
 
-def is_safety_classifier_request(request_data: MessagesRequest) -> bool:
-    """Return whether this is Claude Code's auto-mode safety classifier prompt."""
-    if request_data.tools:
-        return False
+def classifier_detection_signals(request_data: MessagesRequest) -> dict[str, bool]:
+    """Return the per-condition signals the classifier detector evaluates.
 
+    Exposed (not just the final bool) so callers can trace *why* a
+    classifier-shaped request did or did not match — the reroute silently
+    no-ops on a miss, which is otherwise invisible in production.
+    """
     system_text = (
         extract_text_from_content(request_data.system) if request_data.system else ""
     )
@@ -110,8 +112,37 @@ def is_safety_classifier_request(request_data: MessagesRequest) -> bool:
         extract_text_from_content(message.content) for message in request_data.messages
     )
     combined = f"{system_text}\n{messages_text}"
-    has_verdict_instruction = "yes</block>" in combined or "no</block>" in combined
-    return "<transcript>" in combined and has_verdict_instruction
+    return {
+        "no_tools": not request_data.tools,
+        "has_transcript": "<transcript>" in combined,
+        "has_verdict_block": "yes</block>" in combined or "no</block>" in combined,
+        "has_security_monitor": "security monitor for autonomous" in combined,
+    }
+
+
+def is_classifier_shaped(signals: dict[str, bool]) -> bool:
+    """Whether a request looks like a classifier attempt (worth tracing a miss).
+
+    Broader than the strict match: any of the classifier-specific markers is
+    enough to distinguish it from ordinary chat traffic, so a near-miss (e.g.
+    marker present but verdict-block absent) gets logged instead of silently
+    dropped.
+    """
+    return (
+        signals["has_transcript"]
+        or signals["has_verdict_block"]
+        or signals["has_security_monitor"]
+    )
+
+
+def is_safety_classifier_request(request_data: MessagesRequest) -> bool:
+    """Return whether this is Claude Code's auto-mode safety classifier prompt."""
+    signals = classifier_detection_signals(request_data)
+    return (
+        signals["no_tools"]
+        and signals["has_transcript"]
+        and signals["has_verdict_block"]
+    )
 
 
 def is_suggestion_mode_request(request_data: MessagesRequest) -> bool:
