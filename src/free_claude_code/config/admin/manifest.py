@@ -167,10 +167,13 @@ _NON_PROVIDER_FIELDS: tuple[ConfigFieldSpec, ...] = (
         "models",
         "optional_model",
         settings_attr="image_route",
+        default="open_router/minimax/minimax-m3",
         description=(
-            "Optional vision-capable route for requests carrying image content "
-            "(top-level or nested in a tool_result), so a cheap text-only primary "
-            "can still handle pasted screenshots. Select None to disable the reroute."
+            "Vision-capable route for requests carrying image content (top-level "
+            "or nested in a tool_result), so a cheap text-only primary can still "
+            "handle pasted screenshots. Defaults to minimax-m3 — a 1M-context "
+            "vision model: a small-context vision model freezes the session once "
+            "the conversation exceeds its window. Select None to disable the reroute."
         ),
     ),
     ConfigFieldSpec(
