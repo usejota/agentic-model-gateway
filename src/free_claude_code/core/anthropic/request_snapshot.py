@@ -28,6 +28,7 @@ def anthropic_request_snapshot(
             "stop_sequences",
             "metadata",
             "stream",
+            "output_config",
             "thinking_enabled",
         )
         if key in data and data[key] is not None

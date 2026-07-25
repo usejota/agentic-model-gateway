@@ -5,9 +5,11 @@ from collections.abc import Iterator, Mapping, Sequence
 from typing import Any
 
 from free_claude_code.application.model_metadata import ProviderModelInfo
+from free_claude_code.application.reasoning import client_reasoning_policy
 from free_claude_code.config.constants import ANTHROPIC_DEFAULT_MAX_OUTPUT_TOKENS
-from free_claude_code.core.anthropic.models import MessagesRequest, ThinkingConfig
+from free_claude_code.core.anthropic.models import MessagesRequest
 from free_claude_code.core.anthropic.streaming import AnthropicStreamLedger
+from free_claude_code.core.reasoning import ReasoningEffort, ReasoningPolicy
 from free_claude_code.providers.base import ProviderConfig
 from free_claude_code.providers.model_listing import (
     extract_openrouter_tool_model_ids,
@@ -17,6 +19,7 @@ from free_claude_code.providers.openai_chat import (
     OpenAIChatProfile,
     OpenAIChatProvider,
     OpenAIChatRequestPolicy,
+    ReasoningObject,
     build_openai_chat_request_body,
     validate_extra_body_does_not_override_canonical_fields,
 )
@@ -80,21 +83,18 @@ class OpenRouterProvider(OpenAIChatProvider):
         return _iter_openrouter_reasoning_detail_events(delta, ledger)
 
 
+_REASONING_ENCODER = ReasoningObject(
+    tuple((effort, effort.value) for effort in ReasoningEffort)
+)
+
+
 def _apply_openrouter_reasoning_policy(
     body: dict[str, Any], request: MessagesRequest, thinking_enabled: bool
 ) -> None:
-    if not thinking_enabled:
-        return
-    extra_body = body.setdefault("extra_body", {})
-    if not isinstance(extra_body, dict):
-        return
-    reasoning = extra_body.setdefault("reasoning", {"enabled": True})
-    if not isinstance(reasoning, dict):
-        return
-    reasoning.setdefault("enabled", True)
-    budget_tokens = _thinking_budget_tokens(request.thinking)
-    if isinstance(budget_tokens, int):
-        reasoning.setdefault("max_tokens", budget_tokens)
+    policy = (
+        client_reasoning_policy(request) if thinking_enabled else ReasoningPolicy.off()
+    )
+    _REASONING_ENCODER.encode(body, policy)
 
 
 def _apply_openrouter_reasoning_details_replay(
@@ -155,11 +155,6 @@ def _redacted_reasoning_details(content: Any) -> list[dict[str, Any]]:
         else:
             details.append({"type": "reasoning.encrypted", "data": data})
     return details
-
-
-def _thinking_budget_tokens(thinking: ThinkingConfig | None) -> int | None:
-    value = thinking.budget_tokens if thinking is not None else None
-    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 def _iter_openrouter_reasoning_detail_events(
