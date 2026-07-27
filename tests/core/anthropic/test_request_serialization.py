@@ -1,6 +1,9 @@
 """Anthropic request parsing and public-field serialization."""
 
-from free_claude_code.core.anthropic import dump_messages_request
+from free_claude_code.core.anthropic import (
+    anthropic_request_snapshot,
+    dump_messages_request,
+)
 from free_claude_code.core.anthropic.models import (
     ContentBlockServerToolUse,
     ContentBlockText,
@@ -102,3 +105,25 @@ def test_server_tool_history_remains_valid_anthropic_input() -> None:
     assert isinstance(blocks, list)
     assert isinstance(blocks[0], ContentBlockServerToolUse)
     assert isinstance(blocks[1], ContentBlockWebSearchToolResult)
+
+
+def test_snapshot_traces_client_reasoning_effort() -> None:
+    request = MessagesRequest.model_validate(
+        {
+            "model": "m",
+            "messages": [{"role": "user", "content": "hi"}],
+            "output_config": {"effort": "xhigh"},
+        }
+    )
+
+    snapshot = anthropic_request_snapshot(request)
+
+    assert snapshot["output_config"] == {"effort": "xhigh"}
+
+
+def test_snapshot_omits_output_config_when_client_sends_none() -> None:
+    request = MessagesRequest.model_validate(
+        {"model": "m", "messages": [{"role": "user", "content": "hi"}]}
+    )
+
+    assert "output_config" not in anthropic_request_snapshot(request)

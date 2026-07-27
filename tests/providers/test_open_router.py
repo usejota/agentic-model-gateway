@@ -12,6 +12,7 @@ from free_claude_code.core.anthropic.stream_contracts import (
     parse_sse_text,
     text_content,
 )
+from free_claude_code.core.reasoning import ReasoningEffort
 from free_claude_code.providers.base import ProviderConfig
 from free_claude_code.providers.open_router import OpenRouterProvider
 from free_claude_code.providers.openai_chat import OpenAIChatProvider
@@ -110,27 +111,99 @@ def test_openrouter_extra_body_allows_provider_keys(open_router_provider):
         thinking_enabled=False,
     )
 
-    assert body["extra_body"] == {"transforms": ["no-web"], "plugins": []}
+    assert body["extra_body"] == {
+        "transforms": ["no-web"],
+        "plugins": [],
+        "reasoning": {"enabled": False},
+    }
 
 
-def test_build_request_body_omits_reasoning_when_thinking_disabled(
+def test_openrouter_reasoning_encoder_overwrites_caller_supplied_reasoning(
+    open_router_provider,
+):
+    """The encoder assigns extra_body.reasoning, so it wins over a caller value."""
+    body = open_router_provider._build_request_body(
+        make_request(
+            extra_body={"reasoning": {"custom": "whatever"}, "transforms": ["a"]}
+        )
+    )
+
+    assert body["extra_body"] == {
+        "transforms": ["a"],
+        "reasoning": {"enabled": True},
+    }
+
+
+def test_build_request_body_encodes_disabled_reasoning_when_thinking_disabled(
     open_router_provider,
 ):
     body = open_router_provider._build_request_body(
         make_request(thinking={"type": "disabled"})
     )
 
-    assert "extra_body" not in body
+    assert body["extra_body"]["reasoning"] == {"enabled": False}
 
 
 def test_build_request_body_maps_thinking_budget_to_reasoning_max_tokens(
     open_router_provider,
 ):
+    """A positive budget_tokens wins over any effort also present."""
     body = open_router_provider._build_request_body(
-        make_request(thinking={"type": "enabled", "budget_tokens": 4096})
+        make_request(
+            thinking={"type": "adaptive", "budget_tokens": 4096},
+            output_config={"effort": "high"},
+        )
     )
 
-    assert body["extra_body"]["reasoning"] == {"enabled": True, "max_tokens": 4096}
+    assert body["extra_body"]["reasoning"] == {"max_tokens": 4096}
+
+
+@pytest.mark.parametrize("effort", list(ReasoningEffort))
+def test_build_request_body_maps_effort_levels_to_reasoning_effort(
+    open_router_provider, effort
+):
+    body = open_router_provider._build_request_body(
+        make_request(
+            thinking={"type": "adaptive"},
+            output_config={"effort": effort.value},
+        )
+    )
+
+    assert body["extra_body"]["reasoning"] == {"effort": effort.value}
+
+
+def test_build_request_body_effort_none_disables_reasoning(open_router_provider):
+    body = open_router_provider._build_request_body(
+        make_request(
+            thinking={"type": "adaptive"},
+            output_config={"effort": "none"},
+        )
+    )
+
+    assert body["extra_body"]["reasoning"] == {"enabled": False}
+
+
+def test_build_request_body_effort_without_thinking_block_sets_effort(
+    open_router_provider,
+):
+    body = open_router_provider._build_request_body(
+        make_request(thinking=None, output_config={"effort": "high"})
+    )
+
+    assert body["extra_body"]["reasoning"] == {"effort": "high"}
+
+
+def test_build_request_body_invalid_effort_falls_back_to_enabled(
+    open_router_provider,
+):
+    body = open_router_provider._build_request_body(
+        make_request(
+            thinking={"type": "adaptive"},
+            output_config={"effort": "not-a-real-effort"},
+        )
+    )
+
+    assert body["extra_body"]["reasoning"] == {"enabled": True}
 
 
 def test_build_request_body_replays_openrouter_reasoning_details(

@@ -7,6 +7,7 @@ from .base_url import openai_v1_base_url
 from .extra_body import validate_extra_body_does_not_override_canonical_fields
 from .profiles import OPENAI_CHAT_PROFILES, OpenAIChatProfile
 from .provider import OpenAIChatProvider
+from .reasoning import ReasoningEncoder, ReasoningObject
 from .request_policy import OpenAIChatRequestPolicy, build_openai_chat_request_body
 from .usage import usage_int
 
@@ -32,6 +33,8 @@ __all__ = [
     "OpenAIChatProfile",
     "OpenAIChatProvider",
     "OpenAIChatRequestPolicy",
+    "ReasoningEncoder",
+    "ReasoningObject",
     "build_openai_chat_request_body",
     "create_openai_chat_provider",
     "openai_v1_base_url",
