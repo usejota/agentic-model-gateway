@@ -28,6 +28,7 @@ from free_claude_code.application.routing import (
     RoutedMessagesRequest,
 )
 from free_claude_code.config.provider_catalog import PROVIDER_CATALOG
+from free_claude_code.config.reasoning import ReasoningPreference
 from free_claude_code.config.settings import Settings
 from free_claude_code.core.anthropic.models import Message, MessagesRequest, Tool
 from free_claude_code.core.anthropic.stream_contracts import (
@@ -35,6 +36,7 @@ from free_claude_code.core.anthropic.stream_contracts import (
     parse_sse_text,
     text_content,
 )
+from free_claude_code.core.reasoning import ReasoningPolicy
 from free_claude_code.core.version import package_version
 from free_claude_code.messaging.event_parser import parse_cli_event
 
@@ -54,23 +56,35 @@ def test_web_tool_user_agent_reports_installed_package_version() -> None:
 class FixedProviderModelRouter(ModelRouter):
     """Test double that pins provider identity."""
 
-    def __init__(self, settings: Settings, provider_id: str) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        provider_id: str,
+        *,
+        provider_model: str | None = None,
+    ) -> None:
         super().__init__(settings)
         self._fixed_provider_id = provider_id
+        self._fixed_provider_model = provider_model
 
     def resolve_messages_request(
         self, request: MessagesRequest
     ) -> RoutedMessagesRequest:
+        provider_model = self._fixed_provider_model or request.model
         resolved = ResolvedModel(
             original_model=request.model,
             provider_id=self._fixed_provider_id,
-            provider_model=request.model,
-            provider_model_ref=f"{self._fixed_provider_id}/{request.model}",
-            thinking_enabled=False,
+            provider_model=provider_model,
+            provider_model_ref=f"{self._fixed_provider_id}/{provider_model}",
+            reasoning_preference=ReasoningPreference.OFF,
         )
         routed = request.model_copy(deep=True)
         routed.model = resolved.provider_model
-        return RoutedMessagesRequest(request=routed, resolved=resolved)
+        return RoutedMessagesRequest(
+            request=routed,
+            resolved=resolved,
+            reasoning=ReasoningPolicy.off(),
+        )
 
 
 def test_web_server_tool_not_detected_when_tool_only_listed():
@@ -419,7 +433,11 @@ async def test_service_streams_forced_web_search_by_default(monkeypatch):
     service = MessagesHandler(
         settings,
         provider_resolver=provider_resolver,
-        model_router=FixedProviderModelRouter(settings, _PROVIDER_IDS[0]),
+        model_router=FixedProviderModelRouter(
+            settings,
+            _PROVIDER_IDS[0],
+            provider_model="upstream-model",
+        ),
     )
     request = MessagesRequest(
         model="claude-haiku-4-5-20251001",
@@ -437,6 +455,12 @@ async def test_service_streams_forced_web_search_by_default(monkeypatch):
     raw = await _streaming_body_text(response)
     assert "event: message_start" in raw
     assert "DeepSeek V4 Released" in raw
+    message_start = next(
+        event.data["message"]
+        for event in parse_sse_text(raw)
+        if event.event == "message_start"
+    )
+    assert message_start["model"] == request.model
     provider_resolver.assert_not_called()
 
 

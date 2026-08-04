@@ -31,11 +31,11 @@ ALLOWED_PACKAGE_DEPENDENCIES: dict[str, set[str]] = {
 
 IMPORT_EXCEPTIONS: dict[tuple[str, str], str] = {
     (
-        "free_claude_code.cli.entrypoints",
+        "free_claude_code.cli.commands",
         "free_claude_code.runtime.bootstrap",
     ): (
-        "Owner: installed server entrypoint. "
-        "Reason: the executable delegates construction to the process composition root."
+        "Owner: installed server command. "
+        "Reason: the command delegates construction to the process composition root."
     ),
 }
 
@@ -195,6 +195,60 @@ def test_openai_chat_collaborators_have_explicit_ownership_boundaries() -> None:
     provider_root = _PACKAGE_ROOT / "providers" / "openai_chat"
 
     assert _provider_backchannel_offenders(provider_root) == []
+
+
+def test_google_reasoning_wire_fields_have_one_owner() -> None:
+    owner = _PACKAGE_ROOT / "providers" / "google_openai" / "reasoning.py"
+    roots = [
+        _PACKAGE_ROOT / "providers" / "gemini",
+        _PACKAGE_ROOT / "providers" / "google_openai",
+        _PACKAGE_ROOT / "providers" / "vertex",
+    ]
+    owned_fields = {
+        "include_thoughts",
+        "reasoning_effort",
+        "thinking_budget",
+        "thinking_config",
+    }
+    offenders: list[str] = []
+
+    for root in roots:
+        for path in root.rglob("*.py"):
+            if path == owner:
+                continue
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            offenders.extend(
+                f"{path.relative_to(_REPO_ROOT).as_posix()}:{node.lineno}: {node.value}"
+                for node in ast.walk(tree)
+                if isinstance(node, ast.Constant) and node.value in owned_fields
+            )
+
+    assert sorted(offenders) == []
+
+
+def test_cli_local_http_transport_has_one_owner() -> None:
+    cli_root = _PACKAGE_ROOT / "cli"
+    owner = cli_root / "local_http.py"
+    owned_urllib_names = {"ProxyHandler", "build_opener", "urlopen"}
+    owned_environment_keys = {"NO_PROXY", "no_proxy"}
+    offenders: list[str] = []
+
+    for path in cli_root.rglob("*.py"):
+        if path == owner:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        relative_path = path.relative_to(_REPO_ROOT).as_posix()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module == "urllib.request":
+                offenders.extend(
+                    f"{relative_path}:{node.lineno}: urllib.request.{alias.name}"
+                    for alias in node.names
+                    if alias.name in owned_urllib_names
+                )
+            if isinstance(node, ast.Constant) and node.value in owned_environment_keys:
+                offenders.append(f"{relative_path}:{node.lineno}: {node.value}")
+
+    assert sorted(offenders) == []
 
 
 def test_provider_backchannel_detector_reports_untyped_private_access(

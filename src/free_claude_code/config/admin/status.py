@@ -3,7 +3,10 @@
 from collections.abc import Mapping
 from typing import Any
 
-from free_claude_code.config.provider_catalog import PROVIDER_CATALOG
+from free_claude_code.config.provider_catalog import (
+    PROVIDER_CATALOG,
+    ProviderAuthKind,
+)
 
 from .manifest import FIELDS
 
@@ -14,6 +17,17 @@ def provider_config_status(
     """Return provider configuration status without making network calls."""
     statuses: list[dict[str, Any]] = []
     for provider_id, descriptor in PROVIDER_CATALOG.items():
+        if descriptor.auth_kind is ProviderAuthKind.CONNECTED_ACCOUNT:
+            statuses.append(
+                {
+                    "provider_id": provider_id,
+                    "display_name": descriptor.display_name,
+                    "kind": "connected_account",
+                    "status": "disconnected",
+                    "label": "Not connected",
+                }
+            )
+            continue
         if descriptor.local:
             base_url = ""
             if descriptor.base_url_attr is not None:
@@ -30,16 +44,37 @@ def provider_config_status(
             )
             continue
 
-        value = str(state.get(descriptor.credential_env, {}).get("value", ""))
-        configured = bool(value.strip())
+        configuration_attrs = descriptor.configuration_attrs()
+        missing_attrs = tuple(
+            attr
+            for attr in configuration_attrs
+            if not _value_for_settings_attr(state, attr).strip()
+        )
+        configured = not missing_attrs
+        configuration = " + ".join(
+            _field_key_for_settings_attr(attr) for attr in configuration_attrs
+        )
+        missing_key = descriptor.credential_attr in missing_attrs
         statuses.append(
             {
                 "provider_id": provider_id,
                 "display_name": descriptor.display_name,
                 "kind": "remote",
-                "status": "configured" if configured else "missing_key",
-                "label": "Configured" if configured else "Missing key",
-                "credential_env": descriptor.credential_env,
+                "status": (
+                    "configured"
+                    if configured
+                    else "missing_key"
+                    if missing_key
+                    else "missing_config"
+                ),
+                "label": (
+                    "Configured"
+                    if configured
+                    else "Missing key"
+                    if missing_key
+                    else "Missing configuration"
+                ),
+                "configuration": configuration,
             }
         )
     return statuses
@@ -52,3 +87,10 @@ def _value_for_settings_attr(
         if field.settings_attr == settings_attr:
             return str(state.get(field.key, {}).get("value", field.default))
     return ""
+
+
+def _field_key_for_settings_attr(settings_attr: str) -> str:
+    for field in FIELDS:
+        if field.settings_attr == settings_attr:
+            return field.key
+    raise AssertionError(f"No admin field owns settings attribute {settings_attr!r}")

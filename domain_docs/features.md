@@ -17,7 +17,7 @@ Plan for feature-related aspects of the free-claude-code proxy that are not pure
   - Need real authentication for Admin UI
 - **Model discovery** (from plan): Wrapper script exports `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1`
   - Should verify this works with proxy; ensure proxy exposes /v1/models endpoint correctly
-- **Compact window** (from plan): Wrapper script exports `CLAUDE_CODE_AUTO_COMPACT_WINDOW=190000`
+- **Compact window** (from plan): Wrapper script exports `CLAUDE_CODE_AUTO_COMPACT_WINDOW=1000000`
   - Client-side setting; ensure appropriate for provider models being used
 - **Shared proxy token** (security review): Limits per-user audit and is single point of compromise
   - Feature consideration: Per-user tokens would require modifying proxy to validate against user token store
@@ -69,7 +69,7 @@ Plan for feature-related aspects of the free-claude-code proxy that are not pure
 - [ ] Ensure selected model is used for requests
 
 ### 4. Compact Window Tuning
-**Problem:** Value 190000 may need adjustment based on provider model limits
+**Problem:** Value 1000000 may need adjustment based on provider model limits
 **Solution:**
 - Review typical context window sizes for providers (NVIDIA NIM, OpenRouter, etc.)
 - Consider making compact window configurable per user/project via Admin UI

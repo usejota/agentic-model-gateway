@@ -21,7 +21,7 @@ def test_decode_strips_1m_suffix_and_flags_context():
     assert decoded.provider_id == "open_router"
     assert decoded.provider_model == "minimax/minimax-m3"
     assert decoded.one_m_context is True
-    assert decoded.force_thinking_enabled is None
+    assert decoded.force_reasoning_off is False
 
 
 def test_decode_without_1m_suffix_leaves_context_false():
@@ -36,7 +36,7 @@ def test_decode_no_thinking_variant_still_decodes():
     assert decoded is not None
     assert decoded.provider_id == "deepseek"
     assert decoded.provider_model == "chat"
-    assert decoded.force_thinking_enabled is False
+    assert decoded.force_reasoning_off is True
 
 
 def test_decode_rejects_non_gateway_id():

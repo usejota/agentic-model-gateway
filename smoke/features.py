@@ -157,7 +157,7 @@ FEATURE_INVENTORY: tuple[FeatureCoverage, ...] = (
             "test_provider_reasoning_tool_continuation_e2e",
             "test_gemini_thought_signature_tool_continuation_e2e",
             "test_claude_cli_adaptive_thinking_e2e",
-            "test_per_model_thinking_config_e2e",
+            "test_route_reasoning_config_e2e",
         ),
         ("providers", "cli", "config"),
         ("configured provider",),
@@ -172,6 +172,7 @@ FEATURE_INVENTORY: tuple[FeatureCoverage, ...] = (
         (
             "test_provider_interleaved_thinking_tool_e2e",
             "test_provider_tool_result_continuation_e2e",
+            "test_provider_interrupted_tool_turn_resume_e2e",
             "test_gemini_thought_signature_tool_continuation_e2e",
             "test_provider_reasoning_tool_continuation_e2e",
         ),
@@ -198,7 +199,7 @@ FEATURE_INVENTORY: tuple[FeatureCoverage, ...] = (
         "Transient retries and disconnect cleanup preserve follow-up requests",
         "public_surface",
         (
-            "tests/providers/test_provider_rate_limit.py",
+            "tests/providers/test_provider_admission.py",
             "tests/providers/test_nvidia_nim_degraded_retry.py",
         ),
         ("test_client_disconnect_mid_stream_does_not_crash_server",),
@@ -411,15 +412,11 @@ FEATURE_INVENTORY: tuple[FeatureCoverage, ...] = (
     ),
     FeatureCoverage(
         "package_cli_entrypoints",
-        "Installed package scripts scaffold config, report version, and start the server",
+        "Installed package scripts report version and start the server",
         "public_surface",
         ("tests/cli/test_entrypoints.py", "tests/core/test_version.py"),
+        ("test_fcc_server_entrypoint_starts_server",),
         (
-            "test_fcc_init_scaffolds_user_config",
-            "test_free_claude_code_entrypoint_starts_server",
-        ),
-        (
-            "test_entrypoint_init_e2e",
             "test_entrypoint_server_e2e",
             "test_entrypoint_version_e2e",
         ),

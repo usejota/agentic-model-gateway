@@ -58,9 +58,10 @@ class ProviderExecutor:
         provider = self._provider_resolver(routed.resolved.provider_id)
         provider.preflight_stream(
             routed.request,
-            thinking_enabled=routed.resolved.thinking_enabled,
+            reasoning=routed.reasoning,
         )
 
+        gateway_model = routed.resolved.original_model
         route_trace: dict[str, object] = {
             "stage": "routing",
             "event": "free_claude_code.api.route.resolved",
@@ -69,8 +70,14 @@ class ProviderExecutor:
             "provider_id": routed.resolved.provider_id,
             "provider_model": routed.resolved.provider_model,
             "provider_model_ref": routed.resolved.provider_model_ref,
-            "gateway_model": routed.request.model,
-            "thinking_enabled": routed.resolved.thinking_enabled,
+            "gateway_model": gateway_model,
+            "reasoning_control": routed.reasoning.control.value,
+            "reasoning_effort": (
+                routed.reasoning.effort.value
+                if routed.reasoning.effort is not None
+                else None
+            ),
+            "reasoning_budget_tokens": routed.reasoning.budget_tokens,
         }
         if wire_api == "responses":
             route_trace["wire_api"] = "responses"
@@ -78,6 +85,8 @@ class ProviderExecutor:
             route_trace["generation_id"] = self._generation_id
         trace_event(**route_trace)
 
+        request_snapshot = anthropic_request_snapshot(routed.request)
+        request_snapshot["model"] = gateway_model
         trace_event(
             stage="ingress",
             event=(
@@ -87,7 +96,7 @@ class ProviderExecutor:
             ),
             source="api",
             message_count=len(routed.request.messages),
-            snapshot=anthropic_request_snapshot(routed.request),
+            snapshot=request_snapshot,
             request_id=request_id,
         )
 
@@ -107,7 +116,8 @@ class ProviderExecutor:
                     routed.request,
                     input_tokens=input_tokens,
                     request_id=request_id,
-                    thinking_enabled=routed.resolved.thinking_enabled,
+                    response_model=gateway_model,
+                    reasoning=routed.reasoning,
                 )
                 async for chunk in provider_stream:
                     yield chunk
@@ -123,7 +133,7 @@ class ProviderExecutor:
         stream_trace: dict[str, object] = {
             "request_id": request_id,
             "provider_id": routed.resolved.provider_id,
-            "gateway_model": routed.request.model,
+            "gateway_model": gateway_model,
         }
         if self._generation_id is not None:
             stream_trace["generation_id"] = self._generation_id

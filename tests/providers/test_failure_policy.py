@@ -2,7 +2,6 @@
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from unittest.mock import Mock
 
 import httpx
 import openai
@@ -13,7 +12,12 @@ from free_claude_code.core.diagnostics import (
     attach_upstream_error_body,
 )
 from free_claude_code.core.failures import ExecutionFailure, FailureKind
-from free_claude_code.providers.failure_policy import classify_provider_failure
+from free_claude_code.providers.failure_policy import (
+    ProviderRecoveryExhausted,
+    classify_provider_failure,
+    is_retryable_provider_error,
+    retryable_upstream_status,
+)
 
 
 def _openai_status_error(
@@ -57,7 +61,6 @@ class _ClassificationCase:
     kind: FailureKind
     status_code: int
     retryable: bool
-    rate_limit_block_seconds: int | None = None
 
 
 _CASES = (
@@ -73,6 +76,39 @@ _CASES = (
         False,
     ),
     _ClassificationCase(
+        "openai_permission_denied",
+        lambda: _openai_status_error(
+            openai.PermissionDeniedError,
+            status_code=403,
+            message="Forbidden",
+        ),
+        FailureKind.PERMISSION,
+        403,
+        False,
+    ),
+    _ClassificationCase(
+        "generic_openai_401",
+        lambda: _openai_status_error(
+            openai.APIStatusError,
+            status_code=401,
+            message="Unauthorized",
+        ),
+        FailureKind.AUTHENTICATION,
+        401,
+        False,
+    ),
+    _ClassificationCase(
+        "generic_openai_403",
+        lambda: _openai_status_error(
+            openai.APIStatusError,
+            status_code=403,
+            message="Forbidden",
+        ),
+        FailureKind.PERMISSION,
+        403,
+        False,
+    ),
+    _ClassificationCase(
         "openai_rate_limit",
         lambda: _openai_status_error(
             openai.RateLimitError,
@@ -82,7 +118,6 @@ _CASES = (
         FailureKind.RATE_LIMIT,
         429,
         True,
-        60,
     ),
     _ClassificationCase(
         "openai_bad_request",
@@ -126,7 +161,6 @@ _CASES = (
         FailureKind.RATE_LIMIT,
         429,
         True,
-        60,
     ),
     _ClassificationCase(
         "statusless_openai_overload_body",
@@ -149,10 +183,17 @@ _CASES = (
         False,
     ),
     _ClassificationCase(
-        "http_403_keeps_authentication_quirk",
-        lambda: _http_status_error(403, "Forbidden"),
+        "http_401_maps_authentication",
+        lambda: _http_status_error(401, "Unauthorized"),
         FailureKind.AUTHENTICATION,
         401,
+        False,
+    ),
+    _ClassificationCase(
+        "http_403_maps_permission",
+        lambda: _http_status_error(403, "Forbidden"),
+        FailureKind.PERMISSION,
+        403,
         False,
     ),
     _ClassificationCase(
@@ -209,14 +250,11 @@ _CASES = (
 def test_raw_provider_failure_maps_to_canonical_failure(
     case: _ClassificationCase,
 ) -> None:
-    mark_rate_limited = Mock()
-
     failure = classify_provider_failure(
         case.error(),
         provider_name="TEST_PROVIDER",
         read_timeout_s=30.0,
         request_id="req_classification",
-        mark_rate_limited=mark_rate_limited,
     )
 
     assert isinstance(failure, ExecutionFailure)
@@ -226,10 +264,6 @@ def test_raw_provider_failure_maps_to_canonical_failure(
     assert failure.message.strip()
     assert "Request ID: req_classification" in failure.message
     assert "SECRET" not in failure.message
-    if case.rate_limit_block_seconds is None:
-        mark_rate_limited.assert_not_called()
-    else:
-        mark_rate_limited.assert_called_once_with(case.rate_limit_block_seconds)
 
 
 def test_classification_preserves_useful_body_while_redacting_credentials() -> None:
@@ -243,7 +277,6 @@ def test_classification_preserves_useful_body_while_redacting_credentials() -> N
         provider_name="LOCAL",
         read_timeout_s=60.0,
         request_id="req_body",
-        mark_rate_limited=Mock(),
     )
 
     assert failure.kind is FailureKind.INVALID_REQUEST
@@ -274,7 +307,6 @@ def test_auth_failure_preserves_model_error_body_instead_of_masking_it() -> None
         provider_name="OPENCODE_GO",
         read_timeout_s=60.0,
         request_id="req_model",
-        mark_rate_limited=Mock(),
     )
 
     assert failure.kind is FailureKind.AUTHENTICATION
@@ -283,6 +315,39 @@ def test_auth_failure_preserves_model_error_body_instead_of_masking_it() -> None
     assert "Provider authentication failed. Check API key." in failure.message
     assert "Model qwen3.7-max is not supported for format oa-compat" in failure.message
     assert "Request ID: req_model" in failure.message
+
+
+def test_permission_failure_preserves_actionable_upstream_diagnostic() -> None:
+    error = _openai_status_error(
+        openai.PermissionDeniedError,
+        status_code=403,
+        message="Forbidden",
+        body={
+            "status": 403,
+            "title": "Forbidden",
+            "detail": "Authorization failed",
+        },
+    )
+
+    failure = classify_provider_failure(
+        error,
+        provider_name="NIM",
+        read_timeout_s=60.0,
+        request_id="req_permission",
+    )
+
+    assert failure.kind is FailureKind.PERMISSION
+    assert failure.status_code == 403
+    assert failure.retryable is False
+    assert not is_retryable_provider_error(error)
+    assert "Upstream provider NIM returned HTTP 403." in failure.message
+    assert "Category: permission" in failure.message
+    assert (
+        "Mapped message: Provider denied access. "
+        "Check credential permissions and model access."
+    ) in failure.message
+    assert '"detail":"Authorization failed"' in failure.message
+    assert "Request ID: req_permission" in failure.message
 
 
 def test_empty_http_error_body_is_reported_explicitly() -> None:
@@ -299,7 +364,6 @@ def test_empty_http_error_body_is_reported_explicitly() -> None:
         provider_name="EMPTY",
         read_timeout_s=30.0,
         request_id="req_empty",
-        mark_rate_limited=Mock(),
     )
 
     assert failure.kind is FailureKind.UPSTREAM
@@ -314,7 +378,6 @@ def test_http_405_diagnostic_names_rejected_upstream_endpoint() -> None:
         provider_name="LOCAL",
         read_timeout_s=30.0,
         request_id="req_405",
-        mark_rate_limited=Mock(),
     )
 
     assert failure.kind is FailureKind.UPSTREAM
@@ -340,7 +403,6 @@ def test_connection_cause_chain_is_redacted_and_capped() -> None:
         provider_name="NIM",
         read_timeout_s=30.0,
         request_id="req_cause",
-        mark_rate_limited=Mock(),
     )
 
     assert "Caused by:" in failure.message
@@ -368,8 +430,26 @@ def test_attached_streamed_error_body_remains_bounded() -> None:
         provider_name="LONG",
         read_timeout_s=30.0,
         request_id="req_long",
-        mark_rate_limited=Mock(),
     )
 
     assert f"truncated after {ERROR_DETAIL_DISPLAY_CAP_BYTES} bytes" in failure.message
     assert "x" * 100 in failure.message
+
+
+def test_shared_recovery_exhaustion_preserves_last_provider_failure() -> None:
+    raw_error = _http_status_error(503, "provider still unavailable")
+    exhausted = ProviderRecoveryExhausted(raw_error)
+
+    failure = classify_provider_failure(
+        exhausted,
+        provider_name="SHARED",
+        read_timeout_s=30.0,
+        request_id="req_exhausted",
+    )
+
+    assert failure.kind is FailureKind.OVERLOADED
+    assert failure.status_code == 529
+    assert "provider still unavailable" in failure.message
+    assert "Request ID: req_exhausted" in failure.message
+    assert retryable_upstream_status(exhausted) is None
+    assert not is_retryable_provider_error(exhausted)

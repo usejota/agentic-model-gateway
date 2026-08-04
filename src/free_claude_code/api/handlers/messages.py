@@ -38,6 +38,7 @@ from free_claude_code.api.web_tools.streaming import stream_web_server_tool_resp
 from free_claude_code.application.errors import ApplicationError, InvalidRequestError
 from free_claude_code.application.execution import ProviderExecutor, TokenCounter
 from free_claude_code.application.ports import ProviderResolver
+from free_claude_code.application.reasoning import resolve_reasoning_policy
 from free_claude_code.application.routing import ModelRouter, RoutedMessagesRequest
 from free_claude_code.config.settings import Settings
 from free_claude_code.core.anthropic import (
@@ -60,6 +61,7 @@ from free_claude_code.core.failures import (
     FailureKind,
     find_execution_failure,
 )
+from free_claude_code.core.reasoning import ReasoningControl, ReasoningPolicy
 from free_claude_code.core.trace import trace_event
 
 
@@ -147,7 +149,10 @@ class MessagesHandler:
             result = self._run_message_intercepts(routed)
             if result is None:
                 logger.debug("No optimization matched, routing to provider")
-                fallbacks = self._fallback_candidates(routed.request)
+                fallbacks = self._fallback_candidates(
+                    routed.request,
+                    original_model=routed.resolved.original_model,
+                )
                 if fallbacks:
                     body = self._stream_with_fallback(
                         routed, fallbacks, request_id=request_id
@@ -320,23 +325,20 @@ class MessagesHandler:
         routed = self._maybe_reroute_for_images(routed)
         if not is_safety_classifier_request(routed.request):
             return routed
-        changed = routed.resolved.thinking_enabled
+        changed = routed.reasoning.control is not ReasoningControl.OFF
         trace_event(
             stage="routing",
             event="free_claude_code.api.optimization.safety_classifier_no_thinking",
             source="api",
-            model=routed.request.model,
+            model=routed.resolved.original_model,
             changed=changed,
         )
         if not changed:
             return routed
-        return RoutedMessagesRequest(
-            request=routed.request,
-            resolved=replace(routed.resolved, thinking_enabled=False),
-        )
+        return replace(routed, reasoning=ReasoningPolicy.off())
 
     def _fallback_candidates(
-        self, request_data: MessagesRequest
+        self, request_data: MessagesRequest, *, original_model: str
     ) -> list[RoutedMessagesRequest]:
         """Resolve ``FALLBACK_MODELS`` into routed requests for the same payload.
 
@@ -358,7 +360,17 @@ class MessagesHandler:
                 and resolved.provider_id != image_route_target[0]
             ):
                 continue
-            candidates.append(RoutedMessagesRequest(request=routed, resolved=resolved))
+            candidates.append(
+                RoutedMessagesRequest(
+                    request=routed,
+                    # Keep the client's model identity in responses; the fallback
+                    # ref is an internal route, not what the client asked for.
+                    resolved=replace(resolved, original_model=original_model),
+                    reasoning=resolve_reasoning_policy(
+                        routed, resolved.reasoning_preference
+                    ),
+                )
+            )
         return candidates
 
     async def _stream_with_fallback(
@@ -497,7 +509,17 @@ class MessagesHandler:
                 original_provider_model=routed.resolved.provider_model,
                 gateway_model=routed.request.model,
             )
-            return RoutedMessagesRequest(request=new_request, resolved=resolved)
+            return RoutedMessagesRequest(
+                request=new_request,
+                # The vision target is an internal route; responses must echo
+                # the model name the client actually sent.
+                resolved=replace(
+                    resolved, original_model=routed.resolved.original_model
+                ),
+                reasoning=resolve_reasoning_policy(
+                    new_request, resolved.reasoning_preference
+                ),
+            )
 
         if not has_images(routed.request.messages):
             return routed
@@ -520,7 +542,11 @@ class MessagesHandler:
             stripped_count=stripped_count,
             gateway_model=routed.request.model,
         )
-        return RoutedMessagesRequest(request=stripped_request, resolved=routed.resolved)
+        return RoutedMessagesRequest(
+            request=stripped_request,
+            resolved=routed.resolved,
+            reasoning=routed.reasoning,
+        )
 
     def _maybe_reroute_for_classifier(
         self, routed: RoutedMessagesRequest
@@ -582,7 +608,16 @@ class MessagesHandler:
             original_provider_model=routed.resolved.provider_model,
             gateway_model=routed.request.model,
         )
-        return RoutedMessagesRequest(request=new_request, resolved=resolved)
+        return RoutedMessagesRequest(
+            request=new_request,
+            # The classifier target is an internal route; responses must echo
+            # the model name the client actually sent. The classifier policy in
+            # _apply_message_routing_policies still forces reasoning OFF after.
+            resolved=replace(resolved, original_model=routed.resolved.original_model),
+            reasoning=resolve_reasoning_policy(
+                new_request, resolved.reasoning_preference
+            ),
+        )
 
     def _run_message_intercepts(
         self, routed: RoutedMessagesRequest
@@ -608,7 +643,7 @@ class MessagesHandler:
             stage="routing",
             event="free_claude_code.api.optimization.web_server_tool",
             source="api",
-            model=routed.request.model,
+            model=routed.resolved.original_model,
         )
         egress = WebFetchEgressPolicy(
             allow_private_network_targets=self._settings.web_fetch_allow_private_networks,
@@ -621,6 +656,7 @@ class MessagesHandler:
                 routed.request,
                 input_tokens=input_tokens,
                 web_fetch_egress=egress,
+                response_model=routed.resolved.original_model,
                 verbose_client_errors=self._settings.log_api_error_tracebacks,
             ),
         )
@@ -628,14 +664,18 @@ class MessagesHandler:
     def _intercept_local_optimization(
         self, routed: RoutedMessagesRequest
     ) -> _MessagesResult | None:
-        optimized = try_optimizations(routed.request, self._settings)
+        optimized = try_optimizations(
+            routed.request,
+            self._settings,
+            response_model=routed.resolved.original_model,
+        )
         if optimized is None:
             return None
         trace_event(
             stage="routing",
             event="free_claude_code.api.optimization.short_circuit",
             source="api",
-            model=routed.request.model,
+            model=routed.resolved.original_model,
         )
         return _MessagesCompleteResult(optimized)
 

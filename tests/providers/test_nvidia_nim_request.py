@@ -1,5 +1,6 @@
 """Tests for NVIDIA NIM request policy helpers."""
 
+import re
 from copy import deepcopy
 from typing import Any
 
@@ -8,6 +9,7 @@ import pytest
 from free_claude_code.config.nim import NimSettings
 from free_claude_code.core.anthropic import set_if_not_none
 from free_claude_code.core.anthropic.models import MessagesRequest, Tool
+from free_claude_code.core.reasoning import ReasoningEffort, ReasoningPolicy
 from free_claude_code.providers.nvidia_nim.request_options import (
     _set_extra,
 )
@@ -24,6 +26,7 @@ from free_claude_code.providers.nvidia_nim.tool_schema import (
     nim_tool_argument_aliases_from_body,
 )
 from tests.providers.request_factory import make_messages_request
+from tests.providers.support import REASONING_OFF, REASONING_ON
 
 GREP_SCHEMA_FROM_SERVER_LOG: dict[str, Any] = {
     "type": "object",
@@ -99,24 +102,79 @@ class TestSetExtra:
 
 
 class TestBuildRequestBody:
+    @pytest.mark.parametrize(
+        ("effort", "expected_budget"),
+        (
+            (ReasoningEffort.MINIMAL, 512),
+            (ReasoningEffort.LOW, 512),
+            (ReasoningEffort.MEDIUM, 1_024),
+            (ReasoningEffort.HIGH, 2_048),
+            (ReasoningEffort.XHIGH, 4_096),
+            (ReasoningEffort.MAX, 8_192),
+        ),
+    )
+    def test_named_effort_enables_thinking_with_numeric_budget(
+        self,
+        req,
+        effort: ReasoningEffort,
+        expected_budget: int,
+    ):
+        policy = ReasoningPolicy(effort=effort)
+
+        body = build_request_body(req, NimSettings(), reasoning=policy)
+
+        assert body["extra_body"]["chat_template_kwargs"] == {
+            "thinking": True,
+            "enable_thinking": True,
+            "reasoning_budget": expected_budget,
+        }
+
+    def test_named_effort_replaces_client_reasoning_budgets(self):
+        req = make_messages_request(
+            model="test",
+            thinking=None,
+            extra_body={
+                "reasoning_budget": 99,
+                "chat_template_kwargs": {
+                    "reasoning_budget": 100,
+                    "custom": "value",
+                },
+            },
+        )
+
+        body = build_request_body(
+            req,
+            NimSettings(),
+            reasoning=ReasoningPolicy(effort=ReasoningEffort.HIGH),
+        )
+
+        extra_body = body["extra_body"]
+        assert "reasoning_budget" not in extra_body
+        assert extra_body["chat_template_kwargs"] == {
+            "custom": "value",
+            "thinking": True,
+            "enable_thinking": True,
+            "reasoning_budget": 2048,
+        }
+
     def test_max_tokens_capped_by_nim(self, req):
         req.max_tokens = 100000
         nim = NimSettings(max_tokens=4096)
-        body = build_request_body(req, nim, thinking_enabled=True)
+        body = build_request_body(req, nim, reasoning=REASONING_ON)
         assert body["max_tokens"] == 4096
 
     def test_presence_penalty_included_when_nonzero(self, req):
         nim = NimSettings(presence_penalty=0.5)
-        body = build_request_body(req, nim, thinking_enabled=True)
+        body = build_request_body(req, nim, reasoning=REASONING_ON)
         assert body["presence_penalty"] == 0.5
 
     def test_include_stop_str_in_output_not_sent(self, req):
-        body = build_request_body(req, NimSettings(), thinking_enabled=True)
+        body = build_request_body(req, NimSettings(), reasoning=REASONING_ON)
         assert "include_stop_str_in_output" not in body.get("extra_body", {})
 
     def test_parallel_tool_calls_included(self, req):
         nim = NimSettings(parallel_tool_calls=False)
-        body = build_request_body(req, nim, thinking_enabled=True)
+        body = build_request_body(req, nim, reasoning=REASONING_ON)
         assert body["parallel_tool_calls"] is False
 
     def test_tool_schema_boolean_subschemas_are_removed_without_mutating_request(
@@ -141,7 +199,7 @@ class TestBuildRequestBody:
             )
         ]
 
-        body = build_request_body(req, NimSettings(), thinking_enabled=False)
+        body = build_request_body(req, NimSettings(), reasoning=REASONING_OFF)
 
         parameters = body["tools"][0]["function"]["parameters"]
         properties = parameters["properties"]
@@ -169,7 +227,7 @@ class TestBuildRequestBody:
             )
         ]
 
-        body = build_request_body(req, NimSettings(), thinking_enabled=False)
+        body = build_request_body(req, NimSettings(), reasoning=REASONING_OFF)
 
         parameters = body["tools"][0]["function"]["parameters"]
         properties = parameters["properties"]
@@ -197,6 +255,41 @@ class TestBuildRequestBody:
         assert "_fcc_arg_type" in parameters["required"]
         assert tool_schema == original_schema
 
+    def test_reported_long_tool_name_uses_generic_alias_after_nim_repairs(self, req):
+        """Issue #1307's 52nd tool is portable without losing NIM arg aliases."""
+        long_name = "mcp__issue_1307__" + "x" * 85
+        assert len(long_name) == 102
+        tools = [
+            Tool(name=f"tool_{index}", input_schema={"type": "object"})
+            for index in range(51)
+        ]
+        tools.append(
+            Tool(
+                name=long_name,
+                input_schema={
+                    "type": "object",
+                    "properties": {"type": {"type": "string"}},
+                    "required": ["type"],
+                },
+            )
+        )
+        req.tools = tools
+        snapshot = req.model_dump()
+
+        body = build_request_body(req, NimSettings(), reasoning=REASONING_OFF)
+
+        wire_name = body["tools"][51]["function"]["name"]
+        assert wire_name != long_name
+        assert re.fullmatch(r"[A-Za-z0-9_-]{1,64}", wire_name)
+        assert body[NIM_TOOL_ARGUMENT_ALIASES_KEY] == {
+            long_name: {"_fcc_arg_type": "type"}
+        }
+        assert (
+            NIM_TOOL_ARGUMENT_ALIASES_KEY
+            not in body_without_nim_tool_argument_aliases(body)
+        )
+        assert req.model_dump() == snapshot
+
     def test_safe_tool_schema_does_not_add_alias_metadata(self, req):
         tool_schema = {
             "type": "object",
@@ -215,7 +308,7 @@ class TestBuildRequestBody:
             )
         ]
 
-        body = build_request_body(req, NimSettings(), thinking_enabled=False)
+        body = build_request_body(req, NimSettings(), reasoning=REASONING_OFF)
 
         assert NIM_TOOL_ARGUMENT_ALIASES_KEY not in body
         parameters = body["tools"][0]["function"]["parameters"]
@@ -248,7 +341,7 @@ class TestBuildRequestBody:
             )
         ]
 
-        body = build_request_body(req, NimSettings(), thinking_enabled=False)
+        body = build_request_body(req, NimSettings(), reasoning=REASONING_OFF)
 
         aliases = body[NIM_TOOL_ARGUMENT_ALIASES_KEY]["NotionLike"]
         parent = body["tools"][0]["function"]["parameters"]["properties"]["parent"]
@@ -293,14 +386,33 @@ class TestBuildRequestBody:
         )
 
         nim = NimSettings()
-        body = build_request_body(req, nim, thinking_enabled=True)
+        body = build_request_body(req, nim, reasoning=REASONING_ON)
         extra = body["extra_body"]
         assert extra["chat_template_kwargs"] == {
             "thinking": True,
             "enable_thinking": True,
-            "reasoning_budget": body["max_tokens"],
         }
         assert "reasoning_budget" not in extra
+
+    def test_canonicalization_removes_empty_client_reasoning_envelope(self):
+        req = make_messages_request(
+            model="test",
+            extra_body={
+                "chat_template_kwargs": {
+                    "thinking": True,
+                    "enable_thinking": True,
+                    "reasoning_budget": 100,
+                }
+            },
+        )
+
+        body = build_request_body(
+            req,
+            NimSettings(),
+            reasoning=ReasoningPolicy.provider_default(),
+        )
+
+        assert "chat_template_kwargs" not in body["extra_body"]
 
     def test_clone_body_without_chat_template(self):
         body = {
@@ -371,9 +483,12 @@ class TestBuildRequestBody:
         )
 
         nim = NimSettings()
-        body = build_request_body(req, nim, thinking_enabled=False)
+        body = build_request_body(req, nim, reasoning=REASONING_OFF)
         extra = body.get("extra_body", {})
-        assert "chat_template_kwargs" not in extra
+        assert extra["chat_template_kwargs"] == {
+            "thinking": False,
+            "enable_thinking": False,
+        }
         assert "reasoning_budget" not in extra
 
     def test_reasoning_budget_respects_existing_chat_template_kwargs(self):
@@ -397,14 +512,14 @@ class TestBuildRequestBody:
             thinking=None,
         )
 
-        body = build_request_body(req, NimSettings(), thinking_enabled=True)
+        body = build_request_body(req, NimSettings(), reasoning=REASONING_ON)
         assert body["extra_body"]["chat_template_kwargs"] == {
-            "enable_thinking": False,
+            "enable_thinking": True,
             "custom": "value",
-            "reasoning_budget": body["max_tokens"],
+            "thinking": True,
         }
 
-    def test_chat_template_fields_present_for_mistral_model(self):
+    def test_chat_template_fields_are_provider_wide(self):
         req = make_messages_request(
             model="mistralai/mixtral-8x7b-instruct-v0.1",
             messages=[{"role": "user", "content": "hi"}],
@@ -421,12 +536,11 @@ class TestBuildRequestBody:
         )
 
         nim = NimSettings(chat_template="custom_template")
-        body = build_request_body(req, nim, thinking_enabled=True)
+        body = build_request_body(req, nim, reasoning=REASONING_ON)
         extra = body.get("extra_body", {})
         assert extra["chat_template_kwargs"] == {
             "thinking": True,
             "enable_thinking": True,
-            "reasoning_budget": body["max_tokens"],
         }
         assert extra["chat_template"] == "custom_template"
 
@@ -447,7 +561,7 @@ class TestBuildRequestBody:
         )
 
         nim = NimSettings()
-        body = build_request_body(req, nim, thinking_enabled=False)
+        body = build_request_body(req, nim, reasoning=REASONING_OFF)
         extra = body.get("extra_body", {})
         for param in (
             "thinking",
@@ -457,6 +571,25 @@ class TestBuildRequestBody:
             "reasoning_effort",
         ):
             assert param not in extra
+        assert extra["chat_template_kwargs"] == {
+            "thinking": False,
+            "enable_thinking": False,
+        }
+
+    def test_explicit_reasoning_budget_is_preserved_exactly(self):
+        req = make_messages_request(model="test", thinking=None)
+
+        body = build_request_body(
+            req,
+            NimSettings(),
+            reasoning=ReasoningPolicy.on(budget_tokens=321),
+        )
+
+        assert body["extra_body"]["chat_template_kwargs"] == {
+            "thinking": True,
+            "enable_thinking": True,
+            "reasoning_budget": 321,
+        }
 
     def test_assistant_thinking_blocks_removed_when_disabled(self):
         req = make_messages_request(
@@ -482,7 +615,7 @@ class TestBuildRequestBody:
             thinking=None,
         )
 
-        body = build_request_body(req, NimSettings(), thinking_enabled=False)
+        body = build_request_body(req, NimSettings(), reasoning=REASONING_OFF)
         assert "<think>" not in body["messages"][0]["content"]
         assert "answer" in body["messages"][0]["content"]
 
@@ -510,7 +643,7 @@ class TestBuildRequestBody:
             thinking=None,
         )
 
-        body = build_request_body(req, NimSettings(), thinking_enabled=True)
+        body = build_request_body(req, NimSettings(), reasoning=REASONING_ON)
         assistant = body["messages"][0]
         assert assistant["reasoning_content"] == "secret"
         assert assistant["content"] == "answer"

@@ -75,7 +75,7 @@ export CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1   # enables the /model picke
 # hard cap. Set to match the BACKEND model's context window; the gateway routes to
 # third-party models whose context may be smaller than Anthropic's 200k. Too high vs
 # the backend => overflow/truncation; too low => compacts early. Override via env.
-export CLAUDE_CODE_AUTO_COMPACT_WINDOW="${CLAUDE_CODE_AUTO_COMPACT_WINDOW:-190000}"
+export CLAUDE_CODE_AUTO_COMPACT_WINDOW="${CLAUDE_CODE_AUTO_COMPACT_WINDOW:-1000000}"
 
 log "ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL} — launching claude."
 exec claude "$@"

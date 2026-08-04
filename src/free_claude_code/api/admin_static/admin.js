@@ -3,6 +3,8 @@ const state = {
   fields: new Map(),
   localStatus: new Map(),
   modelOptions: [],
+  modelComboboxes: new Set(),
+  authPollers: new Map(),
   activeView: "providers",
 };
 
@@ -19,7 +21,7 @@ const VIEW_GROUPS = [
     id: "model_config",
     label: "Model Config",
     title: "Model Config",
-    sections: ["models", "thinking", "web_tools"],
+    sections: ["models", "reasoning", "web_tools"],
     containerId: "modelConfigSections",
   },
   {
@@ -58,8 +60,8 @@ function sourceText(field) {
 }
 
 function statusClass(status) {
-  if (["configured", "reachable", "running"].includes(status)) return "ok";
-  if (["missing_key", "missing_url", "unknown"].includes(status)) return "warn";
+  if (["configured", "reachable", "running", "connected"].includes(status)) return "ok";
+  if (["missing_key", "missing_config", "missing_url", "unknown", "connecting"].includes(status)) return "warn";
   if (["offline", "error"].includes(status)) return "error";
   return "neutral";
 }
@@ -68,9 +70,17 @@ async function api(path, options = {}) {
   const response = await fetch(path, {
     headers: { "Content-Type": "application/json", ...(options.headers || {}) },
     ...options,
+    cache: "no-store",
   });
   if (!response.ok) {
-    throw new Error(`${response.status} ${response.statusText}`);
+    let detail = "";
+    try {
+      const payload = await response.json();
+      detail = typeof payload.detail === "string" ? payload.detail : "";
+    } catch {
+      // The status remains useful when an upstream proxy returns a non-JSON page.
+    }
+    throw new Error(detail || `${response.status} ${response.statusText}`);
   }
   return response.json();
 }
@@ -84,6 +94,7 @@ async function load() {
   renderProviders(config.provider_status);
   renderSections(config.sections, config.fields);
   byId("configPath").textContent = config.paths.managed;
+  await refreshConnectedAccounts();
   await hydrateModelOptions();
   await validate(false);
   await refreshLocalStatus();
@@ -140,8 +151,18 @@ function setActiveView(viewId, { scroll = false } = {}) {
 
 function renderProviders(providerStatus) {
   const grid = byId("providerGrid");
+  const connectedGrid = byId("connectedAccountGrid");
   grid.innerHTML = "";
+  connectedGrid.innerHTML = "";
+  const connected = providerStatus.filter(
+    (provider) => provider.kind === "connected_account",
+  );
+  byId("connectedAccountsSection").hidden = connected.length === 0;
   providerStatus.forEach((provider) => {
+    if (provider.kind === "connected_account") {
+      connectedGrid.appendChild(renderConnectedAccountCard(provider));
+      return;
+    }
     const card = document.createElement("article");
     card.className = "provider-card";
     card.dataset.provider = provider.provider_id;
@@ -160,7 +181,7 @@ function renderProviders(providerStatus) {
     meta.textContent =
       provider.kind === "local"
         ? provider.base_url || "No local URL configured"
-        : provider.credential_env;
+        : provider.configuration;
 
     const button = document.createElement("button");
     button.type = "button";
@@ -171,6 +192,230 @@ function renderProviders(providerStatus) {
     card.append(title, meta, button);
     grid.appendChild(card);
   });
+}
+
+function renderConnectedAccountCard(provider, status = provider) {
+  const card = document.createElement("article");
+  card.className = "provider-card";
+  card.dataset.provider = provider.provider_id;
+  card.dataset.connectedAccount = "true";
+
+  const title = document.createElement("div");
+  title.className = "provider-title";
+  const name = document.createElement("strong");
+  name.textContent = provider.display_name || provider.provider_id;
+  const pill = document.createElement("span");
+  pill.className = `status-pill ${statusClass(status.state || status.status)}`;
+  pill.textContent = connectedAccountLabel(status);
+  title.append(name, pill);
+
+  const meta = document.createElement("div");
+  meta.className = "provider-meta";
+  meta.textContent = connectedAccountMeta(status);
+
+  const actions = document.createElement("div");
+  actions.className = "provider-actions";
+  populateConnectedAccountActions(provider, status, actions);
+  card.append(title, meta, actions);
+  return card;
+}
+
+function connectedAccountLabel(status) {
+  const labels = {
+    disconnected: "Not connected",
+    connecting: "Connecting",
+    connected: "Connected",
+    error: "Needs attention",
+  };
+  return labels[status.state] || status.label || "Not connected";
+}
+
+function connectedAccountMeta(status) {
+  if (status.connected) {
+    const identity = status.email || "ChatGPT subscription connected";
+    const models = Number.isInteger(status.model_count)
+      ? `${status.model_count} model${status.model_count === 1 ? "" : "s"} available. `
+      : "";
+    const error = status.message ? `${status.message} ` : "";
+    return `${identity}. ${models}${error}Restart your agent to refresh its model picker.`;
+  }
+  if (status.mode === "device" && status.user_code) {
+    return `Enter code ${status.user_code} at ${status.verification_url}`;
+  }
+  if (status.state === "connecting") {
+    return "Finish signing in, then return to this page.";
+  }
+  return status.message || "Connect a ChatGPT account to discover subscription models.";
+}
+
+function populateConnectedAccountActions(provider, status, actions) {
+  const providerId = provider.provider_id;
+  if (status.state === "connecting") {
+    const target = status.authorization_url || status.verification_url;
+    if (target) {
+      actions.appendChild(authButton("Open sign-in", () => window.open(target, "_blank", "noopener")));
+    }
+    if (status.mode === "device" && status.user_code) {
+      actions.appendChild(
+        authButton(
+          "Copy code",
+          () => copyDeviceCode(status.user_code),
+          "secondary-button",
+        ),
+      );
+    }
+    actions.appendChild(
+      authButton("Cancel", () => cancelConnectedAccountLogin(providerId), "secondary-button"),
+    );
+    return;
+  }
+  if (status.connected) {
+    actions.appendChild(
+      authButton(
+        "Reconnect",
+        (button) => startConnectedAccountLogin(providerId, "browser", button),
+      ),
+    );
+    actions.appendChild(
+      authButton(
+        "Disconnect",
+        () => disconnectConnectedAccount(providerId),
+        "secondary-button",
+      ),
+    );
+    return;
+  }
+  actions.appendChild(
+    authButton("Connect", (button) => startConnectedAccountLogin(providerId, "browser", button)),
+    authButton(
+      "Use device code",
+      (button) => startConnectedAccountLogin(providerId, "device", button),
+      "secondary-button",
+    ),
+  );
+}
+
+function authButton(label, action, className = "test-button") {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = className;
+  button.textContent = label;
+  button.addEventListener("click", () => action(button));
+  return button;
+}
+
+async function refreshConnectedAccounts() {
+  const providers = (state.config?.provider_status || []).filter(
+    (provider) => provider.kind === "connected_account",
+  );
+  await Promise.all(
+    providers.map(async (provider) => {
+      try {
+        const status = await api(`/admin/api/providers/${provider.provider_id}/auth`);
+        updateConnectedAccountCard(provider, status);
+        if (status.state === "connecting") pollConnectedAccount(provider);
+      } catch (error) {
+        updateConnectedAccountCard(provider, {
+          state: "error",
+          connected: false,
+          message: error.message,
+        });
+      }
+    }),
+  );
+}
+
+function updateConnectedAccountCard(provider, status) {
+  const current = document.querySelector(
+    `[data-provider="${provider.provider_id}"][data-connected-account="true"]`,
+  );
+  if (current) current.replaceWith(renderConnectedAccountCard(provider, status));
+}
+
+async function startConnectedAccountLogin(providerId, mode, button) {
+  button.disabled = true;
+  const popup = window.open("about:blank", "_blank");
+  if (popup) popup.opener = null;
+  try {
+    const status = await api(`/admin/api/providers/${providerId}/auth/login`, {
+      method: "POST",
+      body: JSON.stringify({ mode }),
+    });
+    const provider = connectedAccountDescriptor(providerId);
+    updateConnectedAccountCard(provider, status);
+    const target = status.authorization_url || status.verification_url;
+    if (target && popup) {
+      popup.location.replace(target);
+    } else if (target) {
+      window.open(target, "_blank", "noopener");
+    } else if (popup) {
+      popup.close();
+    }
+    pollConnectedAccount(provider);
+  } catch (error) {
+    if (popup) popup.close();
+    showMessage(error.message, true);
+    button.disabled = false;
+  }
+}
+
+async function cancelConnectedAccountLogin(providerId) {
+  clearConnectedAccountPoll(providerId);
+  const status = await api(`/admin/api/providers/${providerId}/auth/cancel`, {
+    method: "POST",
+  });
+  updateConnectedAccountCard(connectedAccountDescriptor(providerId), status);
+}
+
+async function disconnectConnectedAccount(providerId) {
+  if (!window.confirm("Disconnect this ChatGPT account from FCC?")) return;
+  clearConnectedAccountPoll(providerId);
+  const status = await api(`/admin/api/providers/${providerId}/auth`, {
+    method: "DELETE",
+  });
+  updateConnectedAccountCard(connectedAccountDescriptor(providerId), status);
+  await hydrateModelOptions();
+}
+
+function pollConnectedAccount(provider) {
+  clearConnectedAccountPoll(provider.provider_id);
+  const poll = async () => {
+    try {
+      const status = await api(`/admin/api/providers/${provider.provider_id}/auth`);
+      updateConnectedAccountCard(provider, status);
+      if (status.state === "connecting") {
+        state.authPollers.set(provider.provider_id, window.setTimeout(poll, 1000));
+      } else {
+        state.authPollers.delete(provider.provider_id);
+        if (status.connected) await hydrateModelOptions();
+      }
+    } catch (error) {
+      state.authPollers.delete(provider.provider_id);
+      showMessage(error.message, true);
+    }
+  };
+  state.authPollers.set(provider.provider_id, window.setTimeout(poll, 1000));
+}
+
+function clearConnectedAccountPoll(providerId) {
+  const timer = state.authPollers.get(providerId);
+  if (timer) window.clearTimeout(timer);
+  state.authPollers.delete(providerId);
+}
+
+function connectedAccountDescriptor(providerId) {
+  return state.config.provider_status.find(
+    (provider) => provider.provider_id === providerId,
+  );
+}
+
+async function copyDeviceCode(code) {
+  try {
+    await navigator.clipboard.writeText(code);
+    showMessage("Device code copied.");
+  } catch {
+    showMessage(`Copy this device code: ${code}`);
+  }
 }
 
 function updateProviderCard(providerId, status, label, metaText) {
@@ -185,6 +430,7 @@ function updateProviderCard(providerId, status, label, metaText) {
 }
 
 function renderSections(sections, fields) {
+  state.modelComboboxes.clear();
   VIEW_GROUPS.forEach((view) => {
     byId(view.containerId).innerHTML = "";
   });
@@ -283,7 +529,11 @@ function renderField(field) {
     });
   }
 
-  wrapper.append(label, input);
+  const control =
+    field.type === "model" || field.type === "optional_model"
+      ? new ModelCombobox(input, field).element
+      : input;
+  wrapper.append(label, control);
   if (field.description) {
     const description = document.createElement("div");
     description.className = "field-description";
@@ -302,21 +552,12 @@ function inputForField(field) {
     return input;
   }
 
-  if (field.type === "tri_boolean") {
-    const select = document.createElement("select");
-    [
-      ["", "Inherit"],
-      ["true", "Enabled"],
-      ["false", "Disabled"],
-    ].forEach(([value, label]) => select.appendChild(option(value, label)));
-    select.value = field.value || "";
-    return select;
-  }
-
   if (field.type === "select") {
     const select = document.createElement("select");
-    field.options.forEach((value) => select.appendChild(option(value, value)));
-    select.value = field.value || field.options[0] || "";
+    field.options.forEach((item) =>
+      select.appendChild(option(item.value, item.label)),
+    );
+    select.value = field.value || field.options[0]?.value || "";
     return select;
   }
 
@@ -330,10 +571,6 @@ function inputForField(field) {
     const input = document.createElement("input");
     input.type = "text";
     input.value = field.value || (field.type === "optional_model" ? "None" : "");
-    input.setAttribute(
-      "list",
-      field.type === "optional_model" ? "optional-model-options" : "model-options",
-    );
     input.autocomplete = "off";
     return input;
   }
@@ -351,6 +588,186 @@ function inputForField(field) {
     input.value = field.value || "";
   }
   return input;
+}
+
+class ModelCombobox {
+  constructor(input, field) {
+    this.input = input;
+    this.fieldType = field.type;
+    this.activeIndex = -1;
+    this.query = "";
+
+    this.element = document.createElement("div");
+    this.element.className = "model-combobox";
+    this.listbox = document.createElement("div");
+    this.listbox.className = "model-combobox-list";
+    this.listbox.id = `model-options-${field.key}`;
+    this.listbox.setAttribute("role", "listbox");
+    this.listbox.hidden = true;
+    this.toggle = document.createElement("button");
+    this.toggle.type = "button";
+    this.toggle.className = "model-combobox-toggle";
+    this.toggle.disabled = input.disabled;
+    this.toggle.setAttribute("aria-label", `Show ${field.label} options`);
+
+    input.setAttribute("role", "combobox");
+    input.setAttribute("aria-autocomplete", "list");
+    input.setAttribute("aria-haspopup", "listbox");
+    for (const control of [input, this.toggle]) {
+      control.setAttribute("aria-controls", this.listbox.id);
+      control.setAttribute("aria-expanded", "false");
+    }
+
+    input.addEventListener("click", () => this.open());
+    input.addEventListener("input", () => this.open(input.value));
+    input.addEventListener("keydown", (event) => this.handleKeydown(event));
+    this.toggle.addEventListener("mousedown", (event) => event.preventDefault());
+    this.toggle.addEventListener("click", () => {
+      if (this.isOpen) this.close();
+      else this.open();
+      input.focus();
+    });
+    this.listbox.addEventListener("mousedown", (event) => event.preventDefault());
+    this.listbox.addEventListener("mousemove", (event) => {
+      const optionEl = event.target.closest('[role="option"]');
+      if (optionEl) this.setActive(this.visibleOptions.indexOf(optionEl));
+    });
+    this.listbox.addEventListener("click", (event) => {
+      const optionEl = event.target.closest('[role="option"]');
+      if (optionEl) this.select(optionEl.dataset.value);
+    });
+
+    this.element.append(input, this.toggle, this.listbox);
+    state.modelComboboxes.add(this);
+  }
+
+  get isOpen() {
+    return this.element.classList.contains("open");
+  }
+
+  get values() {
+    return this.fieldType === "optional_model"
+      ? ["None", ...state.modelOptions]
+      : state.modelOptions;
+  }
+
+  get visibleOptions() {
+    return Array.from(this.listbox.querySelectorAll('[role="option"]'));
+  }
+
+  open(query = "") {
+    if (this.input.disabled) return;
+    state.modelComboboxes.forEach((combobox) => {
+      if (combobox !== this) combobox.close();
+    });
+    this.render(query);
+    this.element.classList.add("open");
+    this.listbox.hidden = false;
+    this.setExpanded(true);
+  }
+
+  close() {
+    this.element.classList.remove("open");
+    this.listbox.hidden = true;
+    this.activeIndex = -1;
+    this.input.removeAttribute("aria-activedescendant");
+    this.setExpanded(false);
+  }
+
+  setExpanded(expanded) {
+    for (const control of [this.input, this.toggle]) {
+      control.setAttribute("aria-expanded", String(expanded));
+    }
+  }
+
+  render(query) {
+    this.query = query;
+    const normalizedQuery = query.trim().toLocaleLowerCase();
+    const values = normalizedQuery
+      ? this.values.filter((value) =>
+          value.toLocaleLowerCase().includes(normalizedQuery),
+        )
+      : this.values;
+    this.listbox.innerHTML = "";
+
+    if (values.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "model-combobox-empty";
+      empty.textContent = state.modelOptions.length
+        ? "No matching models. You can still enter a custom slug."
+        : "No discovered models. Refresh models or enter a custom slug.";
+      this.listbox.appendChild(empty);
+      this.activeIndex = -1;
+      this.input.removeAttribute("aria-activedescendant");
+      return;
+    }
+
+    values.forEach((value, index) => {
+      const optionEl = document.createElement("div");
+      optionEl.className = "model-combobox-option";
+      optionEl.id = `${this.listbox.id}-option-${index}`;
+      optionEl.dataset.value = value;
+      optionEl.setAttribute("role", "option");
+      optionEl.textContent = value;
+      this.listbox.appendChild(optionEl);
+    });
+    const selectedIndex = values.indexOf(this.input.value);
+    this.setActive(selectedIndex >= 0 ? selectedIndex : 0, false);
+  }
+
+  setActive(index, scroll = true) {
+    const options = this.visibleOptions;
+    if (options.length === 0) return;
+    this.activeIndex = Math.max(0, Math.min(index, options.length - 1));
+    options.forEach((optionEl, optionIndex) => {
+      const active = optionIndex === this.activeIndex;
+      optionEl.classList.toggle("active", active);
+      optionEl.setAttribute("aria-selected", String(active));
+    });
+    const activeOption = options[this.activeIndex];
+    this.input.setAttribute("aria-activedescendant", activeOption.id);
+    if (scroll) activeOption.scrollIntoView({ block: "nearest" });
+  }
+
+  move(offset) {
+    const count = this.visibleOptions.length;
+    if (count) this.setActive((this.activeIndex + offset + count) % count);
+  }
+
+  select(value) {
+    this.input.value = value;
+    this.input.dispatchEvent(new Event("change", { bubbles: true }));
+    this.close();
+    this.input.focus();
+  }
+
+  handleKeydown(event) {
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      if (this.isOpen) {
+        this.move(event.key === "ArrowDown" ? 1 : -1);
+      } else {
+        this.open();
+        if (event.key === "ArrowUp") {
+          this.setActive(this.visibleOptions.length - 1);
+        }
+      }
+    } else if (this.isOpen && (event.key === "Home" || event.key === "End")) {
+      event.preventDefault();
+      this.setActive(event.key === "Home" ? 0 : this.visibleOptions.length - 1);
+    } else if (this.isOpen && event.key === "Enter") {
+      const active = this.visibleOptions[this.activeIndex];
+      if (active) {
+        event.preventDefault();
+        this.select(active.dataset.value);
+      }
+    } else if (this.isOpen && event.key === "Escape") {
+      event.preventDefault();
+      this.close();
+    } else if (this.isOpen && event.key === "Tab") {
+      this.close();
+    }
+  }
 }
 
 function option(value, label) {
@@ -531,23 +948,9 @@ function setModelOptions(models) {
   state.modelOptions = Array.from(
     new Set(models.filter((model) => typeof model === "string" && model.trim())),
   ).sort((left, right) => left.localeCompare(right));
-  syncModelDatalists();
-}
-
-function syncModelDatalist(id, values) {
-  let datalist = byId(id);
-  if (!datalist) {
-    datalist = document.createElement("datalist");
-    datalist.id = id;
-    document.body.appendChild(datalist);
-  }
-  datalist.innerHTML = "";
-  values.forEach((model) => datalist.appendChild(option(model, model)));
-}
-
-function syncModelDatalists() {
-  syncModelDatalist("model-options", state.modelOptions);
-  syncModelDatalist("optional-model-options", ["None", ...state.modelOptions]);
+  state.modelComboboxes.forEach((combobox) => {
+    if (combobox.isOpen) combobox.render(combobox.query);
+  });
 }
 
 function showMessage(message, kind = "") {
@@ -558,6 +961,11 @@ function showMessage(message, kind = "") {
 
 byId("validateButton").addEventListener("click", () => validate(true));
 byId("applyButton").addEventListener("click", apply);
+document.addEventListener("pointerdown", (event) => {
+  state.modelComboboxes.forEach((combobox) => {
+    if (combobox.isOpen && !combobox.element.contains(event.target)) combobox.close();
+  });
+});
 
 load().catch((error) => {
   showMessage(error.message, "error");

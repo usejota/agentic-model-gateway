@@ -1,5 +1,6 @@
 """Tests for the OpenRouter OpenAI-chat provider."""
 
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -11,13 +12,18 @@ from free_claude_code.core.anthropic.models import MessagesRequest
 from free_claude_code.core.anthropic.stream_contracts import (
     parse_sse_text,
     text_content,
+    thinking_content,
 )
 from free_claude_code.core.reasoning import ReasoningEffort
 from free_claude_code.providers.base import ProviderConfig
 from free_claude_code.providers.open_router import OpenRouterProvider
 from free_claude_code.providers.openai_chat import OpenAIChatProvider
 from tests.providers.request_factory import make_messages_request
-from tests.providers.support import passthrough_rate_limiter
+from tests.providers.support import (
+    REASONING_OFF,
+    immediate_admission,
+    reasoning_for,
+)
 
 
 class AsyncStream:
@@ -49,7 +55,7 @@ def open_router_provider():
             rate_limit=10,
             rate_window=60,
         ),
-        rate_limiter=passthrough_rate_limiter(),
+        admission=immediate_admission(),
     )
 
 
@@ -87,7 +93,7 @@ def test_build_request_body_uses_openai_chat_shape(open_router_provider):
         {"role": "user", "content": "Hello"},
     ]
     assert body["max_tokens"] == 100
-    assert body["extra_body"]["reasoning"] == {"enabled": True}
+    assert "extra_body" not in body
 
 
 def test_build_request_body_default_max_tokens(open_router_provider):
@@ -108,7 +114,7 @@ def test_openrouter_extra_body_rejects_overriding_reserved_fields(
 def test_openrouter_extra_body_allows_provider_keys(open_router_provider):
     body = open_router_provider._build_request_body(
         make_request(extra_body={"transforms": ["no-web"], "plugins": []}),
-        thinking_enabled=False,
+        reasoning=REASONING_OFF,
     )
 
     assert body["extra_body"] == {
@@ -118,27 +124,12 @@ def test_openrouter_extra_body_allows_provider_keys(open_router_provider):
     }
 
 
-def test_openrouter_reasoning_encoder_overwrites_caller_supplied_reasoning(
+def test_build_request_body_disables_reasoning_when_client_disables_it(
     open_router_provider,
 ):
-    """The encoder assigns extra_body.reasoning, so it wins over a caller value."""
+    request = make_request(thinking={"type": "disabled"})
     body = open_router_provider._build_request_body(
-        make_request(
-            extra_body={"reasoning": {"custom": "whatever"}, "transforms": ["a"]}
-        )
-    )
-
-    assert body["extra_body"] == {
-        "transforms": ["a"],
-        "reasoning": {"enabled": True},
-    }
-
-
-def test_build_request_body_encodes_disabled_reasoning_when_thinking_disabled(
-    open_router_provider,
-):
-    body = open_router_provider._build_request_body(
-        make_request(thinking={"type": "disabled"})
+        request, reasoning=reasoning_for(request)
     )
 
     assert body["extra_body"]["reasoning"] == {"enabled": False}
@@ -148,11 +139,12 @@ def test_build_request_body_maps_thinking_budget_to_reasoning_max_tokens(
     open_router_provider,
 ):
     """A positive budget_tokens wins over any effort also present."""
+    request = make_request(
+        thinking={"type": "adaptive", "budget_tokens": 4096},
+        output_config={"effort": "high"},
+    )
     body = open_router_provider._build_request_body(
-        make_request(
-            thinking={"type": "adaptive", "budget_tokens": 4096},
-            output_config={"effort": "high"},
-        )
+        request, reasoning=reasoning_for(request)
     )
 
     assert body["extra_body"]["reasoning"] == {"max_tokens": 4096}
@@ -162,22 +154,24 @@ def test_build_request_body_maps_thinking_budget_to_reasoning_max_tokens(
 def test_build_request_body_maps_effort_levels_to_reasoning_effort(
     open_router_provider, effort
 ):
+    request = make_request(
+        thinking={"type": "adaptive"},
+        output_config={"effort": effort.value},
+    )
     body = open_router_provider._build_request_body(
-        make_request(
-            thinking={"type": "adaptive"},
-            output_config={"effort": effort.value},
-        )
+        request, reasoning=reasoning_for(request)
     )
 
     assert body["extra_body"]["reasoning"] == {"effort": effort.value}
 
 
 def test_build_request_body_effort_none_disables_reasoning(open_router_provider):
+    request = make_request(
+        thinking={"type": "adaptive"},
+        output_config={"effort": "none"},
+    )
     body = open_router_provider._build_request_body(
-        make_request(
-            thinking={"type": "adaptive"},
-            output_config={"effort": "none"},
-        )
+        request, reasoning=reasoning_for(request)
     )
 
     assert body["extra_body"]["reasoning"] == {"enabled": False}
@@ -186,8 +180,9 @@ def test_build_request_body_effort_none_disables_reasoning(open_router_provider)
 def test_build_request_body_effort_without_thinking_block_sets_effort(
     open_router_provider,
 ):
+    request = make_request(thinking=None, output_config={"effort": "high"})
     body = open_router_provider._build_request_body(
-        make_request(thinking=None, output_config={"effort": "high"})
+        request, reasoning=reasoning_for(request)
     )
 
     assert body["extra_body"]["reasoning"] == {"effort": "high"}
@@ -196,11 +191,12 @@ def test_build_request_body_effort_without_thinking_block_sets_effort(
 def test_build_request_body_invalid_effort_falls_back_to_enabled(
     open_router_provider,
 ):
+    request = make_request(
+        thinking={"type": "adaptive"},
+        output_config={"effort": "not-a-real-effort"},
+    )
     body = open_router_provider._build_request_body(
-        make_request(
-            thinking={"type": "adaptive"},
-            output_config={"effort": "not-a-real-effort"},
-        )
+        request, reasoning=reasoning_for(request)
     )
 
     assert body["extra_body"]["reasoning"] == {"enabled": True}
@@ -229,10 +225,136 @@ def test_build_request_body_replays_openrouter_reasoning_details(
         }
     )
 
-    body = open_router_provider._build_request_body(request)
+    body = open_router_provider._build_request_body(
+        request, reasoning=reasoning_for(request)
+    )
 
     assistant = next(msg for msg in body["messages"] if msg["role"] == "assistant")
     assert assistant["reasoning_details"] == [detail]
+
+
+def test_reasoning_details_skip_neutral_tool_turn_boundary(open_router_provider):
+    first_detail = {"type": "reasoning.encrypted", "data": "first"}
+    second_detail = {"type": "reasoning.encrypted", "data": "second"}
+    request = MessagesRequest.model_validate(
+        {
+            "model": "m",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "redacted_thinking",
+                            "data": json.dumps(first_detail),
+                        },
+                        {
+                            "type": "tool_use",
+                            "id": "call_read",
+                            "name": "Read",
+                            "input": {},
+                        },
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "call_read",
+                            "content": "contents",
+                        }
+                    ],
+                },
+                {"role": "user", "content": "continue"},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "redacted_thinking",
+                            "data": json.dumps(second_detail),
+                        },
+                        {"type": "text", "text": "done"},
+                    ],
+                },
+            ],
+        }
+    )
+
+    body = open_router_provider._build_request_body(
+        request, reasoning=reasoning_for(request)
+    )
+
+    assistants = [
+        message for message in body["messages"] if message["role"] == "assistant"
+    ]
+    assert assistants[0]["reasoning_details"] == [first_detail]
+    assert assistants[1] == {"role": "assistant", "content": " "}
+    assert assistants[2]["reasoning_details"] == [second_detail]
+
+
+def test_reasoning_details_preserve_redacted_only_assistant_after_tool(
+    open_router_provider,
+):
+    first_detail = {"type": "reasoning.encrypted", "data": "first"}
+    second_detail = {"type": "reasoning.encrypted", "data": "second"}
+    request = MessagesRequest.model_validate(
+        {
+            "model": "m",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "redacted_thinking",
+                            "data": json.dumps(first_detail),
+                        },
+                        {
+                            "type": "tool_use",
+                            "id": "call_read",
+                            "name": "Read",
+                            "input": {},
+                        },
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "call_read",
+                            "content": "contents",
+                        }
+                    ],
+                },
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "redacted_thinking",
+                            "data": json.dumps(second_detail),
+                        }
+                    ],
+                },
+                {"role": "user", "content": "continue"},
+                {"role": "assistant", "content": "done"},
+            ],
+        }
+    )
+
+    body = open_router_provider._build_request_body(
+        request, reasoning=reasoning_for(request)
+    )
+
+    assistants = [
+        message for message in body["messages"] if message["role"] == "assistant"
+    ]
+    assert assistants[0]["reasoning_details"] == [first_detail]
+    assert assistants[1] == {
+        "role": "assistant",
+        "content": " ",
+        "reasoning_details": [second_detail],
+    }
+    assert "reasoning_details" not in assistants[2]
 
 
 @pytest.mark.asyncio
@@ -240,6 +362,7 @@ async def test_stream_maps_reasoning_content_and_details(open_router_provider):
     redacted = {"type": "reasoning.encrypted", "data": "opaque"}
     stream = AsyncStream(
         [
+            _chunk(reasoning_details=[{"type": "reasoning.text", "text": "plan "}]),
             _chunk(reasoning_content="plan "),
             _chunk(reasoning_details=[redacted]),
             _chunk(content="done", finish_reason="stop"),
@@ -257,11 +380,11 @@ async def test_stream_maps_reasoning_content_and_details(open_router_provider):
         ]
 
     event_text = "".join(events)
-    assert "thinking_delta" in event_text
-    assert "plan " in event_text
+    parsed = parse_sse_text(event_text)
+    assert thinking_content(parsed) == "plan "
     assert "redacted_thinking" in event_text
     assert "opaque" in event_text
-    assert "done" in text_content(parse_sse_text(event_text))
+    assert text_content(parsed) == "done"
     assert stream.closed
 
 
