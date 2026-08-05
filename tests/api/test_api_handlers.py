@@ -770,3 +770,138 @@ def test_token_count_handler_routes_and_counts_tokens() -> None:
     assert all(
         call.kwargs["request_id"] == "req_ingress" for call in trace.call_args_list
     )
+
+
+def _classifier_eval_events(trace_mock: MagicMock) -> list[dict[str, Any]]:
+    return _trace_events(trace_mock, "free_claude_code.api.route.classifier_eval")
+
+
+def _verdict_message_events(verdict_text: str) -> list[str]:
+    return [
+        format_sse_event(
+            "message_start",
+            {
+                "type": "message_start",
+                "message": {
+                    "id": "msg_eval",
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [],
+                    "model": "classifier-model",
+                    "stop_reason": None,
+                    "stop_sequence": None,
+                    "usage": {"input_tokens": 10, "output_tokens": 1},
+                },
+            },
+        ),
+        format_sse_event(
+            "content_block_start",
+            {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "text", "text": ""},
+            },
+        ),
+        format_sse_event(
+            "content_block_delta",
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "text_delta", "text": verdict_text},
+            },
+        ),
+        format_sse_event(
+            "content_block_stop", {"type": "content_block_stop", "index": 0}
+        ),
+        format_sse_event(
+            "message_delta",
+            {
+                "type": "message_delta",
+                "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+                "usage": {"input_tokens": 10, "output_tokens": 3},
+            },
+        ),
+        format_sse_event("message_stop", {"type": "message_stop"}),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_classifier_eval_trace_logs_verdict_duration_and_target() -> None:
+    provider = FakeProvider(_verdict_message_events("<block>no</block>"))
+    settings = Settings()
+    settings.classifier_route = "open_router/some/classifier-model"
+    handler = MessagesHandler(settings, provider_resolver=lambda _: provider)
+    request = MessagesRequest(
+        model="nvidia_nim/test-model",
+        max_tokens=64,
+        stream=False,
+        system=_CLASSIFIER_SYSTEM,
+        messages=[Message(role="user", content=_CLASSIFIER_USER)],
+    )
+
+    with patch("free_claude_code.api.handlers.messages.trace_event") as trace_mock:
+        response = await handler.create(request)
+        assert isinstance(response, JSONResponse)
+
+    events = _classifier_eval_events(trace_mock)
+    assert len(events) == 1
+    event = events[0]
+    assert event["outcome"] == "ok"
+    assert event["verdict"] == "no"
+    assert event["provider_id"] == "open_router"
+    assert event["provider_model"] == "some/classifier-model"
+    assert event["gateway_model"] == "nvidia_nim/test-model"
+    assert event["input_tokens"] == 10
+    assert event["output_tokens"] == 3
+    assert isinstance(event["duration_ms"], int)
+
+
+@pytest.mark.asyncio
+async def test_classifier_eval_trace_logs_stream_error() -> None:
+    provider = FakeProvider(
+        [
+            format_sse_event(
+                "error",
+                {
+                    "type": "error",
+                    "error": {"type": "api_error", "message": "upstream failed"},
+                },
+            )
+        ]
+    )
+    handler = MessagesHandler(Settings(), provider_resolver=lambda _: provider)
+    request = MessagesRequest(
+        model="nvidia_nim/test-model",
+        max_tokens=64,
+        stream=False,
+        system=_CLASSIFIER_SYSTEM,
+        messages=[Message(role="user", content=_CLASSIFIER_USER)],
+    )
+
+    with patch("free_claude_code.api.handlers.messages.trace_event") as trace_mock:
+        response = await handler.create(request)
+        assert isinstance(response, JSONResponse)
+
+    events = _classifier_eval_events(trace_mock)
+    assert len(events) == 1
+    assert events[0]["outcome"] == "error"
+    assert events[0]["error_type"] == "api_error"
+    assert isinstance(events[0]["duration_ms"], int)
+
+
+@pytest.mark.asyncio
+async def test_classifier_eval_trace_not_emitted_for_regular_requests() -> None:
+    provider = FakeProvider(_verdict_message_events("just an answer"))
+    handler = MessagesHandler(Settings(), provider_resolver=lambda _: provider)
+    request = MessagesRequest(
+        model="nvidia_nim/test-model",
+        max_tokens=100,
+        stream=False,
+        messages=[Message(role="user", content="hello")],
+    )
+
+    with patch("free_claude_code.api.handlers.messages.trace_event") as trace_mock:
+        response = await handler.create(request)
+        assert isinstance(response, JSONResponse)
+
+    assert _classifier_eval_events(trace_mock) == []

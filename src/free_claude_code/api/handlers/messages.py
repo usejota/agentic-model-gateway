@@ -1,8 +1,11 @@
 """Claude Messages API product flow."""
 
 import asyncio
+import re
+import time
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, replace
+from typing import Any
 
 from fastapi.responses import JSONResponse, Response
 from loguru import logger
@@ -140,6 +143,10 @@ class MessagesHandler:
     ) -> object:
         """Create an Anthropic-compatible message response."""
         request_id = request_id or new_request_id()
+        started = time.monotonic()
+        # Classifier detection runs on the ORIGINAL request: the reroute does
+        # not change message content, so this stays valid after policies apply.
+        is_classifier_eval = is_safety_classifier_request(request_data)
         try:
             require_non_empty_messages(request_data.messages)
             routed = self._model_router.resolve_messages_request(request_data)
@@ -170,6 +177,7 @@ class MessagesHandler:
                 result,
                 stream=request_data.stream,
                 request_id=request_id,
+                classifier_eval=((started, routed) if is_classifier_eval else None),
             )
         except ApplicationError:
             raise
@@ -189,6 +197,7 @@ class MessagesHandler:
         *,
         stream: bool,
         request_id: str,
+        classifier_eval: tuple[float, RoutedMessagesRequest] | None = None,
     ) -> object:
         if isinstance(result, _MessagesCompleteResult):
             return result.response
@@ -199,13 +208,26 @@ class MessagesHandler:
             try:
                 message, error = await aggregate_anthropic_sse_to_message(result.body)
             except GeneratorExit:
+                # Client aborted mid-aggregation (e.g. auto-mode's eval deadline
+                # firing on a slow verdict) — currently invisible without this.
+                self._emit_classifier_eval(classifier_eval, request_id, "aborted")
                 raise
             except asyncio.CancelledError:
+                self._emit_classifier_eval(classifier_eval, request_id, "aborted")
                 raise
             except ExecutionFailure as exc:
+                self._emit_classifier_eval(
+                    classifier_eval, request_id, "error", error_type=exc.kind.value
+                )
                 return self._execution_failure_response(exc, request_id=request_id)
             except BaseExceptionGroup as exc:
                 failure = find_execution_failure(exc)
+                self._emit_classifier_eval(
+                    classifier_eval,
+                    request_id,
+                    "error",
+                    error_type=failure.kind.value if failure else "unexpected",
+                )
                 if failure is not None:
                     return self._execution_failure_response(
                         failure, request_id=request_id
@@ -216,6 +238,9 @@ class MessagesHandler:
                     context="CREATE_MESSAGE_NON_STREAM_ERROR",
                 )
             except Exception as exc:
+                self._emit_classifier_eval(
+                    classifier_eval, request_id, "error", error_type="unexpected"
+                )
                 return self._unexpected_execution_error_response(
                     exc,
                     request_id=request_id,
@@ -223,6 +248,9 @@ class MessagesHandler:
                 )
             if error is not None:
                 error_type, message_text = _stream_error_fields(error)
+                self._emit_classifier_eval(
+                    classifier_eval, request_id, "error", error_type=error_type
+                )
                 status_code = anthropic_status_for_error_type(error_type)
                 trace_terminal_execution_error(
                     wire_api="messages",
@@ -238,6 +266,9 @@ class MessagesHandler:
                         request_id=request_id,
                     ),
                 )
+            self._emit_classifier_eval(
+                classifier_eval, request_id, "ok", message=message
+            )
             return JSONResponse(content=message)
         return await anthropic_sse_streaming_response(
             result.body,
@@ -246,6 +277,50 @@ class MessagesHandler:
             ),
             request_id=request_id,
         )
+
+    # ponytail: only the non-streaming path is instrumented — Claude Code's
+    # auto-mode eval always requests non-streaming, so streaming classifier
+    # calls don't occur in practice.
+    def _emit_classifier_eval(
+        self,
+        classifier_eval: tuple[float, RoutedMessagesRequest] | None,
+        request_id: str,
+        outcome: str,
+        *,
+        message: dict[str, Any] | None = None,
+        error_type: str | None = None,
+    ) -> None:
+        """Emit one `classifier_eval` trace per safety-classifier request.
+
+        Makes slow and failed evals diagnosable in a single log line: outcome
+        (ok | error | aborted), wall-clock duration, the parsed verdict, the
+        rerouted target model, and token usage. The ``aborted`` outcome is the
+        client-deadline case (auto mode gives up waiting) that previously left
+        no trace at all.
+        """
+        if classifier_eval is None:
+            return
+        started, routed = classifier_eval
+        fields: dict[str, Any] = {
+            "stage": "routing",
+            "event": "free_claude_code.api.route.classifier_eval",
+            "source": "api",
+            "request_id": request_id,
+            "outcome": outcome,
+            "duration_ms": round((time.monotonic() - started) * 1000),
+            "provider_id": routed.resolved.provider_id,
+            "provider_model": routed.resolved.provider_model,
+            "gateway_model": routed.resolved.original_model,
+        }
+        if message is not None:
+            fields["verdict"] = _classifier_verdict(message)
+            usage = message.get("usage")
+            if isinstance(usage, dict):
+                fields["input_tokens"] = usage.get("input_tokens")
+                fields["output_tokens"] = usage.get("output_tokens")
+        if error_type is not None:
+            fields["error_type"] = error_type
+        trace_event(**fields)
 
     def _pre_start_error_response(
         self, exc: BaseException, *, request_id: str
@@ -678,6 +753,29 @@ class MessagesHandler:
             model=routed.resolved.original_model,
         )
         return _MessagesCompleteResult(optimized)
+
+
+_VERDICT_RE = re.compile(r"<block>\s*(yes|no)\s*</block>", re.IGNORECASE)
+
+
+def _classifier_verdict(message: dict[str, Any]) -> str:
+    """Extract the ``<block>yes/no</block>`` verdict from an aggregated message.
+
+    Returns ``yes``/``no`` when a verdict marker is present, ``other`` when the
+    response has text but no marker, ``none`` when the response has no text.
+    """
+    content = message.get("content")
+    if not isinstance(content, list):
+        return "none"
+    text = "".join(
+        block.get("text", "")
+        for block in content
+        if isinstance(block, dict) and block.get("type") == "text"
+    )
+    if not text.strip():
+        return "none"
+    match = _VERDICT_RE.search(text)
+    return match.group(1).lower() if match else "other"
 
 
 def _stream_error_fields(error: dict[str, object]) -> tuple[str, str]:
