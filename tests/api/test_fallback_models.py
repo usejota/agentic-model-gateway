@@ -34,11 +34,17 @@ class _GoodProvider:
     def __init__(self) -> None:
         self.requests: list[MessagesRequest] = []
 
-    def preflight_stream(self, request, *, thinking_enabled=None) -> None:
+    def preflight_stream(self, request, *, reasoning) -> None:
         return None
 
     async def stream_response(
-        self, request, input_tokens=0, *, request_id=None, thinking_enabled=None
+        self,
+        request,
+        input_tokens=0,
+        *,
+        request_id=None,
+        response_model=None,
+        reasoning,
     ) -> AsyncIterator[str]:
         self.requests.append(request)
         for event in _EVENTS:
@@ -51,12 +57,18 @@ class _OverloadProvider:
     def __init__(self, at: str = "stream") -> None:
         self.at = at
 
-    def preflight_stream(self, request, *, thinking_enabled=None) -> None:
+    def preflight_stream(self, request, *, reasoning) -> None:
         if self.at == "preflight":
             raise _overload()
 
     async def stream_response(
-        self, request, input_tokens=0, *, request_id=None, thinking_enabled=None
+        self,
+        request,
+        input_tokens=0,
+        *,
+        request_id=None,
+        response_model=None,
+        reasoning,
     ) -> AsyncIterator[str]:
         if self.at == "stream":
             raise _overload()

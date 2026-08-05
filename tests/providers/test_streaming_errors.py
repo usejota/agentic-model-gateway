@@ -9,14 +9,18 @@ import openai
 import pytest
 
 from free_claude_code.config.nim import NimSettings
+from free_claude_code.core.anthropic import OpenAIToolNameCodec
 from free_claude_code.core.anthropic.stream_contracts import (
     parse_sse_text,
 )
 from free_claude_code.core.anthropic.streaming import (
     AnthropicStreamLedger,
+    make_response_recovery_body,
     make_text_recovery_body,
 )
 from free_claude_code.core.failures import ExecutionFailure
+from free_claude_code.core.reasoning import DEFAULT_REASONING_POLICY, ReasoningPolicy
+from free_claude_code.providers.admission import UPSTREAM_TRANSIENT_TOTAL_ATTEMPTS
 from free_claude_code.providers.base import ProviderConfig
 from free_claude_code.providers.nvidia_nim import NvidiaNimProvider
 from free_claude_code.providers.openai_chat.provider import (
@@ -24,15 +28,13 @@ from free_claude_code.providers.openai_chat.provider import (
 )
 from free_claude_code.providers.openai_chat.tool_calls import (
     OpenAIToolCallAssembler,
+    OpenAIToolCallCollector,
     has_committed_sse_output,
     iter_heuristic_tool_use_sse,
 )
-from free_claude_code.providers.stream_recovery import (
-    MIDSTREAM_RECOVERY_ATTEMPTS,
-    TruncatedProviderStreamError,
-)
+from free_claude_code.providers.stream_recovery import TruncatedProviderStreamError
 from tests.providers.request_factory import make_messages_request
-from tests.providers.support import passthrough_rate_limiter
+from tests.providers.support import REASONING_OFF, immediate_admission
 
 
 class AsyncStreamMock:
@@ -50,6 +52,14 @@ class AsyncStreamMock:
             yield chunk
         if self._error:
             raise self._error
+
+
+def _recovery_output(
+    text: str = "",
+    thinking: str = "",
+    tool_calls: tuple[dict, ...] = (),
+) -> SimpleNamespace:
+    return SimpleNamespace(text=text, thinking=thinking, tool_calls=tool_calls)
 
 
 class ClosableAsyncStreamMock(AsyncStreamMock):
@@ -74,29 +84,13 @@ def _make_provider():
     return NvidiaNimProvider(
         config,
         nim_settings=NimSettings(),
-        rate_limiter=passthrough_rate_limiter(),
+        admission=immediate_admission(),
     )
 
 
 def _make_tool_assembler(provider: NvidiaNimProvider) -> OpenAIToolCallAssembler:
     return OpenAIToolCallAssembler(
         record_extra_content=provider._record_tool_call_extra_content
-    )
-
-
-def _make_provider_with_thinking_enabled(enabled: bool):
-    """Create a provider instance with thinking explicitly enabled or disabled."""
-    config = ProviderConfig(
-        api_key="test_key",
-        base_url="https://test.api.nvidia.com/v1",
-        rate_limit=10,
-        rate_window=60,
-        enable_thinking=enabled,
-    )
-    return NvidiaNimProvider(
-        config,
-        nim_settings=NimSettings(),
-        rate_limiter=passthrough_rate_limiter(),
     )
 
 
@@ -128,7 +122,8 @@ def _make_stream_runner(
         request=request or _make_request(),
         input_tokens=0,
         request_id=request_id,
-        thinking_enabled=None,
+        response_model=None,
+        reasoning=DEFAULT_REASONING_POLICY,
     )
 
 
@@ -163,9 +158,14 @@ def _make_tool_calls_chunk(*, name: str, arguments: str, tool_id: str, index: in
     return _make_chunk(tool_calls=[tc])
 
 
-async def _collect_stream(provider, request):
+async def _collect_stream(
+    provider,
+    request,
+    *,
+    reasoning: ReasoningPolicy = DEFAULT_REASONING_POLICY,
+):
     """Collect all SSE events from a stream."""
-    return [e async for e in provider.stream_response(request)]
+    return [e async for e in provider.stream_response(request, reasoning=reasoning)]
 
 
 async def _collect_stream_error(provider, request, **kwargs) -> ExecutionFailure:
@@ -225,6 +225,30 @@ def _assert_error_not_in_text_deltas_after_tool(
 
 
 class TestStreamingExceptionHandling:
+    @pytest.mark.asyncio
+    async def test_stream_normalization_failure_closes_raw_stream(self):
+        provider = _make_provider()
+        stream = ClosableAsyncStreamMock([])
+        retry_session = provider._admission.new_retry_session()
+
+        with (
+            patch.object(
+                provider._client.chat.completions,
+                "create",
+                new_callable=AsyncMock,
+                return_value=stream,
+            ),
+            patch.object(
+                provider,
+                "_normalize_stream",
+                side_effect=ValueError("invalid stream wrapper"),
+            ),
+            pytest.raises(ValueError, match="invalid stream wrapper"),
+        ):
+            await provider._create_stream({"messages": []}, retry_session)
+
+        assert stream.closed
+
     """Tests for error paths during stream_response."""
 
     @pytest.mark.asyncio
@@ -239,12 +263,6 @@ class TestStreamingExceptionHandling:
                 "create",
                 new_callable=AsyncMock,
                 side_effect=RuntimeError("API failed"),
-            ),
-            patch.object(
-                provider._rate_limiter,
-                "wait_if_blocked",
-                new_callable=AsyncMock,
-                return_value=False,
             ),
         ):
             error = await _collect_stream_error(provider, request)
@@ -263,12 +281,6 @@ class TestStreamingExceptionHandling:
                 "create",
                 new_callable=AsyncMock,
                 side_effect=httpx.ReadTimeout(""),
-            ),
-            patch.object(
-                provider._rate_limiter,
-                "wait_if_blocked",
-                new_callable=AsyncMock,
-                return_value=False,
             ),
             patch("asyncio.sleep", new_callable=AsyncMock),
         ):
@@ -297,12 +309,6 @@ class TestStreamingExceptionHandling:
                 new_callable=AsyncMock,
                 return_value=stream_mock,
             ),
-            patch.object(
-                provider._rate_limiter,
-                "wait_if_blocked",
-                new_callable=AsyncMock,
-                return_value=False,
-            ),
         ):
             error = await _collect_stream_error(provider, request)
 
@@ -325,12 +331,6 @@ class TestStreamingExceptionHandling:
                 "create",
                 new_callable=AsyncMock,
                 return_value=stream_mock,
-            ),
-            patch.object(
-                provider._rate_limiter,
-                "wait_if_blocked",
-                new_callable=AsyncMock,
-                return_value=False,
             ),
         ):
             events, error = await _collect_stream_and_error(provider, request)
@@ -362,12 +362,6 @@ class TestStreamingExceptionHandling:
                 new_callable=AsyncMock,
                 return_value=stream_mock,
             ),
-            patch.object(
-                provider._rate_limiter,
-                "wait_if_blocked",
-                new_callable=AsyncMock,
-                return_value=False,
-            ),
         ):
             events = await _collect_stream(provider, request)
 
@@ -398,12 +392,6 @@ class TestStreamingExceptionHandling:
                 new_callable=AsyncMock,
                 return_value=stream_mock,
             ),
-            patch.object(
-                provider._rate_limiter,
-                "wait_if_blocked",
-                new_callable=AsyncMock,
-                return_value=False,
-            ),
         ):
             events = await _collect_stream(provider, request)
 
@@ -422,7 +410,7 @@ class TestStreamingExceptionHandling:
         NIM / some templates may emit no main ``content``; a minimal text block matches
         the empty-body placeholder and helps clients that expect a text segment.
         """
-        provider = _make_provider_with_thinking_enabled(True)
+        provider = _make_provider()
         request = _make_request()
         chunk1 = _make_chunk(reasoning_content="reasoning only from provider")
         chunk2 = _make_chunk(finish_reason="stop")
@@ -433,12 +421,6 @@ class TestStreamingExceptionHandling:
                 "create",
                 new_callable=AsyncMock,
                 return_value=stream_mock,
-            ),
-            patch.object(
-                provider._rate_limiter,
-                "wait_if_blocked",
-                new_callable=AsyncMock,
-                return_value=False,
             ),
         ):
             events = await _collect_stream(provider, request)
@@ -463,12 +445,6 @@ class TestStreamingExceptionHandling:
                 "create",
                 new_callable=AsyncMock,
                 return_value=stream_mock,
-            ),
-            patch.object(
-                provider._rate_limiter,
-                "wait_if_blocked",
-                new_callable=AsyncMock,
-                return_value=False,
             ),
         ):
             events = await _collect_stream(provider, request)
@@ -496,12 +472,6 @@ class TestStreamingExceptionHandling:
                 new_callable=AsyncMock,
                 return_value=stream_mock,
             ),
-            patch.object(
-                provider._rate_limiter,
-                "wait_if_blocked",
-                new_callable=AsyncMock,
-                return_value=False,
-            ),
         ):
             events = await _collect_stream(provider, request)
 
@@ -527,12 +497,6 @@ class TestStreamingExceptionHandling:
                 new_callable=AsyncMock,
                 return_value=stream_mock,
             ),
-            patch.object(
-                provider._rate_limiter,
-                "wait_if_blocked",
-                new_callable=AsyncMock,
-                return_value=False,
-            ),
         ):
             events = await _collect_stream(provider, request)
 
@@ -556,7 +520,7 @@ class TestStreamingExceptionHandling:
     @pytest.mark.asyncio
     async def test_stream_with_reasoning_content_suppressed_when_disabled(self):
         """reasoning deltas are stripped while normal text still streams."""
-        provider = _make_provider_with_thinking_enabled(False)
+        provider = _make_provider()
         request = _make_request()
 
         chunk1 = _make_chunk(reasoning_content="I think...")
@@ -571,14 +535,8 @@ class TestStreamingExceptionHandling:
                 new_callable=AsyncMock,
                 return_value=stream_mock,
             ),
-            patch.object(
-                provider._rate_limiter,
-                "wait_if_blocked",
-                new_callable=AsyncMock,
-                return_value=False,
-            ),
         ):
-            events = await _collect_stream(provider, request)
+            events = await _collect_stream(provider, request, reasoning=REASONING_OFF)
 
         event_text = "".join(events)
         assert "thinking_delta" not in event_text
@@ -771,8 +729,8 @@ class TestStreamingExceptionHandling:
         )
 
     @pytest.mark.asyncio
-    async def test_precommit_openai_holdback_retries_without_leaking_partial(self):
-        """A retryable early cutoff before holdback commit is retried invisibly."""
+    async def test_precommit_retry_emits_one_unduplicated_downstream_lifecycle(self):
+        """An abandoned attempt contributes no frame to the successful replay."""
         provider = _make_provider()
         request = _make_request()
         first_stream = AsyncStreamMock(
@@ -797,11 +755,123 @@ class TestStreamingExceptionHandling:
         event_text = "".join(events)
         assert mock_create.await_count == 2
         assert "hidden" not in event_text
-        assert "visible" in event_text
         parsed = parse_sse_text(event_text)
-        assert parsed[0].event == "message_start"
+        text_deltas = [
+            event.data.get("delta", {}).get("text", "")
+            for event in parsed
+            if event.event == "content_block_delta"
+        ]
+        assert text_deltas == ["visible"]
         assert sum(event.event == "message_start" for event in parsed) == 1
+        assert sum(event.event == "content_block_start" for event in parsed) == 1
+        assert sum(event.event == "content_block_stop" for event in parsed) == 1
+        assert sum(event.event == "message_delta" for event in parsed) == 1
+        assert sum(event.event == "message_stop" for event in parsed) == 1
+        assert parsed[0].event == "message_start"
         assert parsed[-1].event == "message_stop"
+
+    @pytest.mark.asyncio
+    async def test_precommit_retry_discards_abandoned_tool_name_fragment(self):
+        """A retried alias fragment cannot prefix or duplicate the successful call."""
+        provider = _make_provider()
+        original = "mcp__retry_tool_name__" + "x" * 70
+        request = _make_request(
+            tools=[{"name": original, "input_schema": {"type": "object"}}]
+        )
+        alias = OpenAIToolNameCodec.from_request(request).encode(original)
+        first_stream = AsyncStreamMock(
+            [
+                _make_tool_calls_chunk(
+                    name=alias[:20],
+                    arguments="",
+                    tool_id="call_abandoned",
+                ),
+                _make_chunk(finish_reason="tool_calls"),
+            ]
+        )
+        second_stream = AsyncStreamMock(
+            [
+                _make_tool_calls_chunk(
+                    name=alias,
+                    arguments="{}",
+                    tool_id="call_success",
+                ),
+                _make_chunk(finish_reason="tool_calls"),
+            ]
+        )
+
+        with patch.object(
+            provider._client.chat.completions,
+            "create",
+            new_callable=AsyncMock,
+            side_effect=[first_stream, second_stream],
+        ) as create:
+            events = await _collect_stream(provider, request)
+
+        event_text = "".join(events)
+        parsed = parse_sse_text(event_text)
+        tool_starts = [
+            event.data["content_block"]
+            for event in parsed
+            if event.event == "content_block_start"
+            and event.data.get("content_block", {}).get("type") == "tool_use"
+        ]
+        assert create.await_count == 2
+        assert tool_starts == [
+            {
+                "type": "tool_use",
+                "id": "call_success",
+                "name": original,
+                "input": {},
+            }
+        ]
+        assert alias not in event_text
+        assert "call_abandoned" not in event_text
+        assert sum(event.event == "message_start" for event in parsed) == 1
+        assert sum(event.event == "message_stop" for event in parsed) == 1
+
+    @pytest.mark.asyncio
+    async def test_primary_replay_and_continuation_share_five_attempts(self):
+        """Four replays plus continuation emit one unduplicated response."""
+        provider = _make_provider()
+        request = _make_request()
+        primary_streams = [
+            AsyncStreamMock([_make_chunk(content="hello")]) for _ in range(4)
+        ]
+        continuation = AsyncStreamMock(
+            [
+                _make_chunk(content="hello world"),
+                _make_chunk(finish_reason="stop"),
+            ]
+        )
+
+        with patch.object(
+            provider._client.chat.completions,
+            "create",
+            new_callable=AsyncMock,
+            side_effect=[*primary_streams, continuation],
+        ) as create:
+            events = await _collect_stream(provider, request)
+
+        assert create.await_count == UPSTREAM_TRANSIENT_TOTAL_ATTEMPTS
+        assert all(
+            call.kwargs["messages"] == create.await_args_list[0].kwargs["messages"]
+            for call in create.await_args_list[:4]
+        )
+        assert (
+            create.await_args_list[4].kwargs["messages"]
+            != (create.await_args_list[0].kwargs["messages"])
+        )
+        parsed = parse_sse_text("".join(events))
+        text = "".join(
+            event.data.get("delta", {}).get("text", "")
+            for event in parsed
+            if event.event == "content_block_delta"
+        )
+        assert text == "hello world"
+        assert sum(event.event == "message_start" for event in parsed) == 1
+        assert sum(event.event == "message_delta" for event in parsed) == 1
+        assert sum(event.event == "message_stop" for event in parsed) == 1
 
     @pytest.mark.asyncio
     async def test_clean_eof_after_text_continues_with_overlap_trim(self):
@@ -819,9 +889,9 @@ class TestStreamingExceptionHandling:
             ),
             patch.object(
                 _OpenAIChatStreamRunner,
-                "_collect_recovery_text",
+                "_collect_recovery_output",
                 new_callable=AsyncMock,
-                return_value=("world", ""),
+                return_value=_recovery_output(text="world"),
             ),
         ):
             events = await _collect_stream(provider, request)
@@ -834,6 +904,11 @@ class TestStreamingExceptionHandling:
         ]
         assert text_deltas == ["hello wor", "ld"]
         assert "".join(text_deltas) == "hello world"
+        assert sum(event.event == "message_start" for event in parsed) == 1
+        assert sum(event.event == "content_block_start" for event in parsed) == 1
+        assert sum(event.event == "content_block_stop" for event in parsed) == 1
+        assert sum(event.event == "message_delta" for event in parsed) == 1
+        assert sum(event.event == "message_stop" for event in parsed) == 1
         assert any(
             event.event == "message_delta"
             and event.data.get("delta", {}).get("stop_reason") == "end_turn"
@@ -843,7 +918,7 @@ class TestStreamingExceptionHandling:
 
     @pytest.mark.asyncio
     async def test_disabled_thinking_recovery_discards_reasoning(self):
-        provider = _make_provider_with_thinking_enabled(False)
+        provider = _make_provider()
         request = _make_request()
         initial_stream = AsyncStreamMock([_make_chunk(content="hello")])
         recovery_stream = AsyncStreamMock(
@@ -860,7 +935,7 @@ class TestStreamingExceptionHandling:
             new_callable=AsyncMock,
             side_effect=[initial_stream, recovery_stream],
         ):
-            events = await _collect_stream(provider, request)
+            events = await _collect_stream(provider, request, reasoning=REASONING_OFF)
 
         parsed = parse_sse_text("".join(events))
         text = "".join(
@@ -880,21 +955,28 @@ class TestStreamingExceptionHandling:
         """Recovery collectors reject truncated OpenAI-chat continuation streams."""
         streams = [
             ClosableAsyncStreamMock([_make_chunk(content=f"world {index}")])
-            for index in range(MIDSTREAM_RECOVERY_ATTEMPTS)
+            for index in range(UPSTREAM_TRANSIENT_TOTAL_ATTEMPTS)
         ]
-        create_stream = AsyncMock(side_effect=[(stream, {}) for stream in streams])
         provider = _make_provider()
         runner = _make_stream_runner(provider)
+        retry_session = provider._admission.new_retry_session()
 
         with (
-            patch.object(provider, "_create_stream", create_stream),
+            patch.object(
+                provider._client.chat.completions,
+                "create",
+                new_callable=AsyncMock,
+                side_effect=streams,
+            ) as create,
             pytest.raises(TruncatedProviderStreamError),
         ):
-            await runner._collect_recovery_text(
-                {"messages": []}, include_reasoning=True
+            await runner._collect_recovery_output(
+                {"messages": []},
+                include_reasoning=True,
+                retry_session=retry_session,
             )
 
-        assert create_stream.await_count == MIDSTREAM_RECOVERY_ATTEMPTS
+        assert create.await_count == UPSTREAM_TRANSIENT_TOTAL_ATTEMPTS
         assert all(stream.closed for stream in streams)
 
     @pytest.mark.asyncio
@@ -905,21 +987,28 @@ class TestStreamingExceptionHandling:
                 [_make_chunk(content=f"partial {index}")],
                 error=TimeoutError("recovery cutoff"),
             )
-            for index in range(MIDSTREAM_RECOVERY_ATTEMPTS)
+            for index in range(UPSTREAM_TRANSIENT_TOTAL_ATTEMPTS)
         ]
-        create_stream = AsyncMock(side_effect=[(stream, {}) for stream in streams])
         provider = _make_provider()
         runner = _make_stream_runner(provider)
+        retry_session = provider._admission.new_retry_session()
 
         with (
-            patch.object(provider, "_create_stream", create_stream),
+            patch.object(
+                provider._client.chat.completions,
+                "create",
+                new_callable=AsyncMock,
+                side_effect=streams,
+            ) as create,
             pytest.raises(TimeoutError),
         ):
-            await runner._collect_recovery_text(
-                {"messages": []}, include_reasoning=True
+            await runner._collect_recovery_output(
+                {"messages": []},
+                include_reasoning=True,
+                retry_session=retry_session,
             )
 
-        assert create_stream.await_count == MIDSTREAM_RECOVERY_ATTEMPTS
+        assert create.await_count == UPSTREAM_TRANSIENT_TOTAL_ATTEMPTS
         assert all(stream.closed for stream in streams)
 
     @pytest.mark.asyncio
@@ -931,22 +1020,72 @@ class TestStreamingExceptionHandling:
                 _make_chunk(finish_reason="stop"),
             ]
         )
-        create_stream = AsyncMock(
-            return_value=(
-                stream,
-                {},
-            )
-        )
         provider = _make_provider()
         runner = _make_stream_runner(provider)
+        retry_session = provider._admission.new_retry_session()
 
-        with patch.object(provider, "_create_stream", create_stream):
-            result = await runner._collect_recovery_text(
-                {"messages": []}, include_reasoning=True
+        with patch.object(
+            provider._client.chat.completions,
+            "create",
+            new_callable=AsyncMock,
+            return_value=stream,
+        ):
+            result = await runner._collect_recovery_output(
+                {"messages": []},
+                include_reasoning=True,
+                retry_session=retry_session,
             )
 
-        assert result == ("world", "")
+        assert result.text == "world"
+        assert result.thinking == ""
+        assert result.tool_calls == ()
         assert stream.closed is True
+
+    @pytest.mark.asyncio
+    async def test_recovery_collect_text_honors_provider_retry_classification(self):
+        """Provider semantics apply before the first recovery chunk as well."""
+        provider = _make_provider()
+        runner = _make_stream_runner(provider)
+        retry_session = provider._admission.new_retry_session()
+        request = httpx.Request(
+            "POST", "https://test.api.nvidia.com/v1/chat/completions"
+        )
+        degraded = openai.BadRequestError(
+            "Bad Request",
+            response=httpx.Response(400, request=request),
+            body={
+                "status": 400,
+                "detail": (
+                    "Function id 'test-function': DEGRADED function cannot be invoked"
+                ),
+            },
+        )
+        rejected = ClosableAsyncStreamMock([], error=degraded)
+        recovered = ClosableAsyncStreamMock(
+            [
+                _make_chunk(content="world"),
+                _make_chunk(finish_reason="stop"),
+            ]
+        )
+
+        with patch.object(
+            provider._client.chat.completions,
+            "create",
+            new_callable=AsyncMock,
+            side_effect=[rejected, recovered],
+        ) as create:
+            result = await runner._collect_recovery_output(
+                {"messages": []},
+                include_reasoning=True,
+                retry_session=retry_session,
+            )
+
+        assert result.text == "world"
+        assert result.thinking == ""
+        assert result.tool_calls == ()
+        assert create.await_count == 2
+        assert rejected.closed
+        assert recovered.closed
 
     def test_text_recovery_body_preserves_thinking_context(self):
         """Continuation prompts include emitted thinking without provider-specific fields."""
@@ -964,6 +1103,7 @@ class TestStreamingExceptionHandling:
 
         assert "tools" not in recovery_body
         assert "tool_choice" not in recovery_body
+        assert "stream" not in recovery_body
         assert recovery_body["messages"][-2] == {
             "role": "assistant",
             "content": "visible answer",
@@ -972,6 +1112,22 @@ class TestStreamingExceptionHandling:
         assert recovery_prompt["role"] == "user"
         assert "hidden reasoning" in recovery_prompt["content"]
         assert "reasoning_content" not in recovery_prompt
+
+    def test_tool_protocol_recovery_body_retains_tool_contract(self):
+        body = {
+            "messages": [{"role": "user", "content": "hello"}],
+            "tools": [{"type": "function", "function": {"name": "Read"}}],
+            "tool_choice": {"type": "function", "function": {"name": "Read"}},
+        }
+
+        recovery_body = make_response_recovery_body(body, "visible answer")
+
+        assert recovery_body["tools"] == body["tools"]
+        assert recovery_body["tool_choice"] == body["tool_choice"]
+        assert recovery_body["messages"][-2] == {
+            "role": "assistant",
+            "content": "visible answer",
+        }
 
     @pytest.mark.asyncio
     async def test_openai_text_recovery_passes_thinking_context(self):
@@ -987,16 +1143,21 @@ class TestStreamingExceptionHandling:
 
         with patch.object(
             runner,
-            "_collect_recovery_text",
+            "_collect_recovery_output",
             new_callable=AsyncMock,
-            return_value=("visible answer done", "hidden reasoning more"),
+            return_value=_recovery_output(
+                text="visible answer done",
+                thinking="hidden reasoning more",
+            ),
         ) as mock_collect:
+            retry_session = runner._provider._admission.new_retry_session()
             events = await runner._recovery_events(
                 body={"messages": [{"role": "user", "content": "hello"}]},
                 ledger=ledger,
                 error=TimeoutError("cutoff"),
                 tool_argument_alias_buffers={},
-                thinking_enabled=True,
+                output_reasoning=True,
+                retry_session=retry_session,
             )
 
         assert events is not None
@@ -1043,7 +1204,7 @@ class TestStreamingExceptionHandling:
             ) as mock_create,
             patch.object(
                 _OpenAIChatStreamRunner,
-                "_collect_recovery_text",
+                "_collect_recovery_output",
                 new_callable=AsyncMock,
                 side_effect=TruncatedProviderStreamError(
                     "Recovery stream ended without finish_reason."
@@ -1101,9 +1262,9 @@ class TestStreamingExceptionHandling:
             ),
             patch.object(
                 _OpenAIChatStreamRunner,
-                "_collect_recovery_text",
+                "_collect_recovery_output",
                 new_callable=AsyncMock,
-                return_value=('"ok"}', ""),
+                return_value=_recovery_output(text='"ok"}'),
             ),
         ):
             events = await _collect_stream(provider, request)
@@ -1119,8 +1280,8 @@ class TestStreamingExceptionHandling:
         assert not any(event.event == "error" for event in parsed)
 
     @pytest.mark.asyncio
-    async def test_stream_rate_limited_retries_via_execute_with_retry(self):
-        """When rate limited, execute_with_retry handles retries transparently."""
+    async def test_stream_rate_limit_uses_the_execution_retry_session(self):
+        """A create-time 429 consumes one attempt before a successful retry."""
         provider = _make_provider()
         request = _make_request()
 
@@ -1128,25 +1289,28 @@ class TestStreamingExceptionHandling:
         chunk2 = _make_chunk(finish_reason="stop")
         stream_mock = AsyncStreamMock([chunk1, chunk2])
 
+        response = httpx.Response(
+            429,
+            request=httpx.Request(
+                "POST", "https://test.api.nvidia.com/v1/chat/completions"
+            ),
+        )
+        error = httpx.HTTPStatusError(
+            "rate limited",
+            request=response.request,
+            response=response,
+        )
+
         with patch.object(
             provider._client.chat.completions,
             "create",
             new_callable=AsyncMock,
-            return_value=stream_mock,
-        ):
-            # Mock execute_with_retry to pass through to the actual function
-            async def _passthrough(fn, *args, **kwargs):
-                return await fn(*args, **kwargs)
-
-            with patch.object(
-                provider._rate_limiter,
-                "execute_with_retry",
-                new_callable=AsyncMock,
-                side_effect=_passthrough,
-            ):
-                events = await _collect_stream(provider, request)
+            side_effect=[error, stream_mock],
+        ) as create:
+            events = await _collect_stream(provider, request)
 
         event_text = "".join(events)
+        assert create.await_count == 2
         assert "Response" in event_text
 
 
@@ -1190,6 +1354,233 @@ class TestProcessToolCall:
         assert "tool_use" in event_text
         assert "search" in event_text
         assert "call_123" in event_text
+
+    def test_structured_tool_call_restores_portable_wire_alias(self):
+        """A wire alias never escapes in the Anthropic tool block."""
+        provider = _make_provider()
+        original = "mcp__portable_output__" + "x" * 70
+        request = _make_request(
+            tools=[{"name": original, "input_schema": {"type": "object"}}]
+        )
+        codec = OpenAIToolNameCodec.from_request(request)
+        alias = codec.encode(original)
+        sse = AnthropicStreamLedger("msg_test", "test-model")
+
+        events = list(
+            _make_tool_assembler(provider).process_tool_call(
+                {
+                    "index": 0,
+                    "id": "call_alias",
+                    "function": {"name": alias, "arguments": "{}"},
+                },
+                sse,
+                tool_names=codec,
+                tool_name_buffers={},
+            )
+        )
+
+        event_text = "".join(events)
+        assert original in event_text
+        assert alias not in event_text
+        assert (
+            sum(
+                event.event == "content_block_start"
+                for event in parse_sse_text(event_text)
+            )
+            == 1
+        )
+
+    def test_tool_name_restores_before_nim_argument_alias_lookup(self):
+        """Generic name decoding composes with original-name NIM arg metadata."""
+        provider = _make_provider()
+        original = "mcp__nim_argument_composition__" + "x" * 70
+        request = _make_request(
+            tools=[
+                {
+                    "name": original,
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {"type": {"type": "string"}},
+                        "required": ["type"],
+                    },
+                }
+            ]
+        )
+        codec = OpenAIToolNameCodec.from_request(request)
+        sse = AnthropicStreamLedger("msg_test", "test-model")
+
+        events = list(
+            _make_tool_assembler(provider).process_tool_call(
+                {
+                    "index": 0,
+                    "id": "call_composed",
+                    "function": {
+                        "name": codec.encode(original),
+                        "arguments": '{"_fcc_arg_type":"file"}',
+                    },
+                },
+                sse,
+                tool_names=codec,
+                tool_name_buffers={},
+                tool_argument_aliases={original: {"_fcc_arg_type": "type"}},
+                tool_argument_alias_buffers={},
+            )
+        )
+
+        parsed = parse_sse_text("".join(events))
+        start = next(
+            event.data["content_block"]
+            for event in parsed
+            if event.event == "content_block_start"
+        )
+        argument_delta = next(
+            event.data["delta"]["partial_json"]
+            for event in parsed
+            if event.event == "content_block_delta"
+        )
+        assert start["name"] == original
+        assert json.loads(argument_delta) == {"type": "file"}
+
+    def test_fragmented_wire_alias_starts_one_original_tool_block(self):
+        """A split alias is held until the exact request alias is complete."""
+        provider = _make_provider()
+        original = "mcp__fragmented_output__" + "x" * 70
+        request = _make_request(
+            tools=[{"name": original, "input_schema": {"type": "object"}}]
+        )
+        codec = OpenAIToolNameCodec.from_request(request)
+        alias = codec.encode(original)
+        split = len(alias) // 2
+        buffers: dict[int, str] = {}
+        sse = AnthropicStreamLedger("msg_test", "test-model")
+        assembler = _make_tool_assembler(provider)
+
+        first = list(
+            assembler.process_tool_call(
+                {
+                    "index": 0,
+                    "id": "call_split_alias",
+                    "function": {"name": alias[:split], "arguments": ""},
+                },
+                sse,
+                tool_names=codec,
+                tool_name_buffers=buffers,
+            )
+        )
+        second = list(
+            assembler.process_tool_call(
+                {
+                    "index": 0,
+                    "id": None,
+                    "function": {"name": alias[split:], "arguments": "{}"},
+                },
+                sse,
+                tool_names=codec,
+                tool_name_buffers=buffers,
+            )
+        )
+
+        assert first == []
+        event_text = "".join(second)
+        assert original in event_text
+        assert alias not in event_text
+        assert (
+            sum(
+                event.event == "content_block_start"
+                for event in parse_sse_text(event_text)
+            )
+            == 1
+        )
+        assert buffers == {}
+
+    def test_valid_name_that_prefixes_alias_is_resolved_on_flush(self):
+        """An ambiguous valid name is delayed, not mistaken for an alias fragment."""
+        provider = _make_provider()
+        original = "tool"
+        long_name = "tool." + "x" * 70
+        request = _make_request(
+            tools=[
+                {"name": original, "input_schema": {"type": "object"}},
+                {"name": long_name, "input_schema": {"type": "object"}},
+            ]
+        )
+        codec = OpenAIToolNameCodec.from_request(request)
+        assert codec.is_alias_prefix(original)
+        buffers: dict[int, str] = {}
+        sse = AnthropicStreamLedger("msg_test", "test-model")
+        assembler = _make_tool_assembler(provider)
+
+        initial = list(
+            assembler.process_tool_call(
+                {
+                    "index": 0,
+                    "id": "call_valid",
+                    "function": {"name": original, "arguments": "{}"},
+                },
+                sse,
+                tool_names=codec,
+                tool_name_buffers=buffers,
+            )
+        )
+        flushed = list(
+            assembler.flush_tool_name_buffers(
+                sse,
+                tool_names=codec,
+                tool_name_buffers=buffers,
+                tool_argument_aliases={},
+                tool_argument_alias_buffers={},
+            )
+        )
+
+        assert initial == []
+        assert original in "".join(flushed)
+        assert buffers == {}
+
+    def test_buffered_collector_decodes_before_schema_validation(self):
+        """Recovery validates the original tool identity, not its wire alias."""
+        original = "mcp__recovery_output__" + "x" * 70
+        request = _make_request(
+            tools=[{"name": original, "input_schema": {"type": "object"}}]
+        )
+        codec = OpenAIToolNameCodec.from_request(request)
+        collector = OpenAIToolCallCollector()
+        collector.add(
+            SimpleNamespace(
+                index=0,
+                id="call_recovered",
+                function=SimpleNamespace(name=codec.encode(original), arguments="{}"),
+            )
+        )
+
+        calls = collector.completed_calls(request, tool_names=codec)
+
+        assert calls is not None
+        assert calls[0]["function"]["name"] == original
+
+    def test_heuristic_tool_call_restores_original_name(self):
+        """Complete heuristic calls share the same outbound name contract."""
+        original = "mcp__heuristic_output__" + "x" * 70
+        request = _make_request(
+            tools=[{"name": original, "input_schema": {"type": "object"}}]
+        )
+        codec = OpenAIToolNameCodec.from_request(request)
+        sse = AnthropicStreamLedger("msg_test", "test-model")
+
+        events = list(
+            iter_heuristic_tool_use_sse(
+                sse,
+                {
+                    "id": "call_heuristic",
+                    "name": codec.encode(original),
+                    "input": {},
+                },
+                tool_names=codec,
+            )
+        )
+
+        event_text = "".join(events)
+        assert original in event_text
+        assert codec.encode(original) not in event_text
 
     def test_tool_call_id_arrives_before_name_still_emits_id_and_name(self):
         """Split-stream tool: id (no name) then name then args; id preserved on start."""
@@ -1392,12 +1783,6 @@ class TestStreamChunkEdgeCases:
                 new_callable=AsyncMock,
                 return_value=stream_mock,
             ),
-            patch.object(
-                provider._rate_limiter,
-                "wait_if_blocked",
-                new_callable=AsyncMock,
-                return_value=False,
-            ),
         ):
             events = await _collect_stream(provider, request)
 
@@ -1428,12 +1813,6 @@ class TestStreamChunkEdgeCases:
                 new_callable=AsyncMock,
                 return_value=stream_mock,
             ),
-            patch.object(
-                provider._rate_limiter,
-                "wait_if_blocked",
-                new_callable=AsyncMock,
-                return_value=False,
-            ),
         ):
             events = await _collect_stream(provider, request)
 
@@ -1458,12 +1837,6 @@ class TestStreamChunkEdgeCases:
                 "create",
                 new_callable=AsyncMock,
                 return_value=stream_mock,
-            ),
-            patch.object(
-                provider._rate_limiter,
-                "wait_if_blocked",
-                new_callable=AsyncMock,
-                return_value=False,
             ),
         ):
             error = await _collect_stream_error(provider, request)
@@ -1515,12 +1888,6 @@ async def test_openai_compat_stream_ends_with_contract_when_tool_name_never_arri
             "create",
             new_callable=AsyncMock,
             return_value=stream_mock,
-        ),
-        patch.object(
-            provider._rate_limiter,
-            "wait_if_blocked",
-            new_callable=AsyncMock,
-            return_value=False,
         ),
     ):
         error = await _collect_stream_error(provider, request)

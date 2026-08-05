@@ -187,7 +187,7 @@ fi
 export ANTHROPIC_BASE_URL="http://localhost:8082"
 export ANTHROPIC_AUTH_TOKEN="freecc"
 export CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1   # enables the /model picker
-export CLAUDE_CODE_AUTO_COMPACT_WINDOW=190000
+export CLAUDE_CODE_AUTO_COMPACT_WINDOW=1000000
 exec claude "$@"
 ```
 

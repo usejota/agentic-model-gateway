@@ -1,14 +1,30 @@
-"""Resolve client reasoning input exactly once."""
+"""Resolve client reasoning input and FCC configuration exactly once."""
 
 from collections.abc import Mapping
 from typing import Any
 
+from free_claude_code.config.reasoning import ReasoningPreference
 from free_claude_code.core.anthropic.models import MessagesRequest, ThinkingConfig
 from free_claude_code.core.reasoning import (
     ReasoningControl,
     ReasoningEffort,
     ReasoningPolicy,
 )
+
+
+def resolve_reasoning_policy(
+    request: MessagesRequest,
+    preference: ReasoningPreference,
+) -> ReasoningPolicy:
+    """Apply one resolved configuration preference to the client request."""
+
+    if preference is ReasoningPreference.INHERIT:
+        raise ValueError("Reasoning preference must be resolved before application.")
+    if preference is ReasoningPreference.OFF:
+        return ReasoningPolicy.off()
+    if preference is not ReasoningPreference.CLIENT:
+        return ReasoningPolicy.on(effort=ReasoningEffort(preference.value))
+    return client_reasoning_policy(request)
 
 
 def client_reasoning_policy(request: MessagesRequest) -> ReasoningPolicy:

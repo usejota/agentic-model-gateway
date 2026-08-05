@@ -4,6 +4,7 @@ import httpx
 import pytest
 
 from free_claude_code.application.routing import ModelRouter
+from free_claude_code.config.reasoning import ReasoningPreference
 from free_claude_code.core.anthropic.stream_contracts import (
     SSEEvent,
     parse_sse_lines,
@@ -85,6 +86,15 @@ def test_provider_tool_result_continuation_e2e(
 
 
 @pytest.mark.smoke_target("tools")
+def test_provider_interrupted_tool_turn_resume_e2e(
+    smoke_config: SmokeConfig, provider_model: ProviderModel
+) -> None:
+    _run_provider_scenario(
+        smoke_config, provider_model, _scenario_interrupted_tool_turn_resume
+    )
+
+
+@pytest.mark.smoke_target("tools")
 def test_gemini_thought_signature_tool_continuation_e2e(
     smoke_config: SmokeConfig, provider_model: ProviderModel
 ) -> None:
@@ -101,8 +111,8 @@ def test_gemini_thought_signature_tool_continuation_e2e(
 def test_provider_reasoning_tool_continuation_e2e(
     smoke_config: SmokeConfig, provider_model: ProviderModel
 ) -> None:
-    if not _provider_smoke_thinking_enabled(smoke_config):
-        pytest.skip("the configured Claude route does not enable thinking")
+    if not _provider_smoke_reasoning_enabled(smoke_config):
+        pytest.skip("the configured Claude route disables reasoning")
     _run_provider_scenario(
         smoke_config, provider_model, _scenario_reasoning_tool_continuation
     )
@@ -267,11 +277,12 @@ def _tool_use_blocks_or_skip(
     return blocks
 
 
-def _provider_smoke_thinking_enabled(smoke_config: SmokeConfig) -> bool:
+def _provider_smoke_reasoning_enabled(smoke_config: SmokeConfig) -> bool:
     return (
         ModelRouter(smoke_config.settings)
         .resolve("claude-sonnet-4-5-20250929")
-        .thinking_enabled
+        .reasoning_preference
+        is not ReasoningPreference.OFF
     )
 
 
@@ -439,6 +450,51 @@ def _scenario_tool_result_continuation(
         second = driver.stream(second_payload)
     _assert_provider_product_stream(first.events)
     _assert_provider_product_stream(second.events)
+
+
+def _scenario_interrupted_tool_turn_resume(
+    smoke_config: SmokeConfig, provider_model: ProviderModel
+) -> None:
+    tool_id = "toolu_interrupted123456789"
+    payload = {
+        "model": "claude-sonnet-4-5-20250929",
+        "max_tokens": 32,
+        "stream": True,
+        "messages": [
+            {"role": "user", "content": "Use echo_smoke with value FCC_INTERRUPTED."},
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": tool_id,
+                        "name": "echo_smoke",
+                        "input": {"value": "FCC_INTERRUPTED"},
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": tool_id,
+                        "content": "FCC_INTERRUPTED",
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "content": "Reply exactly OK without calling tools.",
+            },
+        ],
+        "tools": [echo_tool_schema()],
+    }
+    with _server_for_provider(
+        smoke_config, provider_model, "interrupted-tool-turn"
+    ) as server:
+        turn = ConversationDriver(server, smoke_config).stream(payload)
+    _assert_provider_product_stream(turn.events)
 
 
 def _scenario_gemini_thought_signature_tool_continuation(

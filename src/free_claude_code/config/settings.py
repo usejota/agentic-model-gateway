@@ -15,12 +15,25 @@ from .env_files import (
 )
 from .model_refs import parse_model_name, parse_provider_type
 from .nim import NimSettings
-from .provider_catalog import PROVIDER_CATALOG, SUPPORTED_PROVIDER_IDS
+from .provider_catalog import (
+    BEDROCK_DEFAULT_BASE,
+    PROVIDER_CATALOG,
+    SUPPORTED_PROVIDER_IDS,
+)
+from .reasoning import ReasoningPreference
 from .secret_source import SecretManagerError, fetch_secret
 
 
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
+
+    # ==================== Azure OpenAI ====================
+    azure_openai_api_key: str = Field(
+        default="", validation_alias="AZURE_OPENAI_API_KEY"
+    )
+    azure_openai_base_url: str = Field(
+        default="", validation_alias="AZURE_OPENAI_BASE_URL"
+    )
 
     # ==================== OpenRouter Config ====================
     open_router_api_key: str = Field(default="", validation_alias="OPENROUTER_API_KEY")
@@ -37,6 +50,9 @@ class Settings(BaseSettings):
     # ==================== Kimi Config ====================
     kimi_api_key: str = Field(default="", validation_alias="KIMI_API_KEY")
 
+    # ==================== Kimi Code Subscription ====================
+    kimi_code_api_key: str = Field(default="", validation_alias="KIMI_CODE_API_KEY")
+
     # ==================== Wafer Config ====================
     wafer_api_key: str = Field(default="", validation_alias="WAFER_API_KEY")
 
@@ -52,6 +68,15 @@ class Settings(BaseSettings):
         default="", validation_alias="AI_GATEWAY_API_KEY"
     )
 
+    # ==================== Amazon Bedrock Mantle ====================
+    bedrock_api_key: str = Field(
+        default="", validation_alias="AWS_BEARER_TOKEN_BEDROCK"
+    )
+    bedrock_base_url: str = Field(
+        default=BEDROCK_DEFAULT_BASE,
+        validation_alias="BEDROCK_BASE_URL",
+    )
+
     # ==================== Hugging Face Inference Providers ====================
     huggingface_api_key: str = Field(default="", validation_alias="HUGGINGFACE_API_KEY")
 
@@ -63,6 +88,9 @@ class Settings(BaseSettings):
 
     # ==================== SambaNova Cloud ====================
     sambanova_api_key: str = Field(default="", validation_alias="SAMBANOVA_API_KEY")
+
+    # ==================== Kilo.ai Config ====================
+    kilo_api_key: str = Field(default="", validation_alias="KILO_API_KEY")
 
     # ==================== Z.ai Config ====================
     zai_api_key: str = Field(default="", validation_alias="ZAI_API_KEY")
@@ -80,6 +108,10 @@ class Settings(BaseSettings):
 
     # ==================== Google Gemini (Google AI Studio) ====================
     gemini_api_key: str = Field(default="", validation_alias="GEMINI_API_KEY")
+
+    # ==================== Google Vertex AI ====================
+    vertex_project_id: str = Field(default="", validation_alias="VERTEX_PROJECT_ID")
+    vertex_location: str = Field(default="global", validation_alias="VERTEX_LOCATION")
 
     # ==================== Groq (OpenAI-compatible) ====================
     groq_api_key: str = Field(default="", validation_alias="GROQ_API_KEY")
@@ -164,6 +196,8 @@ class Settings(BaseSettings):
     model_haiku: str | None = Field(default=None, validation_alias="MODEL_HAIKU")
 
     # ==================== Per-Provider Proxy ====================
+    openai_proxy: str = Field(default="", validation_alias="OPENAI_PROXY")
+    azure_openai_proxy: str = Field(default="", validation_alias="AZURE_OPENAI_PROXY")
     nvidia_nim_proxy: str = Field(default="", validation_alias="NVIDIA_NIM_PROXY")
     open_router_proxy: str = Field(default="", validation_alias="OPENROUTER_PROXY")
     mistral_proxy: str = Field(default="", validation_alias="MISTRAL_PROXY")
@@ -171,6 +205,7 @@ class Settings(BaseSettings):
     lmstudio_proxy: str = Field(default="", validation_alias="LMSTUDIO_PROXY")
     llamacpp_proxy: str = Field(default="", validation_alias="LLAMACPP_PROXY")
     kimi_proxy: str = Field(default="", validation_alias="KIMI_PROXY")
+    kimi_code_proxy: str = Field(default="", validation_alias="KIMI_CODE_PROXY")
     wafer_proxy: str = Field(default="", validation_alias="WAFER_PROXY")
     minimax_proxy: str = Field(default="", validation_alias="MINIMAX_PROXY")
     opencode_proxy: str = Field(default="", validation_alias="OPENCODE_PROXY")
@@ -178,14 +213,17 @@ class Settings(BaseSettings):
     vercel_ai_gateway_proxy: str = Field(
         default="", validation_alias="VERCEL_AI_GATEWAY_PROXY"
     )
+    bedrock_proxy: str = Field(default="", validation_alias="BEDROCK_PROXY")
     huggingface_proxy: str = Field(default="", validation_alias="HUGGINGFACE_PROXY")
     cohere_proxy: str = Field(default="", validation_alias="COHERE_PROXY")
     github_models_proxy: str = Field(default="", validation_alias="GITHUB_MODELS_PROXY")
     sambanova_proxy: str = Field(default="", validation_alias="SAMBANOVA_PROXY")
+    kilo_proxy: str = Field(default="", validation_alias="KILO_PROXY")
     zai_proxy: str = Field(default="", validation_alias="ZAI_PROXY")
     fireworks_proxy: str = Field(default="", validation_alias="FIREWORKS_PROXY")
     cloudflare_proxy: str = Field(default="", validation_alias="CLOUDFLARE_PROXY")
     gemini_proxy: str = Field(default="", validation_alias="GEMINI_PROXY")
+    vertex_proxy: str = Field(default="", validation_alias="VERTEX_PROXY")
     groq_proxy: str = Field(default="", validation_alias="GROQ_PROXY")
     cerebras_proxy: str = Field(default="", validation_alias="CEREBRAS_PROXY")
     ollama_cloud_proxy: str = Field(default="", validation_alias="OLLAMA_CLOUD_PROXY")
@@ -206,20 +244,25 @@ class Settings(BaseSettings):
     provider_max_concurrency: int = Field(
         default=50, validation_alias="PROVIDER_MAX_CONCURRENCY"
     )
-    enable_model_thinking: bool = Field(
-        default=True, validation_alias="ENABLE_MODEL_THINKING"
+    reasoning_policy: ReasoningPreference = Field(
+        default=ReasoningPreference.CLIENT,
+        validation_alias="REASONING_POLICY",
     )
-    enable_fable_thinking: bool | None = Field(
-        default=None, validation_alias="ENABLE_FABLE_THINKING"
+    reasoning_fable: ReasoningPreference = Field(
+        default=ReasoningPreference.INHERIT,
+        validation_alias="REASONING_FABLE",
     )
-    enable_opus_thinking: bool | None = Field(
-        default=None, validation_alias="ENABLE_OPUS_THINKING"
+    reasoning_opus: ReasoningPreference = Field(
+        default=ReasoningPreference.INHERIT,
+        validation_alias="REASONING_OPUS",
     )
-    enable_sonnet_thinking: bool | None = Field(
-        default=None, validation_alias="ENABLE_SONNET_THINKING"
+    reasoning_sonnet: ReasoningPreference = Field(
+        default=ReasoningPreference.INHERIT,
+        validation_alias="REASONING_SONNET",
     )
-    enable_haiku_thinking: bool | None = Field(
-        default=None, validation_alias="ENABLE_HAIKU_THINKING"
+    reasoning_haiku: ReasoningPreference = Field(
+        default=ReasoningPreference.INHERIT,
+        validation_alias="REASONING_HAIKU",
     )
 
     # ==================== HTTP Client Timeouts ====================
@@ -258,6 +301,8 @@ class Settings(BaseSettings):
     )
 
     # ==================== Debug / diagnostic logging (avoid sensitive content) ====================
+    # Minimum log level for the JSON file sink (DEBUG, INFO, WARNING, ERROR, CRITICAL).
+    log_level: str = Field(default="INFO", validation_alias="LOG_LEVEL")
     # When false (default), API and SSE helpers log only metadata (counts, lengths, ids).
     log_raw_api_payloads: bool = Field(
         default=False, validation_alias="LOG_RAW_API_PAYLOADS"
@@ -374,10 +419,6 @@ class Settings(BaseSettings):
         "model_opus",
         "model_sonnet",
         "model_haiku",
-        "enable_fable_thinking",
-        "enable_opus_thinking",
-        "enable_sonnet_thinking",
-        "enable_haiku_thinking",
         mode="before",
     )
     @classmethod
@@ -482,6 +523,24 @@ class Settings(BaseSettings):
                 )
             result[name] = token
         return result
+
+    @field_validator("log_level")
+    @classmethod
+    def validate_log_level(cls, v: str) -> str:
+        valid = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+        upper = v.upper()
+        if upper not in valid:
+            raise ValueError(f"LOG_LEVEL must be one of {sorted(valid)}, got {v!r}")
+        return upper
+
+    @field_validator("reasoning_policy")
+    @classmethod
+    def validate_root_reasoning_policy(
+        cls, value: ReasoningPreference
+    ) -> ReasoningPreference:
+        if value is ReasoningPreference.INHERIT:
+            raise ValueError("REASONING_POLICY cannot inherit")
+        return value
 
     @field_validator("whisper_device")
     @classmethod

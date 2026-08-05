@@ -28,7 +28,7 @@ ONE_M_SUFFIX = "[1m]"
 class DecodedGatewayModelId:
     provider_id: str
     provider_model: str
-    force_thinking_enabled: bool | None = None
+    force_reasoning_off: bool = False
     one_m_context: bool = False
 
 
@@ -61,11 +61,10 @@ def decode_gateway_model_id(model_name: str) -> DecodedGatewayModelId | None:
     if not separator:
         return None
 
-    force_thinking_enabled: bool | None
     if prefix == GATEWAY_MODEL_ID_PREFIX:
-        force_thinking_enabled = None
+        force_reasoning_off = False
     elif prefix == NO_THINKING_GATEWAY_MODEL_ID_PREFIX:
-        force_thinking_enabled = False
+        force_reasoning_off = True
     else:
         return None
 
@@ -76,6 +75,6 @@ def decode_gateway_model_id(model_name: str) -> DecodedGatewayModelId | None:
     return DecodedGatewayModelId(
         provider_id=provider_id,
         provider_model=provider_model,
-        force_thinking_enabled=force_thinking_enabled,
+        force_reasoning_off=force_reasoning_off,
         one_m_context=one_m_context,
     )

@@ -23,6 +23,16 @@ def provider_credential(descriptor: ProviderDescriptor, settings: Settings) -> s
     return ""
 
 
+def has_provider_configuration(
+    descriptor: ProviderDescriptor, settings: Settings
+) -> bool:
+    """Return whether all provider-defining settings are present."""
+    attrs = descriptor.configuration_attrs()
+    if attrs:
+        return all(string_setting(settings, attr).strip() for attr in attrs)
+    return descriptor.static_credential is not None
+
+
 def require_provider_credential(
     descriptor: ProviderDescriptor, credential: str
 ) -> None:
@@ -48,8 +58,14 @@ def build_provider_config(
     )
     resolved_base_url = base_url or descriptor.default_base_url
     if not resolved_base_url:
-        raise AssertionError(
-            f"Provider {descriptor.provider_id!r} has no configured base URL."
+        if descriptor.base_url_attr is None:
+            raise AssertionError(
+                f"Provider {descriptor.provider_id!r} has no base URL owner."
+            )
+        field = Settings.model_fields[descriptor.base_url_attr]
+        env_name = field.validation_alias or descriptor.base_url_attr
+        raise ApplicationUnavailableError(
+            f"{env_name} is not set. Add it to your .env file."
         )
     proxy = string_setting(settings, descriptor.proxy_attr)
     return ProviderConfig(
@@ -61,7 +77,6 @@ def build_provider_config(
         http_read_timeout=settings.http_read_timeout,
         http_write_timeout=settings.http_write_timeout,
         http_connect_timeout=settings.http_connect_timeout,
-        enable_thinking=settings.enable_model_thinking,
         proxy=proxy,
         log_raw_sse_events=settings.log_raw_sse_events,
         log_api_error_tracebacks=settings.log_api_error_tracebacks,

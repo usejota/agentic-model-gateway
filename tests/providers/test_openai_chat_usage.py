@@ -8,14 +8,17 @@ import openai
 import pytest
 from httpx import Request, Response
 
+from free_claude_code.core.anthropic import ReasoningReplayMode
 from free_claude_code.core.anthropic.models import MessagesRequest
 from free_claude_code.core.anthropic.stream_contracts import parse_sse_text
+from free_claude_code.core.reasoning import DEFAULT_REASONING_POLICY, ReasoningPolicy
 from free_claude_code.providers.base import ProviderConfig
 from free_claude_code.providers.openai_chat import (
     OpenAIChatProfile,
     OpenAIChatProvider,
     OpenAIChatRequestPolicy,
 )
+from free_claude_code.providers.openai_chat.reasoning import NO_REASONING
 from free_claude_code.providers.openai_chat.usage import (
     clone_without_stream_usage,
     is_stream_usage_rejection,
@@ -23,7 +26,7 @@ from free_claude_code.providers.openai_chat.usage import (
     usage_int,
 )
 from tests.providers.request_factory import make_messages_request
-from tests.providers.support import passthrough_rate_limiter
+from tests.providers.support import immediate_admission
 
 
 class _UsageTestProvider(OpenAIChatProvider):
@@ -36,13 +39,20 @@ class _UsageTestProvider(OpenAIChatProvider):
                 rate_window=60,
             ),
             profile=OpenAIChatProfile(
-                OpenAIChatRequestPolicy(provider_name="USAGE_TEST")
+                OpenAIChatRequestPolicy(
+                    provider_name="USAGE_TEST",
+                    reasoning_replay=ReasoningReplayMode.DISABLED,
+                ),
+                NO_REASONING,
             ),
-            rate_limiter=passthrough_rate_limiter(),
+            admission=immediate_admission(),
         )
 
     def _build_request_body(
-        self, request: MessagesRequest, thinking_enabled: bool | None = None
+        self,
+        request: MessagesRequest,
+        *,
+        reasoning: ReasoningPolicy = DEFAULT_REASONING_POLICY,
     ) -> dict:
         return {"model": request.model, "messages": [{"role": "user", "content": "x"}]}
 
@@ -191,27 +201,35 @@ async def test_openai_chat_stream_requests_usage_and_uses_provider_prompt_tokens
 
 
 @pytest.mark.asyncio
-async def test_openai_chat_stream_echoes_original_client_model():
+async def test_openai_chat_stream_keeps_response_model_separate_from_upstream_model():
     provider = _UsageTestProvider()
-    request = make_messages_request(model="openai/gpt-5.6-sol")
-    request.original_model = "claude-fable-5[1m]"
+    request = make_messages_request(model="upstream/model")
     create = AsyncMock(
-        return_value=_stream([_chunk(content="hi"), _chunk(finish_reason="stop")])
+        return_value=_stream(
+            [
+                _chunk(content="hello"),
+                _chunk(finish_reason="stop"),
+            ]
+        )
     )
 
     with patch.object(provider._client.chat.completions, "create", create):
         events = [
-            event async for event in provider.stream_response(request, input_tokens=1)
+            event
+            async for event in provider.stream_response(
+                request,
+                response_model="anthropic/test/upstream/model",
+            )
         ]
 
-    parsed = parse_sse_text("".join(events))
-    start = next(
-        event.data["message"] for event in parsed if event.event == "message_start"
+    assert create.await_args is not None
+    assert create.await_args.kwargs["model"] == "upstream/model"
+    message_start = next(
+        event.data["message"]
+        for event in parse_sse_text("".join(events))
+        if event.event == "message_start"
     )
-    assert start["model"] == "claude-fable-5[1m]"
-    await_args = create.await_args
-    assert await_args is not None
-    assert await_args.kwargs["model"] == "openai/gpt-5.6-sol"
+    assert message_start["model"] == "anthropic/test/upstream/model"
 
 
 @pytest.mark.asyncio
@@ -230,7 +248,11 @@ async def test_openai_chat_stream_retries_without_usage_when_option_is_rejected(
     )
 
     with patch.object(provider._client.chat.completions, "create", create):
-        _stream_obj, used_body = await provider._create_stream(body)
+        _stream_obj, used_body, attempt = await provider._create_stream(
+            body,
+            provider._admission.new_retry_session(),
+        )
+        await attempt.aclose()
 
     assert create.await_count == 2
     assert create.await_args_list[0].kwargs["stream_options"] == {"include_usage": True}

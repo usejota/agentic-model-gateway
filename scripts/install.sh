@@ -3,24 +3,33 @@ set -eu
 
 REPO_ARCHIVE_URL="https://github.com/Alishahryar1/free-claude-code/archive/refs/heads/main.zip"
 PYTHON_VERSION="3.14.0"
-MIN_UV_VERSION="0.11.0"
+MIN_UV_VERSION="0.11.16"
 CLAUDE_INSTALL_URL="https://claude.ai/install.sh"
 CODEX_INSTALL_URL="https://chatgpt.com/codex/install.sh"
 PI_INSTALL_URL="https://pi.dev/install.sh"
 UV_INSTALL_URL="https://astral.sh/uv/install.sh"
+FCC_MACOS_BUNDLE_ID="io.github.alishahryar1.free-claude-code"
+FCC_MACOS_OWNER_FILE=".free-claude-code-owner"
+# Include retired entry points so updates reject older FCC processes before replacement.
+FCC_COMMANDS="fcc-desktop fcc-server fcc-claude fcc-codex fcc-pi fcc-init free-claude-code"
 
 dry_run=0
 voice_nim=0
 voice_local=0
 voice_all=0
+install_claude=1
+install_codex=1
+install_pi=1
 torch_backend=""
 temporary_script=""
+tool_bin=""
+pi_available=0
 
 show_usage() {
     cat <<'USAGE'
 Usage: install.sh [options]
 
-Installs Claude Code, Codex, and Pi if missing, ensures a compatible uv, and installs or updates Free Claude Code.
+Installs or updates Free Claude Code and lets you choose which coding agents to install or verify.
 
 Options:
   --voice-nim              Install NVIDIA NIM voice transcription support.
@@ -35,6 +44,58 @@ USAGE
 fail() {
     printf 'error: %s\n' "$*" >&2
     exit 1
+}
+
+installer_is_interactive() {
+    [ -t 1 ] && ( : </dev/tty ) 2>/dev/null
+}
+
+prompt_yes_no() {
+    question=$1
+    while :; do
+        printf '%s [Y/n] ' "$question" >&4
+        if ! IFS= read -r answer <&3; then
+            fail "Could not read the coding agent selection."
+        fi
+        case "$answer" in
+            ""|[Yy]|[Yy][Ee][Ss]) return 0 ;;
+            [Nn]|[Nn][Oo]) return 1 ;;
+            *) printf 'Please answer Y or N.\n' >&4 ;;
+        esac
+    done
+}
+
+choose_coding_agents() {
+    selection_input=$1
+    selection_output=$2
+    exec 3<"$selection_input"
+    exec 4>"$selection_output"
+
+    while :; do
+        if prompt_yes_no "Install or verify Claude Code for fcc-claude?"; then
+            install_claude=1
+        else
+            install_claude=0
+        fi
+        if prompt_yes_no "Install or verify Codex for fcc-codex?"; then
+            install_codex=1
+        else
+            install_codex=0
+        fi
+        if prompt_yes_no "Install or verify Pi for fcc-pi?"; then
+            install_pi=1
+        else
+            install_pi=0
+        fi
+
+        if [ "$install_claude" -eq 1 ] || [ "$install_codex" -eq 1 ] || [ "$install_pi" -eq 1 ]; then
+            break
+        fi
+        printf 'Select at least one coding agent.\n\n' >&4
+    done
+
+    exec 3<&-
+    exec 4>&-
 }
 
 step() {
@@ -120,6 +181,53 @@ add_pi_bin_directories() {
             export PATH
             hash -r 2>/dev/null || true
         fi
+    fi
+}
+
+fcc_process_ids() {
+    command_name=$1
+
+    if command -v pgrep >/dev/null 2>&1; then
+        {
+            pgrep -x "$command_name" 2>/dev/null || true
+            pgrep -f "(^|/)${command_name}([[:space:]]|$)" 2>/dev/null || true
+        } | sort -nu
+        return 0
+    fi
+
+    ps -A -o pid= -o args= 2>/dev/null |
+        awk -v command_name="$command_name" '
+            BEGIN {
+                pattern = "(^|/)" command_name "([[:space:]]|$)"
+            }
+            {
+                process_id = $1
+                sub(/^[[:space:]]*[0-9]+[[:space:]]+/, "")
+                if ($0 ~ pattern) {
+                    print process_id
+                }
+            }
+        ' || true
+}
+
+assert_no_fcc_processes_running() {
+    running=""
+    for command_name in $FCC_COMMANDS; do
+        process_ids=$(fcc_process_ids "$command_name")
+        [ -n "$process_ids" ] || continue
+
+        for process_id in $process_ids; do
+            process="$command_name (PID $process_id)"
+            if [ -n "$running" ]; then
+                running="$running, $process"
+            else
+                running=$process
+            fi
+        done
+    done
+
+    if [ -n "$running" ]; then
+        fail "Free Claude Code is still running ($running). Stop those processes, then rerun the installer."
     fi
 }
 
@@ -247,19 +355,56 @@ ensure_codex() {
 }
 
 ensure_pi() {
+    pi_available=0
+    add_pi_bin_directories
+    existing_pi_path=$(command -v pi 2>/dev/null || true)
+
     if [ "$dry_run" -eq 1 ] && command -v pi >/dev/null 2>&1; then
         printf 'Pi already found on PATH; verifying it.\n'
     elif pi_command_is_compatible; then
         printf 'Pi already found on PATH; verifying it.\n'
     else
-        if existing_pi_path=$(command -v pi 2>/dev/null); then
+        if [ -n "$existing_pi_path" ]; then
             printf "The existing 'pi' command at %s is not Pi Coding Agent; installing Pi.\n" "$existing_pi_path"
         fi
         download_and_run "$PI_INSTALL_URL" sh "Pi"
         add_pi_bin_directories
+
+        if [ "$dry_run" -eq 0 ]; then
+            current_pi_path=$(command -v pi 2>/dev/null || true)
+            if [ -z "$current_pi_path" ] ||
+                { [ -n "$existing_pi_path" ] &&
+                    [ "$current_pi_path" = "$existing_pi_path" ] &&
+                    ! pi_command_is_compatible; }; then
+                printf 'Pi was not installed; continuing without it.\n'
+                return 0
+            fi
+        fi
     fi
 
     verify_pi_command
+    pi_available=1
+}
+
+ensure_selected_coding_agents() {
+    if [ "$install_claude" -eq 1 ]; then
+        step "Ensuring Claude Code is installed"
+        ensure_claude
+    fi
+
+    if [ "$install_codex" -eq 1 ]; then
+        step "Ensuring Codex is installed"
+        ensure_codex
+    fi
+
+    if [ "$install_pi" -eq 1 ]; then
+        step "Checking or installing Pi"
+        ensure_pi
+    fi
+
+    if [ "$install_claude" -eq 0 ] && [ "$install_codex" -eq 0 ] && [ "$pi_available" -eq 0 ]; then
+        fail "No selected coding agent was installed. Re-run the installer and choose at least one."
+    fi
 }
 
 current_uv_version() {
@@ -281,9 +426,13 @@ current_uv_version() {
     esac
 }
 
-version_ge() {
-    current=${1%%[-+]*}
-    minimum=${2%%[-+]*}
+uv_version_is_supported() {
+    case "$1" in
+        *-*) return 1 ;;
+    esac
+
+    current=${1%%+*}
+    minimum=${2%%+*}
 
     old_ifs=$IFS
     IFS=.
@@ -316,8 +465,8 @@ verify_uv() {
 
     command -v uv >/dev/null 2>&1 || fail "uv was installed, but it is not available on PATH."
     version=$(current_uv_version) || fail "uv is present, but 'uv --version' did not return a valid version."
-    if ! version_ge "$version" "$MIN_UV_VERSION"; then
-        fail "uv $MIN_UV_VERSION or newer is required; found uv $version after installation."
+    if ! uv_version_is_supported "$version" "$MIN_UV_VERSION"; then
+        fail "Stable uv $MIN_UV_VERSION or newer is required; found uv $version after installation."
     fi
 
     printf 'Verified uv %s.\n' "$version"
@@ -338,11 +487,11 @@ ensure_uv() {
 
     if command -v uv >/dev/null 2>&1; then
         version=$(current_uv_version) || fail "uv is present, but 'uv --version' did not return a valid version."
-        if version_ge "$version" "$MIN_UV_VERSION"; then
+        if uv_version_is_supported "$version" "$MIN_UV_VERSION"; then
             printf 'uv %s already satisfies >=%s; leaving it unchanged.\n' "$version" "$MIN_UV_VERSION"
             return 0
         fi
-        printf 'uv %s is below %s; installing the current standalone uv.\n' "$version" "$MIN_UV_VERSION"
+        printf 'uv %s does not satisfy stable >=%s; installing the current standalone uv.\n' "$version" "$MIN_UV_VERSION"
     else
         printf 'uv is not installed; installing the current standalone uv.\n'
     fi
@@ -422,6 +571,7 @@ package_spec() {
 }
 
 install_free_claude_code() {
+    assert_no_fcc_processes_running
     spec=$(package_spec)
 
     if [ -n "$torch_backend" ]; then
@@ -436,7 +586,7 @@ configure_and_verify_free_claude_code() {
 
     if [ "$dry_run" -eq 1 ]; then
         print_command uv tool dir --bin
-        printf '+ verify fcc-server, fcc-claude, fcc-codex, and fcc-pi in the uv tool bin directory\n'
+        printf '+ verify fcc-desktop, fcc-server, fcc-claude, fcc-codex, and fcc-pi in the uv tool bin directory\n'
         print_command fcc-server --version
         return 0
     fi
@@ -454,31 +604,123 @@ configure_and_verify_free_claude_code() {
     export PATH
     hash -r 2>/dev/null || true
 
-    for command_name in fcc-server fcc-claude fcc-codex fcc-pi; do
+    for command_name in fcc-desktop fcc-server fcc-claude fcc-codex fcc-pi; do
         [ -x "$tool_bin/$command_name" ] || fail "Free Claude Code installation did not create $tool_bin/$command_name."
     done
 
     run "$tool_bin/fcc-server" --version
 }
 
+shell_quote() {
+    escaped=$(printf '%s' "$1" | sed "s/'/'\\\\''/g")
+    printf "'%s'" "$escaped"
+}
+
+macos_app_is_fcc_owned() {
+    app_dir=$1
+    owner_file="$app_dir/Contents/$FCC_MACOS_OWNER_FILE"
+    [ -d "$app_dir" ] &&
+        [ ! -L "$app_dir" ] &&
+        [ -f "$owner_file" ] &&
+        [ "$(cat "$owner_file")" = "$FCC_MACOS_BUNDLE_ID" ]
+}
+
+install_macos_desktop_app() {
+    [ "$(uname -s)" = "Darwin" ] || return 0
+
+    app_dir="$HOME/Applications/Free Claude Code.app"
+    contents_dir="$app_dir/Contents"
+    owner_file="$contents_dir/$FCC_MACOS_OWNER_FILE"
+    executable_dir="$contents_dir/MacOS"
+    executable_path="$executable_dir/fcc-desktop"
+    resources_dir="$contents_dir/Resources"
+    icon_path="$resources_dir/AppIcon.icns"
+    desktop_dir="$HOME/Desktop"
+    desktop_link="$desktop_dir/Free Claude Code.app"
+
+    if [ -e "$app_dir" ] || [ -L "$app_dir" ]; then
+        macos_app_is_fcc_owned "$app_dir" ||
+            fail "An app not managed by Free Claude Code already exists at $app_dir. Move it, then rerun the installer."
+    fi
+
+    if [ "$dry_run" -eq 1 ]; then
+        print_command mkdir -p "$executable_dir" "$resources_dir" "$desktop_dir"
+        print_command fcc-desktop --export-icon "$icon_path"
+        printf '+ write %s, %s, and %s\n' "$owner_file" "$contents_dir/Info.plist" "$executable_path"
+        print_command ln -s "$app_dir" "$desktop_link"
+        return 0
+    fi
+
+    mkdir -p "$executable_dir" "$resources_dir" "$desktop_dir"
+    run "$tool_bin/fcc-desktop" --export-icon "$icon_path"
+    [ -f "$icon_path" ] || fail "Free Claude Code did not export its macOS app icon to $icon_path."
+    printf '%s\n' "$FCC_MACOS_BUNDLE_ID" > "$owner_file"
+    cat > "$contents_dir/Info.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDisplayName</key>
+    <string>Free Claude Code</string>
+    <key>CFBundleExecutable</key>
+    <string>fcc-desktop</string>
+    <key>CFBundleIdentifier</key>
+    <string>io.github.alishahryar1.free-claude-code</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>CFBundleName</key>
+    <string>Free Claude Code</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>LSMultipleInstancesProhibited</key>
+    <true/>
+    <key>LSUIElement</key>
+    <true/>
+</dict>
+</plist>
+PLIST
+    desktop_command=$(shell_quote "$tool_bin/fcc-desktop")
+    {
+        printf '%s\n' '#!/bin/sh'
+        printf 'exec %s\n' "$desktop_command"
+    } > "$executable_path"
+    chmod +x "$executable_path"
+
+    if [ -L "$desktop_link" ]; then
+        if [ "$(readlink "$desktop_link")" = "$app_dir" ]; then
+            rm -f "$desktop_link"
+        else
+            printf 'A non-FCC link already exists at %s; leaving it unchanged.\n' "$desktop_link"
+            return 0
+        fi
+    elif [ -e "$desktop_link" ]; then
+        printf 'A non-FCC item already exists at %s; leaving it unchanged.\n' "$desktop_link"
+        return 0
+    fi
+    ln -s "$app_dir" "$desktop_link"
+}
+
 parse_args "$@"
 validate_args
 add_known_bin_directories
 
+step "Checking for running Free Claude Code processes"
+assert_no_fcc_processes_running
+
+if installer_is_interactive; then
+    step "Choosing coding agents"
+    choose_coding_agents /dev/tty /dev/tty
+fi
+
 step "Checking installation prerequisites"
 require_command curl
-require_command bash
+if [ "$install_claude" -eq 1 ]; then
+    require_command bash
+fi
 require_command sh
 require_command mktemp
 
-step "Ensuring Claude Code is installed"
-ensure_claude
-
-step "Ensuring Codex is installed"
-ensure_codex
-
-step "Ensuring Pi is installed"
-ensure_pi
+ensure_selected_coding_agents
 
 step "Ensuring uv $MIN_UV_VERSION or newer is installed"
 ensure_uv
@@ -489,11 +731,27 @@ install_free_claude_code
 step "Configuring PATH and verifying Free Claude Code"
 configure_and_verify_free_claude_code
 
+if [ "$(uname -s)" = "Darwin" ]; then
+    step "Installing the Free Claude Code desktop launcher"
+    install_macos_desktop_app
+fi
+
 if [ "$dry_run" -eq 1 ]; then
     printf '\nDry run complete. No changes were made.\n'
 else
-    printf '\nFree Claude Code is installed and verified. Start the proxy with: fcc-server\n'
-    printf 'Run Claude Code with: fcc-claude\n'
-    printf 'Run Codex with: fcc-codex\n'
-    printf 'Run Pi with: fcc-pi\n'
+    if [ "$(uname -s)" = "Darwin" ]; then
+        printf '\nFree Claude Code is installed and verified. Open Free Claude Code from Applications or the desktop to run it in the background.\n'
+        printf 'For terminal use, start the proxy with: fcc-server\n'
+    else
+        printf '\nFree Claude Code is installed and verified. Start the proxy with: fcc-server\n'
+    fi
+    if [ "$install_claude" -eq 1 ]; then
+        printf 'Run Claude Code with: fcc-claude\n'
+    fi
+    if [ "$install_codex" -eq 1 ]; then
+        printf 'Run Codex with: fcc-codex\n'
+    fi
+    if [ "$pi_available" -eq 1 ]; then
+        printf 'Run Pi with: fcc-pi\n'
+    fi
 fi
