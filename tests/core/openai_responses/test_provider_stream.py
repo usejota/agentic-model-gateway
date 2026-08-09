@@ -131,6 +131,62 @@ def test_responses_provider_stream_preserves_reasoning_tools_usage_and_ids() -> 
     }
 
 
+def test_responses_provider_stream_reasoning_only_emits_thinking_without_text() -> None:
+    stream = ResponsesProviderStream(
+        message_id="msg_test",
+        model="gpt-test",
+        input_tokens=0,
+    )
+    output = stream.start()
+    output.extend(
+        stream.feed(
+            "response.reasoning_summary_text.delta",
+            {"delta": "reasoning only"},
+        )
+    )
+    output.extend(stream.feed("response.completed", {"response": {}}))
+
+    events = parse_sse_text("".join(output))
+    assert_anthropic_stream_contract(events)
+    block_starts = [
+        event.data.get("content_block", {})
+        for event in events
+        if event.event == "content_block_start"
+    ]
+    assert [block.get("type") for block in block_starts] == ["thinking"]
+    assert thinking_content(events) == "reasoning only"
+    assert not any(
+        event.data.get("delta", {}).get("type") == "text_delta" for event in events
+    )
+    assert events[-1].event == "message_stop"
+
+
+def test_responses_provider_stream_empty_response_keeps_placeholder_text() -> None:
+    stream = ResponsesProviderStream(
+        message_id="msg_test",
+        model="gpt-test",
+        input_tokens=0,
+    )
+    output = stream.start()
+    output.extend(stream.feed("response.completed", {"response": {}}))
+
+    events = parse_sse_text("".join(output))
+    assert_anthropic_stream_contract(events)
+    block_starts = [
+        event.data.get("content_block", {})
+        for event in events
+        if event.event == "content_block_start"
+    ]
+    assert [block.get("type") for block in block_starts] == ["text"]
+    text_deltas = [
+        event.data.get("delta", {}).get("text")
+        for event in events
+        if event.data.get("delta", {}).get("type") == "text_delta"
+    ]
+    assert text_deltas == [" "]
+    assert events[-1].event == "message_stop"
+
+
 def test_responses_provider_stream_surfaces_failed_event() -> None:
     stream = ResponsesProviderStream(
         message_id="msg_test",
