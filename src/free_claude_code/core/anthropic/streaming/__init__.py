@@ -10,6 +10,7 @@ from .emitter import (
 )
 from .ledger import (
     EMPTY_TURN_FILLER,
+    VISIBLE_NON_TEXT_BLOCK_TYPES,
     AnthropicStreamLedger,
     StreamBlockLedger,
     ToolBlockState,
@@ -28,6 +29,7 @@ from .recovery import (
 __all__ = [
     "ANTHROPIC_SSE_RESPONSE_HEADERS",
     "EMPTY_TURN_FILLER",
+    "VISIBLE_NON_TEXT_BLOCK_TYPES",
     "AnthropicSseEmitter",
     "AnthropicStreamLedger",
     "StreamBlockLedger",

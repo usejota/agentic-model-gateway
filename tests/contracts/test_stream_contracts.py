@@ -5,6 +5,8 @@ integration tests.
 
 from collections.abc import Iterable
 
+import pytest
+
 from free_claude_code.core.anthropic import (
     AnthropicStreamLedger,
     ContentType,
@@ -103,6 +105,40 @@ def test_redacted_thinking_block_start_stop_is_valid() -> None:
     ]
     events = parse_sse_text("".join(chunks))
     assert_anthropic_stream_contract(events, require_visible_content=False)
+
+
+def test_server_tool_only_turn_counts_as_visible() -> None:
+    """A completed turn whose only content is server-tool blocks passes the
+    visible-content invariant (the client renders/keeps those blocks)."""
+    builder = AnthropicStreamLedger("msg_srv", "m")
+    chunks = [
+        builder.message_start(),
+        builder.content_block_start(0, "server_tool_use"),
+        builder.content_block_stop(0),
+        builder.content_block_start(1, "web_search_tool_result"),
+        builder.content_block_stop(1),
+        builder.message_delta("end_turn", 5),
+        builder.message_stop(),
+    ]
+    events = parse_sse_text("".join(chunks))
+    assert_anthropic_stream_contract(events)
+    assert not builder.needs_visible_content()
+
+
+def test_whitespace_only_text_turn_fails_visible_content() -> None:
+    builder = AnthropicStreamLedger("msg_ws", "m")
+    chunks = [builder.message_start()]
+    chunks.extend(builder.ensure_thinking_block())
+    chunks.append(builder.emit_thinking_delta("hidden"))
+    chunks.extend(builder.ensure_text_block())
+    chunks.append(builder.emit_text_delta(" "))
+    chunks.extend(builder.close_all_blocks())
+    chunks.append(builder.message_delta("end_turn", 5))
+    chunks.append(builder.message_stop())
+
+    events = parse_sse_text("".join(chunks))
+    with pytest.raises(AssertionError, match="client-visible"):
+        assert_anthropic_stream_contract(events)
 
 
 def test_enable_thinking_false_suppresses_reasoning_only() -> None:

@@ -464,6 +464,40 @@ class TestStreamingExceptionHandling:
         assert parsed[-1].event == "message_stop"
 
     @pytest.mark.asyncio
+    async def test_whitespace_only_text_still_gets_visible_filler(self):
+        """Upstream text of only whitespace is as invisible as no text at all.
+
+        A text block whose accumulated content strips to empty renders as
+        nothing on the client and is rejected by Anthropic on transcript
+        replay, so the filler must still be appended.
+        """
+        provider = _make_provider()
+        request = _make_request()
+        chunk1 = _make_chunk(reasoning_content="reasoning only from provider")
+        chunk2 = _make_chunk(content=" ")
+        chunk3 = _make_chunk(finish_reason="stop")
+        stream_mock = AsyncStreamMock([chunk1, chunk2, chunk3])
+        with (
+            patch.object(
+                provider._client.chat.completions,
+                "create",
+                new_callable=AsyncMock,
+                return_value=stream_mock,
+            ),
+        ):
+            events = await _collect_stream(provider, request)
+
+        parsed = parse_sse_text("".join(events))
+        assert_anthropic_stream_contract(parsed)
+        text_deltas = [
+            event.data.get("delta", {}).get("text")
+            for event in parsed
+            if event.data.get("delta", {}).get("type") == "text_delta"
+        ]
+        assert text_deltas == [" ", EMPTY_TURN_FILLER]
+        assert parsed[-1].event == "message_stop"
+
+    @pytest.mark.asyncio
     async def test_reasoning_only_tool_calls_finish_reason_downgrades_stop_reason(self):
         """A tool finish without a tool block must not advertise tool_use."""
         provider = _make_provider()

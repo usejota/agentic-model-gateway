@@ -13,6 +13,7 @@ from .server_tool_sse import (
     WEB_FETCH_TOOL_RESULT,
     WEB_SEARCH_TOOL_RESULT,
 )
+from .streaming import VISIBLE_NON_TEXT_BLOCK_TYPES
 
 # Content blocks that only use content_block_start/stop (no deltas), including
 # Anthropic server tools and eager text emitted in a single start event.
@@ -104,10 +105,11 @@ def assert_anthropic_stream_contract(
     content blocks). Successful streams end in ``message_stop``; when explicitly
     allowed, failed streams may instead end in a protocol-native ``error``.
 
-    A completed turn must also carry a ``text`` or ``tool_use`` block, since a
-    thinking-only message leaves the client nothing to render and no tool to run.
-    Pass ``require_visible_content=False`` for synthetic block fragments that do
-    not model a whole turn.
+    A completed turn must also carry client-visible content: non-whitespace
+    text, a ``tool_use`` block, or a server-tool block — a thinking-only or
+    whitespace-only message leaves the client nothing to render and no tool to
+    run. Pass ``require_visible_content=False`` for synthetic block fragments
+    that do not model a whole turn.
     """
     assert events, "stream produced no SSE events"
     event_names = [event.event for event in events]
@@ -173,10 +175,14 @@ def assert_anthropic_stream_contract(
     assert seen_blocks, "stream did not emit any content blocks"
 
     if require_visible_content and event_names[-1] == "message_stop":
-        # A turn carrying only thinking gives the client nothing to render and no
-        # tool to run, so Claude Code drops it and prints "[Tool use interrupted]".
-        assert seen_block_types & {"text", "tool_use"}, (
-            f"turn closed without a client-visible block: {sorted(seen_block_types)}"
+        # A turn carrying only thinking (or whitespace-only text) gives the client
+        # nothing to render and no tool to run, so Claude Code drops it and prints
+        # "[Tool use interrupted]".
+        visible = bool(text_content(events).strip()) or bool(
+            seen_block_types & VISIBLE_NON_TEXT_BLOCK_TYPES
+        )
+        assert visible, (
+            f"turn closed without client-visible content: {sorted(seen_block_types)}"
         )
 
 

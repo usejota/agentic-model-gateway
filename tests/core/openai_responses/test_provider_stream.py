@@ -165,6 +165,28 @@ def test_responses_provider_stream_reasoning_only_keeps_a_visible_block() -> Non
     assert events[-1].event == "message_stop"
 
 
+def test_responses_provider_stream_whitespace_only_text_gets_filler() -> None:
+    """Whitespace-only text is invisible; the filler must still be appended."""
+    stream = ResponsesProviderStream(
+        message_id="msg_test",
+        model="gpt-test",
+        input_tokens=0,
+    )
+    output = stream.start()
+    output.extend(stream.feed("response.output_text.delta", {"delta": " "}))
+    output.extend(stream.feed("response.completed", {"response": {}}))
+
+    events = parse_sse_text("".join(output))
+    assert_anthropic_stream_contract(events)
+    text_deltas = [
+        event.data.get("delta", {}).get("text")
+        for event in events
+        if event.data.get("delta", {}).get("type") == "text_delta"
+    ]
+    assert text_deltas == [" ", EMPTY_TURN_FILLER]
+    assert events[-1].event == "message_stop"
+
+
 def test_responses_provider_stream_empty_response_keeps_placeholder_text() -> None:
     stream = ResponsesProviderStream(
         message_id="msg_test",

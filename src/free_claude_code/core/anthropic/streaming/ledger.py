@@ -10,6 +10,11 @@ from typing import Any
 
 from loguru import logger
 
+from ..server_tool_sse import (
+    SERVER_TOOL_USE,
+    WEB_FETCH_TOOL_RESULT,
+    WEB_SEARCH_TOOL_RESULT,
+)
 from .emitter import AnthropicSseEmitter
 from .recovery import (
     ToolSchema,
@@ -24,6 +29,17 @@ except Exception:
     ENCODER = None
 
 EMPTY_TURN_FILLER = "…"
+
+# Non-text blocks the client can render or act on. thinking/redacted_thinking
+# are excluded: a turn carrying only those gives the client nothing usable.
+VISIBLE_NON_TEXT_BLOCK_TYPES = frozenset(
+    {
+        "tool_use",
+        SERVER_TOOL_USE,
+        WEB_SEARCH_TOOL_RESULT,
+        WEB_FETCH_TOOL_RESULT,
+    }
+)
 
 
 def _safe_usage_int(value: object) -> int:
@@ -381,8 +397,18 @@ class AnthropicStreamLedger:
             yield self.stop_text_block()
 
     def needs_visible_content(self) -> bool:
-        """Return whether the turn would close without a client-visible block."""
-        return self.blocks.text_index == -1 and not self.has_emitted_tool_block()
+        """Return whether the turn would close without client-visible content.
+
+        Visible means non-whitespace text (a whitespace-only text block renders
+        as nothing and is rejected by Anthropic when the transcript is replayed)
+        or a block the client can act on (tool_use / server tool blocks).
+        """
+        if self.accumulated_text.strip():
+            return False
+        return not any(
+            block.block_type in VISIBLE_NON_TEXT_BLOCK_TYPES
+            for block in self._content_blocks.values()
+        )
 
     def ensure_visible_content(self) -> Iterator[str]:
         """Emit a placeholder text block so the turn never closes unusable.
