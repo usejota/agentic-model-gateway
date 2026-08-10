@@ -389,6 +389,105 @@ async def test_stream_maps_reasoning_content_and_details(open_router_provider):
 
 
 @pytest.mark.asyncio
+async def test_stream_coalesces_encrypted_details_into_one_redacted_block(
+    open_router_provider,
+):
+    """GPT-5.x turns carry dozens of encrypted details; one block, not N."""
+    chunks = [
+        _chunk(reasoning_details=[{"type": "reasoning.encrypted", "data": f"blob{i}"}])
+        for i in range(5)
+    ]
+    chunks.append(_chunk(content="done", finish_reason="stop"))
+    stream = AsyncStream(chunks)
+    with patch.object(
+        open_router_provider._client.chat.completions,
+        "create",
+        new_callable=AsyncMock,
+        return_value=stream,
+    ):
+        events = [
+            event
+            async for event in open_router_provider.stream_response(make_request())
+        ]
+
+    parsed = parse_sse_text("".join(events))
+    redacted_starts = [
+        event.data
+        for event in parsed
+        if event.data.get("type") == "content_block_start"
+        and event.data.get("content_block", {}).get("type") == "redacted_thinking"
+    ]
+    assert len(redacted_starts) == 1
+    data = json.loads(redacted_starts[0]["content_block"]["data"])
+    assert data == [
+        {"type": "reasoning.encrypted", "data": f"blob{i}"} for i in range(5)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_stream_flushes_encrypted_details_before_text_and_after(
+    open_router_provider,
+):
+    """Details split by text produce one redacted block per contiguous run."""
+    stream = AsyncStream(
+        [
+            _chunk(reasoning_details=[{"type": "reasoning.encrypted", "data": "a"}]),
+            _chunk(content="middle"),
+            _chunk(reasoning_details=[{"type": "reasoning.encrypted", "data": "b"}]),
+            _chunk(finish_reason="stop"),
+        ]
+    )
+    with patch.object(
+        open_router_provider._client.chat.completions,
+        "create",
+        new_callable=AsyncMock,
+        return_value=stream,
+    ):
+        events = [
+            event
+            async for event in open_router_provider.stream_response(make_request())
+        ]
+
+    parsed = parse_sse_text("".join(events))
+    block_order = [
+        event.data["content_block"].get("type", "?")
+        for event in parsed
+        if event.data.get("type") == "content_block_start"
+    ]
+    assert block_order == ["redacted_thinking", "text", "redacted_thinking"]
+
+
+def test_build_request_body_replays_batched_reasoning_details(
+    open_router_provider,
+):
+    """A batched JSON array in data replays as the original detail list."""
+    details = [
+        {"type": "reasoning.encrypted", "data": "blob0"},
+        {"type": "reasoning.encrypted", "data": "blob1"},
+    ]
+    request = make_request(
+        messages=[
+            {"role": "user", "content": "Hello"},
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "redacted_thinking",
+                        "data": json.dumps(details, separators=(",", ":")),
+                    },
+                    {"type": "text", "text": "done"},
+                ],
+            },
+            {"role": "user", "content": "again"},
+        ]
+    )
+    body = open_router_provider._build_request_body(request)
+
+    assistants = [m for m in body["messages"] if m["role"] == "assistant"]
+    assert assistants[0]["reasoning_details"] == details
+
+
+@pytest.mark.asyncio
 async def test_model_infos_filter_tool_models_and_thinking_metadata(
     open_router_provider,
 ):

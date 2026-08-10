@@ -495,6 +495,12 @@ class _OpenAIChatStreamRunner:
                         for out_event in hold_event(event):
                             yield out_event
 
+                    if structured_reasoning is not None and (
+                        delta.content or delta.tool_calls
+                    ):
+                        for event in hold_events(structured_reasoning.flush(ledger)):
+                            yield event
+
                     if delta.content:
                         for part in think_parser.feed(delta.content):
                             if part.type == ContentType.THINKING:
@@ -642,6 +648,9 @@ class _OpenAIChatStreamRunner:
                     if recovery_events is not None:
                         for event in recovery.flush_uncommitted(decision):
                             yield event
+                        if structured_reasoning is not None:
+                            for event in structured_reasoning.flush(ledger):
+                                yield event
                         for event in recovery_events:
                             yield event
                         return
@@ -696,6 +705,10 @@ class _OpenAIChatStreamRunner:
                     )
                 if attempt is not None:
                     await attempt.aclose()
+
+        if structured_reasoning is not None:
+            for event in hold_events(structured_reasoning.flush(ledger)):
+                yield event
 
         remaining = think_parser.flush()
         if remaining:
