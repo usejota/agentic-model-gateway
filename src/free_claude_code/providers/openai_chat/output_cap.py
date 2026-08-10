@@ -11,11 +11,12 @@ retry once and succeed. The provider also remembers the learned cap per model
 so later requests clamp proactively instead of paying the 400 every time.
 """
 
-import json
 import re
 from typing import Any
 
 import openai
+
+from .error_text import error_status_code, error_text
 
 # Body keys that carry the output-token budget across OpenAI-compatible policies.
 _OUTPUT_TOKEN_FIELDS = ("max_completion_tokens", "max_tokens")
@@ -36,17 +37,7 @@ _CAP_PATTERNS: tuple[re.Pattern[str], ...] = (
 
 
 def _is_bad_request(error: Exception) -> bool:
-    return isinstance(error, openai.BadRequestError) or (
-        getattr(error, "status_code", None) == 400
-    )
-
-
-def _error_text(error: Exception) -> str:
-    text = str(error)
-    body = getattr(error, "body", None)
-    if body is not None:
-        text = f"{text} {json.dumps(body, default=str)}"
-    return text.lower()
+    return isinstance(error, openai.BadRequestError) or error_status_code(error) == 400
 
 
 def parse_output_token_cap(error: Exception) -> int | None:
@@ -54,7 +45,7 @@ def parse_output_token_cap(error: Exception) -> int | None:
     if not _is_bad_request(error):
         return None
 
-    text = _error_text(error)
+    text = error_text(error)
     if not any(keyword in text for keyword in _OUTPUT_TOKEN_KEYWORDS):
         return None
 

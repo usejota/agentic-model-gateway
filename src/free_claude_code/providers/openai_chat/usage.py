@@ -1,10 +1,11 @@
 """OpenAI-chat streamed usage request and extraction helpers."""
 
-import json
 from collections.abc import Mapping
 from typing import Any
 
 import openai
+
+from .error_text import error_status_code, error_text
 
 _USAGE_OPTION_KEYS = ("stream_options", "include_usage")
 _USAGE_REJECTION_WORDS = (
@@ -52,7 +53,7 @@ def is_stream_usage_rejection(error: Exception) -> bool:
     """Return whether upstream rejected the optional streamed-usage request."""
     if not _is_bad_request_like(error):
         return False
-    text = _error_text(error)
+    text = error_text(error, include_response_text=True)
     if not any(key in text for key in _USAGE_OPTION_KEYS):
         return False
     return any(word in text for word in _USAGE_REJECTION_WORDS)
@@ -76,23 +77,4 @@ def usage_int(usage_info: Any, key: str) -> int | None:
 def _is_bad_request_like(error: Exception) -> bool:
     if isinstance(error, openai.BadRequestError):
         return True
-    status = getattr(error, "status_code", None)
-    if status is None:
-        response = getattr(error, "response", None)
-        status = (
-            getattr(response, "status_code", None) if response is not None else None
-        )
-    return status in (400, 422)
-
-
-def _error_text(error: Exception) -> str:
-    parts = [str(error)]
-    body = getattr(error, "body", None)
-    if body is not None:
-        parts.append(json.dumps(body, default=str))
-    response = getattr(error, "response", None)
-    if response is not None:
-        text = getattr(response, "text", None)
-        if isinstance(text, str) and text:
-            parts.append(text)
-    return " ".join(parts).lower()
+    return error_status_code(error) in (400, 422)

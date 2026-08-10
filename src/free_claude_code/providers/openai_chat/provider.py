@@ -58,7 +58,11 @@ from free_claude_code.providers.stream_recovery import (
 
 from .output_cap import clamp_output_tokens, parse_output_token_cap
 from .profiles import OpenAIChatProfile
-from .reasoning_details import StructuredReasoningStream
+from .reasoning_details import (
+    StructuredReasoningStream,
+    clone_without_encrypted_reasoning,
+    is_encrypted_reasoning_replay_rejection,
+)
 from .request_policy import build_openai_chat_request_body
 from .tool_calls import (
     OpenAIToolCallAssembler,
@@ -277,6 +281,20 @@ class OpenAIChatProvider(BaseProvider):
                 logger.warning(
                     "{}_STREAM: retrying without stream_options.include_usage "
                     "after upstream rejection",
+                    self._provider_name,
+                )
+                return retry_body
+
+        if (
+            "encrypted_reasoning" not in used_retry_kinds
+            and is_encrypted_reasoning_replay_rejection(error)
+        ):
+            retry_body = clone_without_encrypted_reasoning(body)
+            if retry_body is not None:
+                used_retry_kinds.add("encrypted_reasoning")
+                logger.warning(
+                    "{}_STREAM: retrying without replayed encrypted reasoning "
+                    "after upstream endpoint mismatch",
                     self._provider_name,
                 )
                 return retry_body
