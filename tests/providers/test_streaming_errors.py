@@ -11,6 +11,7 @@ import pytest
 from free_claude_code.config.nim import NimSettings
 from free_claude_code.core.anthropic import OpenAIToolNameCodec
 from free_claude_code.core.anthropic.stream_contracts import (
+    assert_anthropic_stream_contract,
     parse_sse_text,
 )
 from free_claude_code.core.anthropic.streaming import (
@@ -365,9 +366,21 @@ class TestStreamingExceptionHandling:
         ):
             events = await _collect_stream(provider, request)
 
-        event_text = "".join(events)
-        assert '"text_delta"' in event_text
-        assert "message_stop" in event_text
+        parsed = parse_sse_text("".join(events))
+        assert_anthropic_stream_contract(parsed)
+        text_starts = [
+            event.data.get("content_block", {})
+            for event in parsed
+            if event.event == "content_block_start"
+        ]
+        assert [block.get("type") for block in text_starts] == ["text"]
+        text_deltas = [
+            event.data.get("delta", {}).get("text")
+            for event in parsed
+            if event.data.get("delta", {}).get("type") == "text_delta"
+        ]
+        assert text_deltas == [" "]
+        assert parsed[-1].event == "message_stop"
 
     @pytest.mark.asyncio
     async def test_upstream_completion_tokens_null_emits_int_usage(self):
@@ -404,12 +417,8 @@ class TestStreamingExceptionHandling:
         assert '"output_tokens": null' not in "".join(events)
 
     @pytest.mark.asyncio
-    async def test_reasoning_only_stream_emits_placeholder_text(self):
-        """When the model streams only ``reasoning_content`` (no ``content``), add text block.
-
-        NIM / some templates may emit no main ``content``; a minimal text block matches
-        the empty-body placeholder and helps clients that expect a text segment.
-        """
+    async def test_reasoning_only_stream_emits_thinking_without_text(self):
+        """Reasoning-only turns must not synthesize whitespace-only assistant text."""
         provider = _make_provider()
         request = _make_request()
         chunk1 = _make_chunk(reasoning_content="reasoning only from provider")
@@ -424,10 +433,23 @@ class TestStreamingExceptionHandling:
             ),
         ):
             events = await _collect_stream(provider, request)
-        event_text = "".join(events)
-        assert "thinking_delta" in event_text
-        assert '"text_delta"' in event_text
-        assert "message_stop" in event_text
+
+        parsed = parse_sse_text("".join(events))
+        assert_anthropic_stream_contract(parsed)
+        block_starts = [
+            event.data.get("content_block", {})
+            for event in parsed
+            if event.event == "content_block_start"
+        ]
+        assert [block.get("type") for block in block_starts] == ["thinking"]
+        assert any(
+            event.data.get("delta", {}).get("type") == "thinking_delta"
+            for event in parsed
+        )
+        assert not any(
+            event.data.get("delta", {}).get("type") == "text_delta" for event in parsed
+        )
+        assert parsed[-1].event == "message_stop"
 
     @pytest.mark.asyncio
     async def test_stream_with_thinking_content(self):
@@ -727,6 +749,42 @@ class TestStreamingExceptionHandling:
             and event.data.get("delta", {}).get("stop_reason") == "tool_use"
             for event in parsed
         )
+
+    @pytest.mark.asyncio
+    async def test_reasoning_and_tool_stream_does_not_emit_text_placeholder(self):
+        """Reasoning plus a tool call must not add whitespace-only text."""
+        provider = _make_provider()
+        request = _make_request()
+        stream_mock = AsyncStreamMock(
+            [
+                _make_chunk(reasoning_content="reasoning before tool"),
+                _make_tool_calls_chunk(
+                    name="echo_smoke", arguments='{"message":"ok"}', tool_id="call_1"
+                ),
+                _make_chunk(finish_reason="tool_calls"),
+            ]
+        )
+
+        with patch.object(
+            provider._client.chat.completions,
+            "create",
+            new_callable=AsyncMock,
+            return_value=stream_mock,
+        ):
+            events = await _collect_stream(provider, request)
+
+        parsed = parse_sse_text("".join(events))
+        assert_anthropic_stream_contract(parsed)
+        block_types = [
+            event.data.get("content_block", {}).get("type")
+            for event in parsed
+            if event.event == "content_block_start"
+        ]
+        assert block_types == ["thinking", "tool_use"]
+        assert not any(
+            event.data.get("delta", {}).get("type") == "text_delta" for event in parsed
+        )
+        assert parsed[-1].event == "message_stop"
 
     @pytest.mark.asyncio
     async def test_precommit_retry_emits_one_unduplicated_downstream_lifecycle(self):

@@ -722,11 +722,7 @@ class _OpenAIChatStreamRunner:
             or ledger.blocks.thinking_index != -1
             or has_emitted_tool
         )
-        if not has_content_blocks or (
-            not has_emitted_tool
-            and not ledger.accumulated_text.strip()
-            and ledger.accumulated_reasoning.strip()
-        ):
+        if not has_content_blocks:
             for event in hold_events(ledger.ensure_text_block()):
                 yield event
             for event in hold_event(ledger.emit_text_delta(" ")):
