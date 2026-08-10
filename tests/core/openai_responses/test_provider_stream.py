@@ -6,6 +6,7 @@ from free_claude_code.core.anthropic.stream_contracts import (
     parse_sse_text,
     thinking_content,
 )
+from free_claude_code.core.anthropic.streaming import EMPTY_TURN_FILLER
 from free_claude_code.core.openai_responses.provider_stream import (
     ResponsesProviderStream,
     ResponsesStreamFailure,
@@ -131,7 +132,7 @@ def test_responses_provider_stream_preserves_reasoning_tools_usage_and_ids() -> 
     }
 
 
-def test_responses_provider_stream_reasoning_only_emits_thinking_without_text() -> None:
+def test_responses_provider_stream_reasoning_only_keeps_a_visible_block() -> None:
     stream = ResponsesProviderStream(
         message_id="msg_test",
         model="gpt-test",
@@ -153,11 +154,14 @@ def test_responses_provider_stream_reasoning_only_emits_thinking_without_text() 
         for event in events
         if event.event == "content_block_start"
     ]
-    assert [block.get("type") for block in block_starts] == ["thinking"]
+    assert [block.get("type") for block in block_starts] == ["thinking", "text"]
     assert thinking_content(events) == "reasoning only"
-    assert not any(
-        event.data.get("delta", {}).get("type") == "text_delta" for event in events
-    )
+    text_deltas = [
+        event.data.get("delta", {}).get("text")
+        for event in events
+        if event.data.get("delta", {}).get("type") == "text_delta"
+    ]
+    assert text_deltas == [EMPTY_TURN_FILLER]
     assert events[-1].event == "message_stop"
 
 
@@ -183,7 +187,8 @@ def test_responses_provider_stream_empty_response_keeps_placeholder_text() -> No
         for event in events
         if event.data.get("delta", {}).get("type") == "text_delta"
     ]
-    assert text_deltas == [" "]
+    assert text_deltas == [EMPTY_TURN_FILLER]
+    assert text_deltas[0].strip(), "filler must not be whitespace-only"
     assert events[-1].event == "message_stop"
 
 

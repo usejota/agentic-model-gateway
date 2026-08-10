@@ -23,6 +23,8 @@ try:
 except Exception:
     ENCODER = None
 
+EMPTY_TURN_FILLER = "…"
+
 
 def _safe_usage_int(value: object) -> int:
     return value if isinstance(value, int) else 0
@@ -377,6 +379,23 @@ class AnthropicStreamLedger:
             yield self.stop_thinking_block()
         if self.blocks.text_started:
             yield self.stop_text_block()
+
+    def needs_visible_content(self) -> bool:
+        """Return whether the turn would close without a client-visible block."""
+        return self.blocks.text_index == -1 and not self.has_emitted_tool_block()
+
+    def ensure_visible_content(self) -> Iterator[str]:
+        """Emit a placeholder text block so the turn never closes unusable.
+
+        A message carrying only thinking (or nothing at all) gives the client
+        nothing to render and no tool to run, so the turn dies silently. The
+        filler is deliberately not whitespace: Anthropic rejects whitespace-only
+        text blocks when the transcript is replayed on the next request.
+        """
+        if not self.needs_visible_content():
+            return
+        yield from self.ensure_text_block()
+        yield self.emit_text_delta(EMPTY_TURN_FILLER)
 
     def close_all_blocks(self) -> Iterator[str]:
         yield from self.close_content_blocks()

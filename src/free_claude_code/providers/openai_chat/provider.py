@@ -734,16 +734,17 @@ class _OpenAIChatStreamRunner:
             for out_event in hold_event(event):
                 yield out_event
 
-        has_emitted_tool = ledger.has_emitted_tool_block()
-        has_content_blocks = (
-            ledger.blocks.text_index != -1
-            or ledger.blocks.thinking_index != -1
-            or has_emitted_tool
-        )
-        if not has_content_blocks:
-            for event in hold_events(ledger.ensure_text_block()):
-                yield event
-            for event in hold_event(ledger.emit_text_delta(" ")):
+        if ledger.needs_visible_content():
+            trace_event(
+                stage="provider",
+                event="provider.response.empty_content",
+                source="provider",
+                provider=tag,
+                request_id=self._request_id,
+                finish_reason=(None if finish_reason is None else str(finish_reason)),
+                had_reasoning=bool(ledger.accumulated_reasoning.strip()),
+            )
+            for event in hold_events(ledger.ensure_visible_content()):
                 yield event
 
         for event in self._tool_calls.flush_tool_argument_alias_buffers(
@@ -978,6 +979,17 @@ class _OpenAIChatStreamRunner:
                 events.extend(self._tool_calls.process_tool_call(tool_call, ledger))
         if not events:
             return None
+        if ledger.needs_visible_content():
+            trace_event(
+                stage="provider",
+                event="provider.response.empty_content",
+                source="provider",
+                provider=self._provider._provider_name,
+                request_id=self._request_id,
+                recovery_kind="openai_text",
+                had_reasoning=bool(ledger.accumulated_reasoning.strip()),
+            )
+            events.extend(ledger.ensure_visible_content())
         events.extend(ledger.close_all_blocks())
         events.append(
             ledger.message_delta(

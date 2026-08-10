@@ -93,13 +93,21 @@ def _append_event(
 
 
 def assert_anthropic_stream_contract(
-    events: list[SSEEvent], *, allow_error: bool = False
+    events: list[SSEEvent],
+    *,
+    allow_error: bool = False,
+    require_visible_content: bool = True,
 ) -> None:
     """Check minimal Anthropic-style SSE invariants and block nesting.
 
     Does *not* assert strict event ordering (e.g. :class:`message_delta` vs
     content blocks). Successful streams end in ``message_stop``; when explicitly
     allowed, failed streams may instead end in a protocol-native ``error``.
+
+    A completed turn must also carry a ``text`` or ``tool_use`` block, since a
+    thinking-only message leaves the client nothing to render and no tool to run.
+    Pass ``require_visible_content=False`` for synthetic block fragments that do
+    not model a whole turn.
     """
     assert events, "stream produced no SSE events"
     event_names = [event.event for event in events]
@@ -111,6 +119,7 @@ def assert_anthropic_stream_contract(
 
     open_blocks: dict[int, str] = {}
     seen_blocks: set[int] = set()
+    seen_block_types: set[str] = set()
     for event in events:
         if event.event == "error" and not allow_error:
             raise AssertionError(f"unexpected SSE error event: {event.data}")
@@ -129,6 +138,7 @@ def assert_anthropic_stream_contract(
                 storage = block_type
             open_blocks[index] = storage
             seen_blocks.add(index)
+            seen_block_types.add(block_type)
             continue
 
         if event.event == "content_block_delta":
@@ -161,6 +171,13 @@ def assert_anthropic_stream_contract(
 
     assert not open_blocks, f"unclosed blocks: {open_blocks}"
     assert seen_blocks, "stream did not emit any content blocks"
+
+    if require_visible_content and event_names[-1] == "message_stop":
+        # A turn carrying only thinking gives the client nothing to render and no
+        # tool to run, so Claude Code drops it and prints "[Tool use interrupted]".
+        assert seen_block_types & {"text", "tool_use"}, (
+            f"turn closed without a client-visible block: {sorted(seen_block_types)}"
+        )
 
 
 def event_names(events: list[SSEEvent]) -> list[str]:

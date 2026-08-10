@@ -102,7 +102,7 @@ def test_redacted_thinking_block_start_stop_is_valid() -> None:
         format_sse_event("message_stop", {"type": "message_stop"}),
     ]
     events = parse_sse_text("".join(chunks))
-    assert_anthropic_stream_contract(events)
+    assert_anthropic_stream_contract(events, require_visible_content=False)
 
 
 def test_enable_thinking_false_suppresses_reasoning_only() -> None:
