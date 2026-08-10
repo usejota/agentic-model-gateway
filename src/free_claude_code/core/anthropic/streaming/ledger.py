@@ -432,6 +432,8 @@ class AnthropicStreamLedger:
     def final_stop_reason(self, fallback: str) -> str:
         if self.has_emitted_tool_block():
             return "tool_use"
+        if fallback == "tool_use":
+            return "end_turn"
         return fallback
 
     def has_terminal_message(self) -> bool:

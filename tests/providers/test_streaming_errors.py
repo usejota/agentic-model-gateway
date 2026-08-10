@@ -452,6 +452,40 @@ class TestStreamingExceptionHandling:
         assert parsed[-1].event == "message_stop"
 
     @pytest.mark.asyncio
+    async def test_reasoning_only_tool_calls_finish_reason_downgrades_stop_reason(self):
+        """A tool finish without a tool block must not advertise tool_use."""
+        provider = _make_provider()
+        request = _make_request()
+        stream_mock = AsyncStreamMock(
+            [
+                _make_chunk(reasoning_content="thinking before an absent tool"),
+                _make_chunk(finish_reason="tool_calls"),
+            ]
+        )
+        with (
+            patch.object(
+                provider._client.chat.completions,
+                "create",
+                new_callable=AsyncMock,
+                return_value=stream_mock,
+            ),
+        ):
+            events = await _collect_stream(provider, request)
+
+        parsed = parse_sse_text("".join(events))
+        assert_anthropic_stream_contract(parsed)
+        assert not any(
+            event.event == "content_block_start"
+            and event.data.get("content_block", {}).get("type") == "tool_use"
+            for event in parsed
+        )
+        message_delta = next(
+            event for event in parsed if event.event == "message_delta"
+        )
+        assert message_delta.data["delta"]["stop_reason"] == "end_turn"
+        assert parsed[-1].event == "message_stop"
+
+    @pytest.mark.asyncio
     async def test_stream_with_thinking_content(self):
         """Thinking content via think tags is emitted as thinking blocks."""
         provider = _make_provider()
