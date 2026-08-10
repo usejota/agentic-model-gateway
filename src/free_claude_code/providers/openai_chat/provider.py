@@ -692,6 +692,9 @@ class _OpenAIChatStreamRunner:
                 elif not decision.committed:
                     recovery.discard()
                     raise failure from error
+                if structured_reasoning is not None:
+                    for event in hold_events(structured_reasoning.flush(ledger)):
+                        yield event
                 for event in ledger.close_unclosed_blocks():
                     yield event
                 raise failure from error

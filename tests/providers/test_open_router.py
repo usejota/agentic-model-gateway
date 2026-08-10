@@ -4,6 +4,8 @@ import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
+import openai
 import pytest
 
 from free_claude_code.application.errors import InvalidRequestError
@@ -14,6 +16,7 @@ from free_claude_code.core.anthropic.stream_contracts import (
     text_content,
     thinking_content,
 )
+from free_claude_code.core.failures import ExecutionFailure
 from free_claude_code.core.reasoning import ReasoningEffort
 from free_claude_code.providers.base import ProviderConfig
 from free_claude_code.providers.open_router import OpenRouterProvider
@@ -27,8 +30,9 @@ from tests.providers.support import (
 
 
 class AsyncStream:
-    def __init__(self, chunks):
+    def __init__(self, chunks, error: Exception | None = None):
         self._chunks = chunks
+        self._error = error
         self.closed = False
 
     def __aiter__(self):
@@ -37,6 +41,8 @@ class AsyncStream:
     async def _iter(self):
         for chunk in self._chunks:
             yield chunk
+        if self._error is not None:
+            raise self._error
 
     async def aclose(self):
         self.closed = True
@@ -64,12 +70,13 @@ def _chunk(
     content: str | None = None,
     reasoning_content: str | None = None,
     reasoning_details: list[dict] | None = None,
+    tool_calls: list | None = None,
     finish_reason: str | None = None,
 ):
     delta = SimpleNamespace(
         content=content,
         reasoning_content=reasoning_content,
-        tool_calls=None,
+        tool_calls=tool_calls,
     )
     if reasoning_details is not None:
         delta.reasoning_details = reasoning_details
@@ -455,6 +462,52 @@ async def test_stream_flushes_encrypted_details_before_text_and_after(
         if event.data.get("type") == "content_block_start"
     ]
     assert block_order == ["redacted_thinking", "text", "redacted_thinking"]
+
+
+@pytest.mark.asyncio
+async def test_salvaged_tool_stream_keeps_buffered_encrypted_details(
+    open_router_provider,
+):
+    """Complete-tool salvage flushes buffered details instead of dropping them."""
+    tool_call = SimpleNamespace(
+        index=0,
+        id="call_salvage",
+        function=SimpleNamespace(name="echo", arguments='{"message":"ok"}'),
+    )
+    stream = AsyncStream(
+        [
+            _chunk(tool_calls=[tool_call]),
+            _chunk(reasoning_details=[{"type": "reasoning.encrypted", "data": "late"}]),
+        ],
+        error=openai.BadRequestError(
+            "Bad Request",
+            response=httpx.Response(
+                status_code=400,
+                request=httpx.Request("POST", "https://openrouter.ai/api/v1"),
+            ),
+            body={"error": {"message": "boom after tool"}},
+        ),
+    )
+    with patch.object(
+        open_router_provider._client.chat.completions,
+        "create",
+        new_callable=AsyncMock,
+        return_value=stream,
+    ):
+        events: list[str] = []
+        with pytest.raises(ExecutionFailure):
+            async for event in open_router_provider.stream_response(make_request()):
+                events.extend((event,))
+
+    parsed = parse_sse_text("".join(events))
+    redacted = [
+        json.loads(event.data["content_block"]["data"])
+        for event in parsed
+        if event.data.get("type") == "content_block_start"
+        and event.data.get("content_block", {}).get("type") == "redacted_thinking"
+    ]
+    assert redacted == [{"type": "reasoning.encrypted", "data": "late"}]
+    assert "tool_use" in "".join(events)
 
 
 def test_build_request_body_replays_batched_reasoning_details(
