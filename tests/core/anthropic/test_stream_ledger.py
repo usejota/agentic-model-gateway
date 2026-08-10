@@ -101,6 +101,22 @@ def test_tool_blocks_drive_stop_reason_and_salvage() -> None:
     )
 
 
+def test_tool_use_fallback_downgrades_without_tool_block() -> None:
+    ledger = AnthropicStreamLedger("msg_1", "model")
+
+    assert ledger.final_stop_reason("tool_use") == "end_turn"
+    assert ledger.final_stop_reason("end_turn") == "end_turn"
+    assert ledger.final_stop_reason("max_tokens") == "max_tokens"
+
+
+def test_tool_use_fallback_stays_tool_use_with_tool_block() -> None:
+    ledger = AnthropicStreamLedger("msg_1", "model")
+    ledger.start_tool_block(0, "toolu_1", "Read")
+
+    assert ledger.final_stop_reason("tool_use") == "tool_use"
+    assert ledger.final_stop_reason("end_turn") == "tool_use"
+
+
 def test_close_unclosed_blocks_closes_each_block_once() -> None:
     ledger = AnthropicStreamLedger("msg_1", "model")
     ledger.start_text_block()
