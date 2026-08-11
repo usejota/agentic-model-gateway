@@ -106,7 +106,7 @@ async def test_messages_handler_passes_routed_request_and_stream_metadata() -> N
     handler = MessagesHandler(Settings(), provider_resolver=lambda _: provider)
     request = MessagesRequest(
         model="nvidia_nim/test-model",
-        max_tokens=100,
+        max_tokens=4096,
         stream=True,
         messages=[Message(role="user", content="hi")],
     )
@@ -380,7 +380,7 @@ async def test_messages_handler_forces_no_thinking_for_safety_classifier() -> No
     handler = MessagesHandler(Settings(), provider_resolver=lambda _: provider)
     request = MessagesRequest(
         model="nvidia_nim/test-model",
-        max_tokens=100,
+        max_tokens=4096,
         stream=True,
         system=_CLASSIFIER_SYSTEM,
         messages=[Message(role="user", content=_CLASSIFIER_USER)],
@@ -414,7 +414,7 @@ async def test_messages_handler_preserves_thinking_for_non_classifier() -> None:
     handler = MessagesHandler(Settings(), provider_resolver=lambda _: provider)
     request = MessagesRequest(
         model="nvidia_nim/test-model",
-        max_tokens=100,
+        max_tokens=4096,
         stream=True,
         system="Explain XML formats.",
         messages=[

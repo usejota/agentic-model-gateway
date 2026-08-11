@@ -46,7 +46,7 @@ def test_model_router_applies_opus_override(settings):
 
     request = MessagesRequest(
         model="claude-opus-4-20250514",
-        max_tokens=100,
+        max_tokens=4096,
         messages=[Message(role="user", content="hello")],
     )
     routed = ModelRouter(settings).resolve_messages_request(request)

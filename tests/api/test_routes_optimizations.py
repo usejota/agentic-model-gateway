@@ -75,8 +75,28 @@ def test_create_message_quota_check_mock(client, mock_settings):
     app.dependency_overrides.clear()
 
 
-def test_create_message_title_generation_skip(client, mock_settings):
-    app.dependency_overrides[get_settings] = lambda: mock_settings
+def test_title_request_reaches_provider_path_by_default(client):
+    """Default settings: title requests must NOT get the canned skip response."""
+    payload = {
+        "model": "claude-3-sonnet",
+        "max_tokens": 100,
+        "messages": [{"role": "user", "content": "generate title"}],
+    }
+
+    with patch(
+        "free_claude_code.api.optimization_handlers.is_title_generation_request",
+        return_value=True,
+    ):
+        response = client.post("/v1/messages", json=payload)
+
+    assert "Conversation" not in response.text
+
+
+def test_create_message_title_generation_skip(mock_settings):
+    # Skip is off by default; build an app that opts in.
+    skip_app = create_test_app(mock_settings)
+    client = TestClient(skip_app)
+    skip_app.dependency_overrides[get_settings] = lambda: mock_settings
 
     payload = {
         "model": "claude-3-sonnet",
@@ -93,7 +113,7 @@ def test_create_message_title_generation_skip(client, mock_settings):
     assert response.status_code == 200
     assert "Conversation" in response.json()["content"][0]["text"]
 
-    app.dependency_overrides.clear()
+    skip_app.dependency_overrides.clear()
 
 
 def test_create_message_empty_messages_returns_400(client):

@@ -11,6 +11,12 @@ from free_claude_code.core.reasoning import (
     ReasoningPolicy,
 )
 
+# Anthropic protocol floor: extended thinking requires budget_tokens >= 1024
+# and budget_tokens < max_tokens. Background client calls (terminal titles,
+# topic detection) use tiny max_tokens; letting a reasoning-enabled route
+# think there burns the whole budget and returns empty text.
+MIN_REASONING_BUDGET_TOKENS = 1024
+
 
 def resolve_reasoning_policy(
     request: MessagesRequest,
@@ -23,8 +29,27 @@ def resolve_reasoning_policy(
     if preference is ReasoningPreference.OFF:
         return ReasoningPolicy.off()
     if preference is not ReasoningPreference.CLIENT:
-        return ReasoningPolicy.on(effort=ReasoningEffort(preference.value))
-    return client_reasoning_policy(request)
+        policy = ReasoningPolicy.on(effort=ReasoningEffort(preference.value))
+    else:
+        policy = client_reasoning_policy(request)
+    if policy.control is not ReasoningControl.OFF and not _reasoning_fits(
+        policy, request.max_tokens
+    ):
+        return ReasoningPolicy.off()
+    return policy
+
+
+def _reasoning_fits(policy: ReasoningPolicy, max_tokens: int | None) -> bool:
+    """Return whether the policy's reasoning budget leaves room for text."""
+
+    if max_tokens is None:
+        return True
+    budget = policy.budget_tokens
+    if budget is None and policy.effort is not None:
+        budget = policy.effort.budget_tokens
+    if budget is None:
+        budget = MIN_REASONING_BUDGET_TOKENS
+    return budget < max_tokens
 
 
 def client_reasoning_policy(request: MessagesRequest) -> ReasoningPolicy:

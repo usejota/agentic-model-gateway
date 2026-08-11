@@ -282,7 +282,9 @@ class Settings(BaseSettings):
 
     # ==================== Optimizations ====================
     enable_network_probe_mock: bool = True
-    enable_title_generation_skip: bool = True
+    # Off by default: skipping returns canned text instead of the JSON title
+    # Claude Code expects, which silently breaks terminal tab renaming.
+    enable_title_generation_skip: bool = False
     enable_suggestion_mode_skip: bool = True
     enable_filepath_extraction_mock: bool = True
 
