@@ -110,6 +110,7 @@ class StructuredReasoningStream:
 
     def __init__(self) -> None:
         self._text_source: Literal["native", "details"] | None = None
+        self._pending_preserved: list[dict[str, Any]] = []
 
     def events(
         self,
@@ -127,28 +128,45 @@ class StructuredReasoningStream:
                 self._text_source = "details"
 
         if self._text_source == "native" and native_reasoning:
+            yield from self.flush(ledger)
             yield from ledger.ensure_thinking_block()
             yield ledger.emit_thinking_delta(native_reasoning)
 
         for detail in details:
             preserved = _preserved_reasoning_detail(detail)
             if preserved:
-                yield from ledger.close_content_blocks()
-                index = ledger.blocks.allocate_index()
-                yield ledger.content_block_start(
-                    index,
-                    "redacted_thinking",
-                    data=preserved,
-                )
-                yield ledger.content_block_stop(index)
+                self._pending_preserved.append(dict(detail))
                 continue
             if self._text_source != "details":
                 continue
             text = _reasoning_detail_text(detail)
             if not text:
                 continue
+            yield from self.flush(ledger)
             yield from ledger.ensure_thinking_block()
             yield ledger.emit_thinking_delta(text)
+
+    def flush(self, ledger: AnthropicStreamLedger) -> Iterator[str]:
+        """Emit buffered opaque details as a single redacted_thinking block.
+
+        Chat clients repaint on every content block; one block per encrypted
+        detail (77+ per GPT-5.x turn) floods the transcript with empty renders.
+        The replay path accepts a JSON array in ``data`` and restores every
+        original detail.
+        """
+        if not self._pending_preserved:
+            return
+        details = self._pending_preserved
+        self._pending_preserved = []
+        payload: Any = details[0] if len(details) == 1 else details
+        yield from ledger.close_content_blocks()
+        index = ledger.blocks.allocate_index()
+        yield ledger.content_block_start(
+            index,
+            "redacted_thinking",
+            data=json.dumps(payload, separators=(",", ":")),
+        )
+        yield ledger.content_block_stop(index)
 
 
 def _reasoning_details(delta: Any) -> Sequence[Any]:
