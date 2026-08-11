@@ -11,6 +11,69 @@ from free_claude_code.core.anthropic.models import MessagesRequest
 from free_claude_code.core.anthropic.streaming import AnthropicStreamLedger
 from free_claude_code.core.reasoning import ReasoningPolicy
 
+from .error_text import error_status_code, error_text
+
+# Reasoning-detail kinds whose payload is opaque and endpoint-bound.
+_OPAQUE_REASONING_KINDS = ("encrypted", "redacted", "compaction")
+
+# OpenRouter pins an encrypted reasoning payload to the endpoint that produced it
+# and answers 404 once a later turn of the same conversation lands elsewhere (its
+# endpoint choice moves as the prompt grows). Replay is best-effort, so the fix is
+# to drop the opaque items and retry the turn once without them.
+_ENCRYPTED_REPLAY_REJECTION_MARKERS = ("encrypted reasoning", "encrypted payload")
+
+
+def is_encrypted_reasoning_replay_rejection(error: Exception) -> bool:
+    """Return whether upstream refused a replayed opaque reasoning payload."""
+    if error_status_code(error) != 404:
+        return False
+    text = error_text(error)
+    return any(marker in text for marker in _ENCRYPTED_REPLAY_REJECTION_MARKERS)
+
+
+def clone_without_encrypted_reasoning(
+    body: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Return a clone with replayed opaque reasoning details removed.
+
+    Returns ``None`` when the body replays none, so callers skip a pointless
+    identical retry.
+    """
+    messages = body.get("messages")
+    if not isinstance(messages, list):
+        return None
+
+    retry_messages: list[Any] = []
+    stripped = False
+    for message in messages:
+        details = (
+            message.get("reasoning_details") if isinstance(message, dict) else None
+        )
+        if not isinstance(details, list) or not any(
+            _is_opaque_reasoning_detail(detail) for detail in details
+        ):
+            retry_messages.append(message)
+            continue
+        stripped = True
+        retained = [
+            detail for detail in details if not _is_opaque_reasoning_detail(detail)
+        ]
+        retry_message = dict(message)
+        if retained:
+            retry_message["reasoning_details"] = retained
+        else:
+            retry_message.pop("reasoning_details", None)
+        retry_messages.append(retry_message)
+
+    if not stripped:
+        return None
+    return {**body, "messages": retry_messages}
+
+
+def _is_opaque_reasoning_detail(detail: Any) -> bool:
+    kind = str(_field(detail, "type") or "").lower()
+    return any(opaque in kind for opaque in _OPAQUE_REASONING_KINDS)
+
 
 def apply_reasoning_details_replay(
     body: dict[str, Any], request: MessagesRequest, _policy: ReasoningPolicy
