@@ -120,6 +120,11 @@ def iter_heuristic_tool_use_sse(
         if task_input.get("run_in_background") is not False:
             task_input["run_in_background"] = False
     yield from ledger.close_content_blocks()
+    # Heuristic tools arrive complete, so they open and close inline instead of
+    # going through start_tool_block: a blocks.tool_states entry would make
+    # close_all_blocks emit a second content_block_stop for the same index.
+    # content_block_start still records the block, so has_emitted_tool_block()
+    # and can_salvage_tool_use() see it.
     block_idx = ledger.blocks.allocate_index()
     yield ledger.content_block_start(
         block_idx,

@@ -5,7 +5,13 @@ from unittest.mock import patch
 
 import pytest
 
+from free_claude_code.core.anthropic.server_tool_sse import (
+    SERVER_TOOL_USE,
+    WEB_FETCH_TOOL_RESULT,
+    WEB_SEARCH_TOOL_RESULT,
+)
 from free_claude_code.core.anthropic.streaming import (
+    EMPTY_TURN_FILLER,
     AnthropicStreamLedger,
     StreamBlockLedger,
     ToolSchema,
@@ -115,6 +121,52 @@ def test_tool_use_fallback_stays_tool_use_with_tool_block() -> None:
 
     assert ledger.final_stop_reason("tool_use") == "tool_use"
     assert ledger.final_stop_reason("end_turn") == "tool_use"
+
+
+def test_needs_visible_content_true_for_whitespace_only_text() -> None:
+    ledger = AnthropicStreamLedger("msg_1", "model")
+    ledger.start_thinking_block()
+    ledger.emit_thinking_delta("hidden reasoning")
+    list(ledger.ensure_text_block())
+    ledger.emit_text_delta(" ")
+
+    assert ledger.needs_visible_content()
+
+    events = list(ledger.ensure_visible_content())
+
+    assert events, "filler must be emitted for whitespace-only text"
+    assert ledger.accumulated_text == " " + EMPTY_TURN_FILLER
+    assert not ledger.needs_visible_content()
+
+
+def test_needs_visible_content_false_for_non_whitespace_text() -> None:
+    ledger = AnthropicStreamLedger("msg_1", "model")
+    ledger.start_text_block()
+    ledger.emit_text_delta("answer")
+
+    assert not ledger.needs_visible_content()
+    assert list(ledger.ensure_visible_content()) == []
+
+
+@pytest.mark.parametrize(
+    "block_type",
+    [SERVER_TOOL_USE, WEB_SEARCH_TOOL_RESULT, WEB_FETCH_TOOL_RESULT],
+)
+def test_needs_visible_content_false_for_server_tool_blocks(block_type: str) -> None:
+    ledger = AnthropicStreamLedger("msg_1", "model")
+    ledger.content_block_start(0, block_type)
+    ledger.content_block_stop(0)
+
+    assert not ledger.needs_visible_content()
+    assert list(ledger.ensure_visible_content()) == []
+
+
+def test_needs_visible_content_true_for_thinking_only() -> None:
+    ledger = AnthropicStreamLedger("msg_1", "model")
+    ledger.start_thinking_block()
+    ledger.emit_thinking_delta("hidden")
+
+    assert ledger.needs_visible_content()
 
 
 def test_close_unclosed_blocks_closes_each_block_once() -> None:

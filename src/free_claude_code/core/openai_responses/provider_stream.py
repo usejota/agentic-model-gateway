@@ -196,11 +196,8 @@ class ResponsesProviderStream:
     def _finish(self, data: dict[str, Any], *, incomplete: bool) -> list[str]:
         response = data.get("response")
         response = response if isinstance(response, dict) else {}
-        events = list(self.ledger.close_all_blocks())
-        if not self.ledger.has_content_block():
-            events.extend(self.ledger.ensure_text_block())
-            events.append(self.ledger.emit_text_delta(" "))
-            events.append(self.ledger.stop_text_block())
+        events = list(self.ledger.ensure_visible_content())
+        events.extend(self.ledger.close_all_blocks())
         usage = response.get("usage")
         usage = usage if isinstance(usage, dict) else {}
         input_tokens = _integer(usage.get("input_tokens"))

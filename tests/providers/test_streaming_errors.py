@@ -15,6 +15,7 @@ from free_claude_code.core.anthropic.stream_contracts import (
     parse_sse_text,
 )
 from free_claude_code.core.anthropic.streaming import (
+    EMPTY_TURN_FILLER,
     AnthropicStreamLedger,
     make_response_recovery_body,
     make_text_recovery_body,
@@ -348,8 +349,8 @@ class TestStreamingExceptionHandling:
         )
 
     @pytest.mark.asyncio
-    async def test_empty_response_gets_space(self):
-        """Empty response with no text/tools gets a single space text block."""
+    async def test_empty_response_gets_visible_filler(self):
+        """Empty response with no text/tools gets a non-whitespace text block."""
         provider = _make_provider()
         request = _make_request()
 
@@ -379,7 +380,8 @@ class TestStreamingExceptionHandling:
             for event in parsed
             if event.data.get("delta", {}).get("type") == "text_delta"
         ]
-        assert text_deltas == [" "]
+        assert text_deltas == [EMPTY_TURN_FILLER]
+        assert text_deltas[0].strip(), "filler must not be whitespace-only"
         assert parsed[-1].event == "message_stop"
 
     @pytest.mark.asyncio
@@ -417,8 +419,14 @@ class TestStreamingExceptionHandling:
         assert '"output_tokens": null' not in "".join(events)
 
     @pytest.mark.asyncio
-    async def test_reasoning_only_stream_emits_thinking_without_text(self):
-        """Reasoning-only turns must not synthesize whitespace-only assistant text."""
+    async def test_reasoning_only_stream_keeps_a_visible_block(self):
+        """Reasoning-only turns must still close with a client-visible block.
+
+        Thinking alone leaves the client nothing to render and no tool to run, so
+        Claude Code discards the turn and prints "[Tool use interrupted]". The
+        filler must not be whitespace either: Anthropic rejects whitespace-only
+        text blocks when the transcript is replayed.
+        """
         provider = _make_provider()
         request = _make_request()
         chunk1 = _make_chunk(reasoning_content="reasoning only from provider")
@@ -441,14 +449,52 @@ class TestStreamingExceptionHandling:
             for event in parsed
             if event.event == "content_block_start"
         ]
-        assert [block.get("type") for block in block_starts] == ["thinking"]
+        assert [block.get("type") for block in block_starts] == ["thinking", "text"]
         assert any(
             event.data.get("delta", {}).get("type") == "thinking_delta"
             for event in parsed
         )
-        assert not any(
-            event.data.get("delta", {}).get("type") == "text_delta" for event in parsed
-        )
+        text_deltas = [
+            event.data.get("delta", {}).get("text")
+            for event in parsed
+            if event.data.get("delta", {}).get("type") == "text_delta"
+        ]
+        assert text_deltas == [EMPTY_TURN_FILLER]
+        assert text_deltas[0].strip(), "filler must not be whitespace-only"
+        assert parsed[-1].event == "message_stop"
+
+    @pytest.mark.asyncio
+    async def test_whitespace_only_text_still_gets_visible_filler(self):
+        """Upstream text of only whitespace is as invisible as no text at all.
+
+        A text block whose accumulated content strips to empty renders as
+        nothing on the client and is rejected by Anthropic on transcript
+        replay, so the filler must still be appended.
+        """
+        provider = _make_provider()
+        request = _make_request()
+        chunk1 = _make_chunk(reasoning_content="reasoning only from provider")
+        chunk2 = _make_chunk(content=" ")
+        chunk3 = _make_chunk(finish_reason="stop")
+        stream_mock = AsyncStreamMock([chunk1, chunk2, chunk3])
+        with (
+            patch.object(
+                provider._client.chat.completions,
+                "create",
+                new_callable=AsyncMock,
+                return_value=stream_mock,
+            ),
+        ):
+            events = await _collect_stream(provider, request)
+
+        parsed = parse_sse_text("".join(events))
+        assert_anthropic_stream_contract(parsed)
+        text_deltas = [
+            event.data.get("delta", {}).get("text")
+            for event in parsed
+            if event.data.get("delta", {}).get("type") == "text_delta"
+        ]
+        assert text_deltas == [" ", EMPTY_TURN_FILLER]
         assert parsed[-1].event == "message_stop"
 
     @pytest.mark.asyncio
@@ -483,6 +529,13 @@ class TestStreamingExceptionHandling:
             event for event in parsed if event.event == "message_delta"
         )
         assert message_delta.data["delta"]["stop_reason"] == "end_turn"
+        # The exact shape behind "[Tool use interrupted]": a tool finish reason,
+        # no tool block, so the turn must still carry visible text.
+        assert [
+            event.data.get("delta", {}).get("text")
+            for event in parsed
+            if event.data.get("delta", {}).get("type") == "text_delta"
+        ] == [EMPTY_TURN_FILLER]
         assert parsed[-1].event == "message_stop"
 
     @pytest.mark.asyncio
@@ -1257,6 +1310,46 @@ class TestStreamingExceptionHandling:
         recovery_body = mock_collect.await_args.args[0]
         assert "hidden reasoning" in recovery_body["messages"][-1]["content"]
         assert mock_collect.await_args.kwargs["include_reasoning"] is True
+
+    @pytest.mark.asyncio
+    async def test_recovery_recovering_only_thinking_keeps_a_visible_block(self):
+        """Recovery that salvages only thinking must still close with visible text.
+
+        Without this the turn reaches Claude Code carrying nothing renderable and
+        no tool to run, and the client replaces it with "[Tool use interrupted]".
+        """
+        runner = _make_stream_runner(
+            _make_provider(), request=_make_request(), request_id="req_recovery"
+        )
+        ledger = AnthropicStreamLedger("msg_recovery", "model")
+        ledger.start_thinking_block()
+        ledger.emit_thinking_delta("hidden reasoning")
+
+        with patch.object(
+            runner,
+            "_collect_recovery_output",
+            new_callable=AsyncMock,
+            return_value=_recovery_output(text="", thinking="hidden reasoning more"),
+        ):
+            retry_session = runner._provider._admission.new_retry_session()
+            events = await runner._recovery_events(
+                body={"messages": [{"role": "user", "content": "hello"}]},
+                ledger=ledger,
+                error=TimeoutError("cutoff"),
+                tool_argument_alias_buffers={},
+                output_reasoning=True,
+                retry_session=retry_session,
+            )
+
+        assert events is not None
+        parsed = parse_sse_text("".join(events))
+        text_deltas = [
+            event.data.get("delta", {}).get("text")
+            for event in parsed
+            if event.data.get("delta", {}).get("type") == "text_delta"
+        ]
+        assert text_deltas == [EMPTY_TURN_FILLER]
+        assert text_deltas[0].strip(), "filler must not be whitespace-only"
 
     @pytest.mark.asyncio
     async def test_primary_stream_closes_when_iteration_fails(self):

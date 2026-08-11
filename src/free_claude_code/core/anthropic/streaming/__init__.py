@@ -8,7 +8,13 @@ from .emitter import (
     format_sse_event,
     map_stop_reason,
 )
-from .ledger import AnthropicStreamLedger, StreamBlockLedger, ToolBlockState
+from .ledger import (
+    EMPTY_TURN_FILLER,
+    VISIBLE_NON_TEXT_BLOCK_TYPES,
+    AnthropicStreamLedger,
+    StreamBlockLedger,
+    ToolBlockState,
+)
 from .recovery import (
     ToolSchema,
     accept_tool_json_repair,
@@ -22,6 +28,8 @@ from .recovery import (
 
 __all__ = [
     "ANTHROPIC_SSE_RESPONSE_HEADERS",
+    "EMPTY_TURN_FILLER",
+    "VISIBLE_NON_TEXT_BLOCK_TYPES",
     "AnthropicSseEmitter",
     "AnthropicStreamLedger",
     "StreamBlockLedger",
