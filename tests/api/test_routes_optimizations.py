@@ -75,8 +75,11 @@ def test_create_message_quota_check_mock(client, mock_settings):
     app.dependency_overrides.clear()
 
 
-def test_create_message_title_generation_skip(client, mock_settings):
-    app.dependency_overrides[get_settings] = lambda: mock_settings
+def test_create_message_title_generation_skip(mock_settings):
+    # Skip is off by default; build an app that opts in.
+    skip_app = create_test_app(mock_settings)
+    client = TestClient(skip_app)
+    skip_app.dependency_overrides[get_settings] = lambda: mock_settings
 
     payload = {
         "model": "claude-3-sonnet",
@@ -93,7 +96,7 @@ def test_create_message_title_generation_skip(client, mock_settings):
     assert response.status_code == 200
     assert "Conversation" in response.json()["content"][0]["text"]
 
-    app.dependency_overrides.clear()
+    skip_app.dependency_overrides.clear()
 
 
 def test_create_message_empty_messages_returns_400(client):

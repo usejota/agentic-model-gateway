@@ -503,7 +503,7 @@ _NON_PROVIDER_FIELDS: tuple[ConfigFieldSpec, ...] = (
         "runtime",
         "boolean",
         settings_attr="enable_title_generation_skip",
-        default="true",
+        default="false",
         advanced=True,
     ),
     ConfigFieldSpec(

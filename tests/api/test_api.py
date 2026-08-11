@@ -270,7 +270,7 @@ def test_model_mapping(client: TestClient):
     payload_haiku = {
         "model": "claude-3-haiku-20240307",
         "messages": [{"role": "user", "content": "Hi"}],
-        "max_tokens": 100,
+        "max_tokens": 4096,
         "stream": True,
     }
     client.post("/v1/messages", json=payload_haiku)
