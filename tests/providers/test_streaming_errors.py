@@ -349,40 +349,97 @@ class TestStreamingExceptionHandling:
         )
 
     @pytest.mark.asyncio
-    async def test_empty_response_gets_visible_filler(self):
-        """Empty response with no text/tools gets a non-whitespace text block."""
+    async def test_empty_completion_becomes_retryable_failure(self):
+        """An upstream stop with no visible content is retried, then fails.
+
+        An empty completed turn is not a valid answer: closing it with a
+        placeholder tells the client the turn succeeded. The runner must retry
+        through recovery and, when every attempt stays empty, raise a
+        classified failure instead of emitting filler.
+        """
         provider = _make_provider()
         request = _make_request()
 
-        empty_chunk = _make_chunk(finish_reason="stop")
-        stream_mock = AsyncStreamMock([empty_chunk])
+        stream_mock = AsyncStreamMock([_make_chunk(finish_reason="stop")])
 
-        with (
-            patch.object(
-                provider._client.chat.completions,
-                "create",
-                new_callable=AsyncMock,
-                return_value=stream_mock,
-            ),
-        ):
+        with patch.object(
+            provider._client.chat.completions,
+            "create",
+            new_callable=AsyncMock,
+            return_value=stream_mock,
+        ) as create:
+            error = await _collect_stream_error(provider, request)
+
+        assert create.call_count > 1
+        assert "without client-visible content" in error.message
+
+    @pytest.mark.asyncio
+    async def test_empty_completion_recovers_when_retry_returns_content(self):
+        """A transient empty stop succeeds invisibly when the retry has content."""
+        provider = _make_provider()
+        request = _make_request()
+
+        empty = AsyncStreamMock([_make_chunk(finish_reason="stop")])
+        full = AsyncStreamMock(
+            [
+                _make_chunk(content="real answer"),
+                _make_chunk(finish_reason="stop"),
+            ]
+        )
+
+        with patch.object(
+            provider._client.chat.completions,
+            "create",
+            new_callable=AsyncMock,
+            side_effect=[empty, full],
+        ) as create:
             events = await _collect_stream(provider, request)
 
+        assert create.call_count == 2
         parsed = parse_sse_text("".join(events))
         assert_anthropic_stream_contract(parsed)
-        text_starts = [
-            event.data.get("content_block", {})
-            for event in parsed
-            if event.event == "content_block_start"
-        ]
-        assert [block.get("type") for block in text_starts] == ["text"]
         text_deltas = [
             event.data.get("delta", {}).get("text")
             for event in parsed
             if event.data.get("delta", {}).get("type") == "text_delta"
         ]
-        assert text_deltas == [EMPTY_TURN_FILLER]
-        assert text_deltas[0].strip(), "filler must not be whitespace-only"
+        assert text_deltas == ["real answer"]
         assert parsed[-1].event == "message_stop"
+
+    @pytest.mark.asyncio
+    async def test_pending_heuristic_tool_call_survives_completion_guard(self):
+        """A text-form tool call completed at flush must not trip the empty guard."""
+        provider = _make_provider()
+        request = _make_request()
+        stream_mock = AsyncStreamMock(
+            [
+                _make_chunk(content="● <function=Bash><parameter=command>ls -la"),
+                _make_chunk(finish_reason="stop"),
+            ]
+        )
+
+        with patch.object(
+            provider._client.chat.completions,
+            "create",
+            new_callable=AsyncMock,
+            return_value=stream_mock,
+        ) as create:
+            events = await _collect_stream(provider, request)
+
+        assert create.call_count == 1
+        parsed = parse_sse_text("".join(events))
+        assert_anthropic_stream_contract(parsed)
+        tool_starts = [
+            event.data.get("content_block", {})
+            for event in parsed
+            if event.event == "content_block_start"
+            and event.data.get("content_block", {}).get("type") == "tool_use"
+        ]
+        assert [block.get("name") for block in tool_starts] == ["Bash"]
+        message_delta = next(
+            event for event in parsed if event.event == "message_delta"
+        )
+        assert message_delta.data["delta"]["stop_reason"] == "tool_use"
 
     @pytest.mark.asyncio
     async def test_upstream_completion_tokens_null_emits_int_usage(self):
@@ -419,57 +476,37 @@ class TestStreamingExceptionHandling:
         assert '"output_tokens": null' not in "".join(events)
 
     @pytest.mark.asyncio
-    async def test_reasoning_only_stream_keeps_a_visible_block(self):
-        """Reasoning-only turns must still close with a client-visible block.
+    async def test_reasoning_only_stream_becomes_retryable_failure(self):
+        """Reasoning-only turns are retried, then fail instead of closing empty.
 
         Thinking alone leaves the client nothing to render and no tool to run, so
-        Claude Code discards the turn and prints "[Tool use interrupted]". The
-        filler must not be whitespace either: Anthropic rejects whitespace-only
-        text blocks when the transcript is replayed.
+        Claude Code discards the turn and prints "[Tool use interrupted]". Rather
+        than padding such a turn with filler, the runner treats it as a retryable
+        provider failure.
         """
         provider = _make_provider()
         request = _make_request()
         chunk1 = _make_chunk(reasoning_content="reasoning only from provider")
         chunk2 = _make_chunk(finish_reason="stop")
         stream_mock = AsyncStreamMock([chunk1, chunk2])
-        with (
-            patch.object(
-                provider._client.chat.completions,
-                "create",
-                new_callable=AsyncMock,
-                return_value=stream_mock,
-            ),
-        ):
-            events = await _collect_stream(provider, request)
+        with patch.object(
+            provider._client.chat.completions,
+            "create",
+            new_callable=AsyncMock,
+            return_value=stream_mock,
+        ) as create:
+            error = await _collect_stream_error(provider, request)
 
-        parsed = parse_sse_text("".join(events))
-        assert_anthropic_stream_contract(parsed)
-        block_starts = [
-            event.data.get("content_block", {})
-            for event in parsed
-            if event.event == "content_block_start"
-        ]
-        assert [block.get("type") for block in block_starts] == ["thinking", "text"]
-        assert any(
-            event.data.get("delta", {}).get("type") == "thinking_delta"
-            for event in parsed
-        )
-        text_deltas = [
-            event.data.get("delta", {}).get("text")
-            for event in parsed
-            if event.data.get("delta", {}).get("type") == "text_delta"
-        ]
-        assert text_deltas == [EMPTY_TURN_FILLER]
-        assert text_deltas[0].strip(), "filler must not be whitespace-only"
-        assert parsed[-1].event == "message_stop"
+        assert create.call_count > 1
+        assert "without client-visible content" in error.message
 
     @pytest.mark.asyncio
-    async def test_whitespace_only_text_still_gets_visible_filler(self):
+    async def test_whitespace_only_text_becomes_retryable_failure(self):
         """Upstream text of only whitespace is as invisible as no text at all.
 
         A text block whose accumulated content strips to empty renders as
         nothing on the client and is rejected by Anthropic on transcript
-        replay, so the filler must still be appended.
+        replay, so the turn is retried and then failed rather than padded.
         """
         provider = _make_provider()
         request = _make_request()
@@ -477,29 +514,25 @@ class TestStreamingExceptionHandling:
         chunk2 = _make_chunk(content=" ")
         chunk3 = _make_chunk(finish_reason="stop")
         stream_mock = AsyncStreamMock([chunk1, chunk2, chunk3])
-        with (
-            patch.object(
-                provider._client.chat.completions,
-                "create",
-                new_callable=AsyncMock,
-                return_value=stream_mock,
-            ),
-        ):
-            events = await _collect_stream(provider, request)
+        with patch.object(
+            provider._client.chat.completions,
+            "create",
+            new_callable=AsyncMock,
+            return_value=stream_mock,
+        ) as create:
+            error = await _collect_stream_error(provider, request)
 
-        parsed = parse_sse_text("".join(events))
-        assert_anthropic_stream_contract(parsed)
-        text_deltas = [
-            event.data.get("delta", {}).get("text")
-            for event in parsed
-            if event.data.get("delta", {}).get("type") == "text_delta"
-        ]
-        assert text_deltas == [" ", EMPTY_TURN_FILLER]
-        assert parsed[-1].event == "message_stop"
+        assert create.call_count > 1
+        assert "without client-visible content" in error.message
 
     @pytest.mark.asyncio
-    async def test_reasoning_only_tool_calls_finish_reason_downgrades_stop_reason(self):
-        """A tool finish without a tool block must not advertise tool_use."""
+    async def test_tool_finish_without_tool_block_becomes_retryable_failure(self):
+        """A tool finish with no tool block is retried, then fails honestly.
+
+        finish_reason=tool_calls with zero emitted tool blocks is the exact shape
+        behind "[Tool use interrupted]". Downgrading the stop reason while padding
+        the turn hid the upstream failure; the runner now retries and then raises.
+        """
         provider = _make_provider()
         request = _make_request()
         stream_mock = AsyncStreamMock(
@@ -508,35 +541,16 @@ class TestStreamingExceptionHandling:
                 _make_chunk(finish_reason="tool_calls"),
             ]
         )
-        with (
-            patch.object(
-                provider._client.chat.completions,
-                "create",
-                new_callable=AsyncMock,
-                return_value=stream_mock,
-            ),
-        ):
-            events = await _collect_stream(provider, request)
+        with patch.object(
+            provider._client.chat.completions,
+            "create",
+            new_callable=AsyncMock,
+            return_value=stream_mock,
+        ) as create:
+            error = await _collect_stream_error(provider, request)
 
-        parsed = parse_sse_text("".join(events))
-        assert_anthropic_stream_contract(parsed)
-        assert not any(
-            event.event == "content_block_start"
-            and event.data.get("content_block", {}).get("type") == "tool_use"
-            for event in parsed
-        )
-        message_delta = next(
-            event for event in parsed if event.event == "message_delta"
-        )
-        assert message_delta.data["delta"]["stop_reason"] == "end_turn"
-        # The exact shape behind "[Tool use interrupted]": a tool finish reason,
-        # no tool block, so the turn must still carry visible text.
-        assert [
-            event.data.get("delta", {}).get("text")
-            for event in parsed
-            if event.data.get("delta", {}).get("type") == "text_delta"
-        ] == [EMPTY_TURN_FILLER]
-        assert parsed[-1].event == "message_stop"
+        assert create.call_count > 1
+        assert "without client-visible content" in error.message
 
     @pytest.mark.asyncio
     async def test_stream_with_thinking_content(self):
@@ -590,8 +604,10 @@ class TestStreamingExceptionHandling:
         assert "The answer" in event_text
 
     @pytest.mark.asyncio
-    async def test_stream_with_empty_reasoning_content_starts_thinking_block_only(self):
-        """Empty reasoning_content is stateful but must not emit visible thinking text."""
+    async def test_stream_with_empty_reasoning_content_becomes_retryable_failure(
+        self,
+    ):
+        """An empty reasoning-only completion is retried, then fails honestly."""
         provider = _make_provider()
         request = _make_request()
 
@@ -599,32 +615,16 @@ class TestStreamingExceptionHandling:
         chunk2 = _make_chunk(finish_reason="stop")
         stream_mock = AsyncStreamMock([chunk1, chunk2])
 
-        with (
-            patch.object(
-                provider._client.chat.completions,
-                "create",
-                new_callable=AsyncMock,
-                return_value=stream_mock,
-            ),
-        ):
-            events = await _collect_stream(provider, request)
+        with patch.object(
+            provider._client.chat.completions,
+            "create",
+            new_callable=AsyncMock,
+            return_value=stream_mock,
+        ) as create:
+            error = await _collect_stream_error(provider, request)
 
-        parsed = parse_sse_text("".join(events))
-        thinking_starts = [
-            event
-            for event in parsed
-            if event.event == "content_block_start"
-            and event.data["content_block"]["type"] == "thinking"
-        ]
-        thinking_deltas = [
-            event
-            for event in parsed
-            if event.event == "content_block_delta"
-            and event.data["delta"]["type"] == "thinking_delta"
-        ]
-        assert len(thinking_starts) == 1
-        assert thinking_deltas == []
-        assert parsed[-1].event == "message_stop"
+        assert create.call_count > 1
+        assert "without client-visible content" in error.message
 
     @pytest.mark.asyncio
     async def test_stream_with_reasoning_content_suppressed_when_disabled(self):
@@ -1958,8 +1958,11 @@ class TestStreamChunkEdgeCases:
         empty_choices_chunk.choices = []
         empty_choices_chunk.usage = None
 
+        content_chunk = _make_chunk(content="ok")
         finish_chunk = _make_chunk(finish_reason="stop")
-        stream_mock = AsyncStreamMock([empty_choices_chunk, finish_chunk])
+        stream_mock = AsyncStreamMock(
+            [empty_choices_chunk, content_chunk, finish_chunk]
+        )
 
         with (
             patch.object(
@@ -1988,8 +1991,9 @@ class TestStreamChunkEdgeCases:
         choice.finish_reason = None
         none_delta_chunk.choices = [choice]
 
+        content_chunk = _make_chunk(content="ok")
         finish_chunk = _make_chunk(finish_reason="stop")
-        stream_mock = AsyncStreamMock([none_delta_chunk, finish_chunk])
+        stream_mock = AsyncStreamMock([none_delta_chunk, content_chunk, finish_chunk])
 
         with (
             patch.object(

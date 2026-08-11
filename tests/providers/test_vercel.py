@@ -129,7 +129,7 @@ async def test_stream_response_reasoning_content(vercel_provider):
     mock_chunk.choices = [
         MagicMock(
             delta=MagicMock(
-                content=None,
+                content="Answer",
                 reasoning_content="Thinking via gateway",
                 tool_calls=None,
             ),

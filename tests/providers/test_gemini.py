@@ -513,7 +513,7 @@ async def test_stream_response_reasoning_content(gemini_provider):
     mock_chunk.choices = [
         MagicMock(
             delta=MagicMock(
-                content=None,
+                content="Answer",
                 reasoning_content="Thinking...",
                 tool_calls=None,
             ),

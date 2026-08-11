@@ -200,7 +200,7 @@ async def test_stream_response_reasoning_content(huggingface_provider):
     mock_chunk.choices = [
         MagicMock(
             delta=MagicMock(
-                content=None,
+                content="Answer",
                 reasoning_content="Thinking via router",
                 tool_calls=None,
             ),

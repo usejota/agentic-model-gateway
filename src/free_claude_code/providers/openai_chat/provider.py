@@ -50,6 +50,7 @@ from free_claude_code.providers.http import (
 )
 from free_claude_code.providers.model_listing import extract_openai_model_infos
 from free_claude_code.providers.stream_recovery import (
+    EmptyProviderCompletionError,
     RecoveryController,
     RecoveryFailureAction,
     TruncatedProviderStreamError,
@@ -575,6 +576,16 @@ class _OpenAIChatStreamRunner:
                 ):
                     raise TruncatedProviderStreamError(
                         "Provider stream ended with an incomplete tool name."
+                    )
+                if (
+                    ledger.needs_visible_content()
+                    and not heuristic_parser.has_pending_tool_call
+                ):
+                    # An empty completed turn is not a valid answer: retry it
+                    # through the recovery machinery instead of closing with a
+                    # placeholder that tells the client the turn succeeded.
+                    raise EmptyProviderCompletionError(
+                        "Provider stream completed without client-visible content."
                     )
                 break
 
