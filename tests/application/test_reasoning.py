@@ -245,12 +245,40 @@ def test_tiny_max_tokens_overrides_client_enable() -> None:
     assert policy == ReasoningPolicy.off()
 
 
-def test_max_tokens_above_floor_keeps_route_reasoning() -> None:
+def test_effort_budget_that_cannot_fit_disables_reasoning() -> None:
+    """HIGH maps to a 2048 numeric budget; 1025 max_tokens cannot fit it."""
+
     policy = resolve_reasoning_policy(
         _request(max_tokens=1025), ReasoningPreference.HIGH
     )
 
+    assert policy == ReasoningPolicy.off()
+
+
+def test_max_tokens_above_effort_budget_keeps_route_reasoning() -> None:
+    policy = resolve_reasoning_policy(
+        _request(max_tokens=2049), ReasoningPreference.HIGH
+    )
+
     assert policy == ReasoningPolicy.on(effort=ReasoningEffort.HIGH)
+
+
+def test_client_budget_that_cannot_fit_disables_reasoning() -> None:
+    policy = resolve_reasoning_policy(
+        _request(max_tokens=4096, thinking={"type": "enabled", "budget_tokens": 4096}),
+        ReasoningPreference.CLIENT,
+    )
+
+    assert policy == ReasoningPolicy.off()
+
+
+def test_client_budget_below_max_tokens_keeps_reasoning() -> None:
+    policy = resolve_reasoning_policy(
+        _request(max_tokens=4097, thinking={"type": "enabled", "budget_tokens": 4096}),
+        ReasoningPreference.CLIENT,
+    )
+
+    assert policy == ReasoningPolicy.on(budget_tokens=4096)
 
 
 def test_missing_max_tokens_keeps_route_reasoning() -> None:
