@@ -220,3 +220,40 @@ def test_positive_budget_tokens_enables_reasoning_with_that_budget() -> None:
     policy = client_reasoning_policy(_request(thinking={"budget_tokens": 1234}))
 
     assert policy == ReasoningPolicy.on(budget_tokens=1234)
+
+
+@pytest.mark.parametrize(
+    "preference",
+    [ReasoningPreference.CLIENT, ReasoningPreference.HIGH, ReasoningPreference.MAX],
+)
+def test_tiny_max_tokens_forces_reasoning_off(
+    preference: ReasoningPreference,
+) -> None:
+    """Background calls (terminal title) cannot fit thinking plus text."""
+
+    policy = resolve_reasoning_policy(_request(max_tokens=1024), preference)
+
+    assert policy == ReasoningPolicy.off()
+
+
+def test_tiny_max_tokens_overrides_client_enable() -> None:
+    policy = resolve_reasoning_policy(
+        _request(max_tokens=512, thinking={"type": "enabled", "budget_tokens": 4096}),
+        ReasoningPreference.CLIENT,
+    )
+
+    assert policy == ReasoningPolicy.off()
+
+
+def test_max_tokens_above_floor_keeps_route_reasoning() -> None:
+    policy = resolve_reasoning_policy(
+        _request(max_tokens=1025), ReasoningPreference.HIGH
+    )
+
+    assert policy == ReasoningPolicy.on(effort=ReasoningEffort.HIGH)
+
+
+def test_missing_max_tokens_keeps_route_reasoning() -> None:
+    policy = resolve_reasoning_policy(_request(), ReasoningPreference.HIGH)
+
+    assert policy == ReasoningPolicy.on(effort=ReasoningEffort.HIGH)

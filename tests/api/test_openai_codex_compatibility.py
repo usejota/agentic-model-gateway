@@ -98,7 +98,7 @@ async def test_messages_accepts_current_claude_controls_for_openai_provider() ->
                 "/v1/messages",
                 json={
                     "model": "openai/gpt-test",
-                    "max_tokens": 1024,
+                    "max_tokens": 4096,
                     "messages": [{"role": "user", "content": "hello"}],
                     "metadata": {"user_id": "example-user"},
                     "thinking": {"type": "adaptive", "display": "omitted"},
