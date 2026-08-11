@@ -324,7 +324,7 @@ async def test_stream_response_thinking_reasoning_content(nim_provider):
     mock_chunk = MagicMock()
     mock_chunk.choices = [
         MagicMock(
-            delta=MagicMock(content=None, reasoning_content="Thinking..."),
+            delta=MagicMock(content="Answer", reasoning_content="Thinking..."),
             finish_reason=None,
         )
     ]

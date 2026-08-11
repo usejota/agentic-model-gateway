@@ -43,6 +43,11 @@ class HeuristicToolParser:
         self._current_function_name = None
         self._current_parameters = {}
 
+    @property
+    def has_pending_tool_call(self) -> bool:
+        """Return whether flush() can still materialize a text-form tool call."""
+        return self._state is not ParserState.TEXT
+
     def _extract_web_tool_json_calls(self) -> tuple[str, list[dict[str, Any]]]:
         detected_tools: list[dict[str, Any]] = []
 

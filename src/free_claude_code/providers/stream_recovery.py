@@ -20,6 +20,10 @@ class TruncatedProviderStreamError(RetryableProviderProtocolError):
     """An upstream stream ended without its required terminal marker."""
 
 
+class EmptyProviderCompletionError(RetryableProviderProtocolError):
+    """An upstream stream completed without any client-visible content."""
+
+
 class RecoveryFailureAction(StrEnum):
     """How one provider stream should respond to an upstream failure."""
 

@@ -260,7 +260,7 @@ async def test_stream_response_reasoning_content(cohere_provider):
     mock_chunk.choices = [
         MagicMock(
             delta=MagicMock(
-                content=None,
+                content="Answer",
                 reasoning_content="Thinking via Cohere",
                 tool_calls=None,
             ),

@@ -239,7 +239,7 @@ async def test_stream_maps_cloudflare_reasoning_delta_to_thinking(
     cloudflare_provider: CloudflareProvider,
 ) -> None:
     delta = SimpleNamespace(
-        content=None,
+        content="Answer",
         reasoning_content=None,
         reasoning="Cloudflare reasoning",
         tool_calls=None,

@@ -230,7 +230,7 @@ async def test_stream_response_reasoning_content(mistral_provider):
     mock_chunk.choices = [
         MagicMock(
             delta=MagicMock(
-                content=None,
+                content="Answer",
                 reasoning_content="Thinking...",
                 tool_calls=None,
             ),
@@ -266,7 +266,8 @@ async def test_stream_response_native_mistral_thinking_chunk(mistral_provider):
                     {
                         "type": "thinking",
                         "thinking": [{"type": "text", "text": "Native thought."}],
-                    }
+                    },
+                    {"type": "text", "text": "Native answer."},
                 ],
                 reasoning_content=None,
                 tool_calls=None,

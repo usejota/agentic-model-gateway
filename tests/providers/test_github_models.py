@@ -285,7 +285,7 @@ async def test_stream_response_reasoning_content(
     github_models_provider: GitHubModelsProvider,
 ) -> None:
     delta = SimpleNamespace(
-        content=None,
+        content="Answer",
         reasoning_content="Thinking via GitHub Models",
         tool_calls=None,
     )
