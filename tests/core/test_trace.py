@@ -184,3 +184,23 @@ async def test_traced_async_stream_closes_quietly_on_generator_exit(tmp_path) ->
     events = {row.get("event") for row in rows}
     assert "stream.completed" not in events
     assert "stream.interrupted" not in events
+
+
+def test_trace_event_with_warning_level_survives_default_info_logs(tmp_path) -> None:
+    log_file = str(tmp_path / "warn.log")
+    configure_logging(log_file, force=True)
+
+    trace_event(
+        stage="provider",
+        event="provider.response.empty_content",
+        source="provider",
+        level="WARNING",
+        provider="OPENROUTER",
+        request_id="req_test",
+        finish_reason="stop",
+    )
+
+    rows = _json_log_rows(log_file)
+    assert [row["message"] for row in rows] == ["TRACE provider.response.empty_content"]
+    assert rows[0]["level"] == "WARNING"
+    assert rows[0]["finish_reason"] == "stop"

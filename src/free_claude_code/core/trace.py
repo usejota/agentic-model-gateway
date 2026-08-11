@@ -50,7 +50,17 @@ def sanitize_trace_value(obj: Any) -> Any:
 
 
 def trace_event(*, stage: str, event: str, source: str, **fields: Any) -> None:
-    """Emit one structured DEBUG trace row merged into JSON by the log sink."""
+    """Emit one structured trace row merged into JSON by the log sink.
+
+    Defaults to DEBUG so detailed request traces stay out of production logs.
+    Rare, metadata-only signals (e.g. empty-content completions) may opt into a
+    higher level via ``level="WARNING"`` so they are visible at the default
+    INFO threshold. ``level`` lives in ``fields`` because some callers unpack
+    loosely-typed dicts; it is popped here and never leaks into the payload.
+    """
+    level = fields.pop("level", "DEBUG")
+    if not isinstance(level, str):
+        level = "DEBUG"
     payload = sanitize_trace_value(
         {
             "stage": stage,
@@ -59,7 +69,7 @@ def trace_event(*, stage: str, event: str, source: str, **fields: Any) -> None:
             **fields,
         },
     )
-    logger.bind(trace_payload=payload).debug("TRACE {}", event)
+    logger.bind(trace_payload=payload).log(level, "TRACE {}", event)
 
 
 async def close_stream_input(
