@@ -384,7 +384,8 @@ class _OpenAIChatStreamRunner:
         self._tool_names = OpenAIToolNameCodec.from_request(request)
         self._message_id = f"msg_{uuid.uuid4()}"
         self._tool_calls = OpenAIToolCallAssembler(
-            record_extra_content=provider._record_tool_call_extra_content
+            record_extra_content=provider._record_tool_call_extra_content,
+            tool_schemas=tool_schemas_by_name(request),
         )
 
     async def run(self) -> AsyncIterator[str]:
@@ -780,7 +781,7 @@ class _OpenAIChatStreamRunner:
             for out_event in hold_event(event):
                 yield out_event
 
-        for event in self._tool_calls.flush_task_arg_buffers(ledger):
+        for event in self._tool_calls.flush_tool_arg_buffers(ledger):
             for out_event in hold_event(event):
                 yield out_event
 
@@ -1050,8 +1051,8 @@ class _OpenAIChatStreamRunner:
             block = ledger.tool_block_for_tool_index(tool_index)
             emitted_prefix = block.content if block is not None else ""
             repair_prefix = emitted_prefix
-            if not repair_prefix and state.name == "Task" and state.task_arg_buffer:
-                repair_prefix = state.task_arg_buffer
+            if not repair_prefix and state.arg_buffer:
+                repair_prefix = state.arg_buffer
             if not repair_prefix and tool_index in tool_argument_alias_buffers:
                 repair_prefix = tool_argument_alias_buffers[tool_index]
             if (
