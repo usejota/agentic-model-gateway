@@ -10,9 +10,7 @@ from free_claude_code.core.anthropic import OpenAIToolNameCodec
 from free_claude_code.core.anthropic.models import MessagesRequest
 from free_claude_code.core.anthropic.streaming import (
     AnthropicStreamLedger,
-    ToolSchema,
     parse_complete_tool_input,
-    sanitize_tool_input,
     tool_schemas_by_name,
 )
 
@@ -196,13 +194,9 @@ class OpenAIToolCallAssembler:
     """Assemble OpenAI tool-call deltas into Anthropic SSE tool blocks."""
 
     def __init__(
-        self,
-        *,
-        record_extra_content: RecordToolExtraContent | None = None,
-        tool_schemas: dict[str, ToolSchema] | None = None,
+        self, *, record_extra_content: RecordToolExtraContent | None = None
     ) -> None:
         self._record_extra_content = record_extra_content
-        self._tool_schemas = tool_schemas if tool_schemas is not None else {}
 
     def process_tool_call(
         self,
@@ -297,9 +291,9 @@ class OpenAIToolCallAssembler:
             tool_argument_alias_buffers=tool_argument_alias_buffers,
         )
 
-    def flush_tool_arg_buffers(self, ledger: AnthropicStreamLedger) -> Iterator[str]:
-        """Emit buffered tool args as a single JSON delta each."""
-        for tool_index, out in ledger.blocks.flush_tool_arg_buffers():
+    def flush_task_arg_buffers(self, ledger: AnthropicStreamLedger) -> Iterator[str]:
+        """Emit buffered Task args as a single JSON delta."""
+        for tool_index, out in ledger.blocks.flush_task_arg_buffers():
             yield ledger.emit_tool_delta(tool_index, out)
 
     def flush_tool_name_buffers(
@@ -364,13 +358,10 @@ class OpenAIToolCallAssembler:
         state = ledger.blocks.tool_states.get(tc_index)
         if state is None:
             return
-        if not tool_argument_aliases or state.name not in tool_argument_aliases:
-            parsed = ledger.blocks.buffer_tool_args(tc_index, args)
+        if state.name == "Task":
+            parsed = ledger.blocks.buffer_task_args(tc_index, args)
             if parsed is not None:
-                parsed = sanitize_tool_input(state.name, parsed, self._tool_schemas)
-                yield ledger.emit_tool_delta(
-                    tc_index, json.dumps(parsed, separators=(",", ":"))
-                )
+                yield ledger.emit_tool_delta(tc_index, json.dumps(parsed))
             return
         aliases = (
             tool_argument_aliases.get(state.name, {}) if tool_argument_aliases else {}

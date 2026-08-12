@@ -55,8 +55,8 @@ class ToolBlockState:
     name: str
     extra_content: dict[str, Any] | None = None
     started: bool = False
-    arg_buffer: str = ""
-    args_emitted: bool = False
+    task_arg_buffer: str = ""
+    task_args_emitted: bool = False
     pre_start_args: str = ""
 
 
@@ -127,54 +127,50 @@ class StreamBlockLedger:
         elif not prev.startswith(name):
             state.name = prev + name
 
-    def buffer_tool_args(self, index: int, args: str) -> dict[str, Any] | None:
+    def buffer_task_args(self, index: int, args: str) -> dict[str, Any] | None:
         state = self.tool_states.get(index)
-        if state is None or state.args_emitted:
+        if state is None or state.task_args_emitted:
             return None
 
-        state.arg_buffer += args
+        state.task_arg_buffer += args
         try:
-            args_json = json.loads(state.arg_buffer)
+            args_json = json.loads(state.task_arg_buffer)
         except Exception:
             return None
         if not isinstance(args_json, dict):
             return None
 
-        if state.name == "Task":
-            _normalize_task_run_in_background(args_json)
-        state.args_emitted = True
-        state.arg_buffer = ""
+        _normalize_task_run_in_background(args_json)
+        state.task_args_emitted = True
+        state.task_arg_buffer = ""
         return args_json
 
-    def flush_tool_arg_buffers(self) -> list[tuple[int, str]]:
+    def flush_task_arg_buffers(self) -> list[tuple[int, str]]:
         results: list[tuple[int, str]] = []
         for tool_index, state in list(self.tool_states.items()):
-            if not state.arg_buffer or state.args_emitted:
+            if not state.task_arg_buffer or state.task_args_emitted:
                 continue
 
-            out = state.arg_buffer
+            out = "{}"
             try:
-                args_json = json.loads(state.arg_buffer)
+                args_json = json.loads(state.task_arg_buffer)
                 if isinstance(args_json, dict):
-                    if state.name == "Task":
-                        _normalize_task_run_in_background(args_json)
+                    _normalize_task_run_in_background(args_json)
                     out = json.dumps(args_json)
             except (json.JSONDecodeError, TypeError, ValueError) as exc:
-                if state.name == "Task":
-                    out = "{}"
                 digest = hashlib.sha256(
-                    state.arg_buffer.encode("utf-8", errors="replace")
+                    state.task_arg_buffer.encode("utf-8", errors="replace")
                 ).hexdigest()[:16]
                 logger.warning(
-                    "Tool args invalid JSON (id={} len={} buffer_sha256_prefix={}): {}",
+                    "Task args invalid JSON (id={} len={} buffer_sha256_prefix={}): {}",
                     state.tool_id or "unknown",
-                    len(state.arg_buffer),
+                    len(state.task_arg_buffer),
                     digest,
                     exc,
                 )
 
-            state.args_emitted = True
-            state.arg_buffer = ""
+            state.task_args_emitted = True
+            state.task_arg_buffer = ""
             results.append((tool_index, out))
         return results
 

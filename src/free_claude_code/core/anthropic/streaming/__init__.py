@@ -23,7 +23,6 @@ from .recovery import (
     make_text_recovery_body,
     make_tool_repair_body,
     parse_complete_tool_input,
-    sanitize_tool_input,
     tool_schemas_by_name,
 )
 
@@ -46,6 +45,5 @@ __all__ = [
     "make_tool_repair_body",
     "map_stop_reason",
     "parse_complete_tool_input",
-    "sanitize_tool_input",
     "tool_schemas_by_name",
 ]

@@ -1529,8 +1529,7 @@ class TestStreamingExceptionHandling:
 
         event_text = "".join(events)
         parsed = parse_sse_text(event_text)
-        # Buffered prefix is re-emitted with the repair suffix as one complete JSON.
-        assert '"partial_json": "{\\"message\\":\\"ok\\"}"' in event_text
+        assert '"partial_json": "\\"ok\\"}"' in event_text
         assert any(
             event.event == "message_delta"
             and event.data.get("delta", {}).get("stop_reason") == "tool_use"
@@ -1966,10 +1965,10 @@ class TestProcessToolCall:
         assert len(events) > 0
 
         with caplog.at_level("WARNING"):
-            flushed = list(_make_tool_assembler(provider).flush_tool_arg_buffers(sse))
+            flushed = list(_make_tool_assembler(provider).flush_task_arg_buffers(sse))
         assert len(flushed) > 0
         assert "{}" in "".join(flushed)
-        assert any("Tool args invalid JSON" in r.message for r in caplog.records)
+        assert any("Task args invalid JSON" in r.message for r in caplog.records)
 
     def test_negative_tool_index_fallback(self):
         """tc_index < 0 uses len(tool_indices) as fallback."""
@@ -2125,7 +2124,7 @@ class TestStreamChunkEdgeCases:
 
         events1 = list(_make_tool_assembler(provider).process_tool_call(tc1, sse))
         events2 = list(_make_tool_assembler(provider).process_tool_call(tc2, sse))
-        flushed = list(_make_tool_assembler(provider).flush_tool_arg_buffers(sse))
+        flushed = list(_make_tool_assembler(provider).flush_task_arg_buffers(sse))
 
         event_text = "".join(events1 + events2 + flushed)
         assert "tool_use" in event_text
