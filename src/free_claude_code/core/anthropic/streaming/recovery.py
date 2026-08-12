@@ -55,6 +55,41 @@ def tool_schemas_by_name(request: MessagesRequest) -> dict[str, ToolSchema]:
     return schemas
 
 
+def sanitize_tool_input(
+    tool_name: str, parsed_input: dict[str, Any], schemas: dict[str, ToolSchema]
+) -> dict[str, Any]:
+    """Drop optional keys whose value is recursively empty.
+
+    GPT-family models fill every property in the schema, including ones that
+    must stay absent (e.g. mutually exclusive union branches described only in
+    prose) with empty junk: ``""``, ``{}``, ``[]``, or nested combinations.
+    The JSON schema alone cannot flag these, but the client's own validators
+    reject the call. An absent optional key carries the same meaning as an
+    empty one, so dropping is safe; required keys are never touched.
+    """
+    tool_schema = schemas.get(tool_name)
+    if tool_schema is None:
+        return parsed_input
+    required = set(tool_schema.input_schema.get("required") or [])
+    return {
+        key: value
+        for key, value in parsed_input.items()
+        if key in required or not _is_empty_value(value)
+    }
+
+
+def _is_empty_value(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return value == ""
+    if isinstance(value, dict):
+        return all(_is_empty_value(item) for item in value.values())
+    if isinstance(value, list | tuple):
+        return all(_is_empty_value(item) for item in value)
+    return False
+
+
 def validate_tool_input(
     tool_name: str, parsed_input: dict[str, Any], schemas: dict[str, ToolSchema]
 ) -> bool:
