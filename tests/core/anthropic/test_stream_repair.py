@@ -50,6 +50,14 @@ def test_tool_json_repair_requires_append_only_schema_valid_json() -> None:
     )
 
 
+def test_recovery_prompt_disclaims_user_interruption() -> None:
+    body = {"messages": [{"role": "user", "content": "hello"}]}
+    recovery = make_response_recovery_body(body, "partial")
+    prompt = recovery["messages"][-1]["content"]
+    assert "did NOT interrupt" in prompt
+    assert "automatic transport retry" in prompt
+
+
 def test_recovery_bodies_do_not_own_transport_flags() -> None:
     body = {
         "messages": [{"role": "user", "content": "hello"}],
