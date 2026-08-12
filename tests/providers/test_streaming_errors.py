@@ -1312,6 +1312,79 @@ class TestStreamingExceptionHandling:
         assert mock_collect.await_args.kwargs["include_reasoning"] is True
 
     @pytest.mark.asyncio
+    async def test_recovery_with_tools_keeps_tool_contract(self):
+        """Midstream recovery of a tool-capable request must not strip tools.
+
+        Stripping them forces the continuation to close with text like
+        "running now:" instead of the tool call the model planned.
+        """
+        runner = _make_stream_runner(
+            _make_provider(), request=_make_request(), request_id="req_recovery"
+        )
+        ledger = AnthropicStreamLedger("msg_recovery", "model")
+        list(ledger.ensure_text_block())
+        ledger.emit_text_delta("running the query now:")
+
+        tools = [{"type": "function", "function": {"name": "Read"}}]
+        with patch.object(
+            runner,
+            "_collect_recovery_output",
+            new_callable=AsyncMock,
+            return_value=_recovery_output(text="running the query now: done"),
+        ) as mock_collect:
+            retry_session = runner._provider._admission.new_retry_session()
+            events = await runner._recovery_events(
+                body={
+                    "messages": [{"role": "user", "content": "hello"}],
+                    "tools": tools,
+                    "tool_choice": "auto",
+                },
+                ledger=ledger,
+                error=TimeoutError("cutoff"),
+                tool_argument_alias_buffers={},
+                output_reasoning=False,
+                retry_session=retry_session,
+            )
+
+        assert events is not None
+        assert mock_collect.await_args is not None
+        recovery_body = mock_collect.await_args.args[0]
+        assert recovery_body["tools"] == tools
+        assert recovery_body["tool_choice"] == "auto"
+
+    @pytest.mark.asyncio
+    async def test_recovery_without_tools_stays_text_only(self):
+        """Requests with no tool contract keep the text-only continuation."""
+        runner = _make_stream_runner(
+            _make_provider(), request=_make_request(), request_id="req_recovery"
+        )
+        ledger = AnthropicStreamLedger("msg_recovery", "model")
+        list(ledger.ensure_text_block())
+        ledger.emit_text_delta("partial")
+
+        with patch.object(
+            runner,
+            "_collect_recovery_output",
+            new_callable=AsyncMock,
+            return_value=_recovery_output(text="partial done"),
+        ) as mock_collect:
+            retry_session = runner._provider._admission.new_retry_session()
+            events = await runner._recovery_events(
+                body={"messages": [{"role": "user", "content": "hello"}]},
+                ledger=ledger,
+                error=TimeoutError("cutoff"),
+                tool_argument_alias_buffers={},
+                output_reasoning=False,
+                retry_session=retry_session,
+            )
+
+        assert events is not None
+        assert mock_collect.await_args is not None
+        recovery_body = mock_collect.await_args.args[0]
+        assert "tools" not in recovery_body
+        assert "tool_choice" not in recovery_body
+
+    @pytest.mark.asyncio
     async def test_recovery_recovering_only_thinking_keeps_a_visible_block(self):
         """Recovery that salvages only thinking must still close with visible text.
 

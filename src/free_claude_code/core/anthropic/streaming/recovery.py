@@ -11,8 +11,10 @@ from loguru import logger
 from ..models import MessagesRequest
 
 _RECOVERY_USER_PREFIX = (
-    "The previous provider stream was interrupted. Continue the assistant response "
-    "exactly where it stopped. Do not repeat text already written."
+    "[automatic transport retry] The previous response was cut off by an upstream "
+    "provider failure. The user did NOT interrupt and has NOT sent a new message. "
+    "Continue the assistant response exactly where it stopped. Do not repeat text "
+    "already written."
 )
 _RECOVERY_THINKING_PREFIX = (
     "The assistant had already emitted this hidden thinking before the interruption:\n"

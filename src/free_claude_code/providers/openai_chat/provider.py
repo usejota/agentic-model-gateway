@@ -974,7 +974,10 @@ class _OpenAIChatStreamRunner:
         if not partial_text and not partial_thinking:
             return None
 
-        if isinstance(error, RetryableToolProtocolError):
+        if body.get("tools") or isinstance(error, RetryableToolProtocolError):
+            # A tool-capable request must keep its tool contract through the
+            # continuation: stripping tools forces the model to close the turn
+            # with text like "running now:" instead of the tool call it planned.
             recovery_body = make_response_recovery_body(
                 body,
                 partial_text,
