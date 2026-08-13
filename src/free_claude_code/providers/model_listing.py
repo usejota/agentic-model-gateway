@@ -7,6 +7,8 @@ from free_claude_code.application.model_metadata import (
     ProviderModelInfo as _ProviderModelInfo,
 )
 
+_BATCH_SUFFIX = ":batch"
+
 
 class ModelListResponseError(ValueError):
     """A provider model-list response cannot be parsed safely."""
@@ -54,6 +56,11 @@ def extract_tool_capable_model_infos(
         model_id = _field(item, "id")
         if not isinstance(model_id, str) or not model_id.strip():
             raise _malformed(provider_name, "expected every data item to include id")
+
+        # Async batch variants (e.g. OpenRouter ``:batch`` ids) cannot serve
+        # interactive chat; hide them from the picker and admin listings.
+        if model_id.endswith(_BATCH_SUFFIX):
+            continue
 
         supported_parameters = _field(item, "supported_parameters")
         if not _is_sequence(supported_parameters):

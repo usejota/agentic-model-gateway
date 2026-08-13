@@ -201,6 +201,31 @@ async def test_openrouter_lists_only_tool_capable_models() -> None:
 
 
 @pytest.mark.asyncio
+async def test_openrouter_excludes_batch_variants() -> None:
+    provider = OpenRouterProvider(
+        ProviderConfig(api_key="open-router-key", base_url=OPENROUTER_DEFAULT_BASE),
+        admission=immediate_admission(),
+    )
+    with patch.object(
+        provider._client.models,
+        "list",
+        new_callable=AsyncMock,
+        return_value=SimpleNamespace(
+            data=[
+                SimpleNamespace(id="tool-model", supported_parameters=["tools"]),
+                SimpleNamespace(
+                    id="tool-model:batch",
+                    supported_parameters=["tools", "reasoning"],
+                ),
+            ]
+        ),
+    ):
+        assert await provider.list_model_infos() == frozenset(
+            {ProviderModelInfo("tool-model", supports_thinking=False)}
+        )
+
+
+@pytest.mark.asyncio
 async def test_openrouter_lists_tool_metadata_with_thinking_support() -> None:
     provider = OpenRouterProvider(
         ProviderConfig(api_key="open-router-key", base_url=OPENROUTER_DEFAULT_BASE),
