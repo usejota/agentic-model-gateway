@@ -204,6 +204,23 @@ class OpenAIToolCallAssembler:
         self._record_extra_content = record_extra_content
         self._tool_schemas = tool_schemas if tool_schemas is not None else {}
 
+    def tool_schemas(self) -> dict[str, ToolSchema]:
+        """Request tool schemas used to sanitize and validate streamed args."""
+        return self._tool_schemas
+
+    def sanitized_tool_json(self, tool_name: str, raw_json: str) -> str:
+        """Drop empty optional keys from a complete tool-input JSON object."""
+        try:
+            parsed = json.loads(raw_json)
+        except json.JSONDecodeError:
+            return raw_json
+        if not isinstance(parsed, dict):
+            return raw_json
+        return json.dumps(
+            sanitize_tool_input(tool_name, parsed, self._tool_schemas),
+            separators=(",", ":"),
+        )
+
     def process_tool_call(
         self,
         tc: dict[str, Any],
@@ -298,8 +315,11 @@ class OpenAIToolCallAssembler:
         )
 
     def flush_tool_arg_buffers(self, ledger: AnthropicStreamLedger) -> Iterator[str]:
-        """Emit buffered tool args as a single JSON delta each."""
+        """Emit buffered tool args as a single sanitized JSON delta each."""
         for tool_index, out in ledger.blocks.flush_tool_arg_buffers():
+            state = ledger.blocks.tool_states.get(tool_index)
+            if state is not None:
+                out = self.sanitized_tool_json(state.name, out)
             yield ledger.emit_tool_delta(tool_index, out)
 
     def flush_tool_name_buffers(
@@ -331,7 +351,7 @@ class OpenAIToolCallAssembler:
         tool_argument_aliases: dict[str, dict[str, str]],
         tool_argument_alias_buffers: dict[int, str],
     ) -> Iterator[str]:
-        """Emit remaining aliased args without losing malformed JSON."""
+        """Emit remaining aliased args; invalid JSON becomes ``{}``."""
         for tool_index, buffered_args in list(tool_argument_alias_buffers.items()):
             if not buffered_args:
                 tool_argument_alias_buffers.pop(tool_index, None)
@@ -343,10 +363,11 @@ class OpenAIToolCallAssembler:
             if not aliases:
                 continue
             restored = self._restore_aliased_tool_arguments(buffered_args, aliases)
-            yield ledger.emit_tool_delta(
-                tool_index,
-                restored if restored is not None else buffered_args,
-            )
+            if restored is None:
+                out = "{}"
+            else:
+                out = self.sanitized_tool_json(state.name, restored)
+            yield ledger.emit_tool_delta(tool_index, out)
             tool_argument_alias_buffers.pop(tool_index, None)
 
     def _emit_tool_arg_delta(
@@ -379,7 +400,9 @@ class OpenAIToolCallAssembler:
             if tool_argument_alias_buffers is None:
                 restored = self._restore_aliased_tool_arguments(args, aliases)
                 if restored is not None:
-                    yield ledger.emit_tool_delta(tc_index, restored)
+                    yield ledger.emit_tool_delta(
+                        tc_index, self.sanitized_tool_json(state.name, restored)
+                    )
                 return
 
             buffered_args = tool_argument_alias_buffers.get(tc_index, "") + args
@@ -388,7 +411,9 @@ class OpenAIToolCallAssembler:
                 tool_argument_alias_buffers[tc_index] = buffered_args
                 return
             tool_argument_alias_buffers.pop(tc_index, None)
-            yield ledger.emit_tool_delta(tc_index, restored)
+            yield ledger.emit_tool_delta(
+                tc_index, self.sanitized_tool_json(state.name, restored)
+            )
             return
         yield ledger.emit_tool_delta(tc_index, args)
 

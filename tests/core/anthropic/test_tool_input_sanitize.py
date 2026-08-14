@@ -173,3 +173,86 @@ def test_assembler_sanitizes_args_split_across_deltas() -> None:
     text = "".join(events)
     assert '"pages"' not in text
     assert '\\"file_path\\":\\"/etc/hosts\\"' in text
+
+
+def test_flush_sanitizes_complete_json_left_in_buffer() -> None:
+    ledger = AnthropicStreamLedger("msg_t", "m")
+    assembler = OpenAIToolCallAssembler(tool_schemas=_schemas())
+    list(
+        assembler.process_tool_call(
+            {"index": 0, "id": "call_1", "function": {"name": "Read", "arguments": ""}},
+            ledger,
+        )
+    )
+    ledger.blocks.tool_states[0].arg_buffer = json.dumps(
+        {"file_path": "/etc/hosts", "pages": ""}
+    )
+    text = "".join(assembler.flush_tool_arg_buffers(ledger))
+    assert '"pages"' not in text
+    assert '\\"file_path\\":\\"/etc/hosts\\"' in text
+
+
+def test_flush_invalid_json_emits_empty_object_for_non_task() -> None:
+    ledger = AnthropicStreamLedger("msg_t", "m")
+    assembler = OpenAIToolCallAssembler(tool_schemas=_schemas())
+    list(
+        assembler.process_tool_call(
+            {
+                "index": 0,
+                "id": "call_1",
+                "function": {"name": "Read", "arguments": '{"file_path":'},
+            },
+            ledger,
+        )
+    )
+    text = "".join(assembler.flush_tool_arg_buffers(ledger))
+    assert "{}" in text
+    assert "file_path" not in text
+
+
+def test_alias_restore_sanitizes_empty_optional() -> None:
+    ledger = AnthropicStreamLedger("msg_t", "m")
+    assembler = OpenAIToolCallAssembler(tool_schemas=_schemas())
+    events = list(
+        assembler.process_tool_call(
+            {
+                "index": 0,
+                "id": "call_1",
+                "function": {
+                    "name": "Read",
+                    "arguments": json.dumps(
+                        {"file_path": "/etc/hosts", "_fcc_pages": ""}
+                    ),
+                },
+            },
+            ledger,
+            tool_argument_aliases={"Read": {"_fcc_pages": "pages"}},
+            tool_argument_alias_buffers={},
+        )
+    )
+    text = "".join(events)
+    assert '"pages"' not in text
+    assert "fcc_pages" not in text
+    assert '\\"file_path\\":\\"/etc/hosts\\"' in text
+
+
+def test_alias_flush_invalid_json_emits_empty_object() -> None:
+    ledger = AnthropicStreamLedger("msg_t", "m")
+    assembler = OpenAIToolCallAssembler(tool_schemas=_schemas())
+    list(
+        assembler.process_tool_call(
+            {"index": 0, "id": "call_1", "function": {"name": "Read", "arguments": ""}},
+            ledger,
+            tool_argument_aliases={"Read": {"_fcc_pages": "pages"}},
+            tool_argument_alias_buffers={},
+        )
+    )
+    text = "".join(
+        assembler.flush_tool_argument_alias_buffers(
+            ledger,
+            {"Read": {"_fcc_pages": "pages"}},
+            {0: '{"file_path":'},
+        )
+    )
+    assert "{}" in text
+    assert "file_path" not in text
