@@ -1045,7 +1045,7 @@ class _OpenAIChatStreamRunner:
         tool_argument_alias_buffers: dict[int, str],
         retry_session: ProviderRetrySession,
     ) -> list[str] | None:
-        schemas = tool_schemas_by_name(self._request)
+        schemas = self._tool_calls.tool_schemas()
         events: list[str] = []
         for tool_index, state in started_tool_states(ledger):
             block = ledger.tool_block_for_tool_index(tool_index)
@@ -1055,12 +1055,19 @@ class _OpenAIChatStreamRunner:
                 repair_prefix = state.arg_buffer
             if not repair_prefix and tool_index in tool_argument_alias_buffers:
                 repair_prefix = tool_argument_alias_buffers[tool_index]
-            if (
-                parse_complete_tool_input(repair_prefix, state.name, schemas)
-                is not None
-            ):
+            parsed_prefix = parse_complete_tool_input(
+                repair_prefix, state.name, schemas
+            )
+            if parsed_prefix is not None:
                 if not emitted_prefix and repair_prefix:
-                    events.append(ledger.emit_tool_delta(tool_index, repair_prefix))
+                    events.append(
+                        ledger.emit_tool_delta(
+                            tool_index,
+                            self._tool_calls.sanitized_tool_json(
+                                state.name, repair_prefix
+                            ),
+                        )
+                    )
                 continue
 
             schema = schemas.get(state.name)
@@ -1098,9 +1105,12 @@ class _OpenAIChatStreamRunner:
                     break
             if accepted_suffix is None:
                 return None
-            to_emit = (
-                accepted_suffix if emitted_prefix else repair_prefix + accepted_suffix
-            )
+            if emitted_prefix:
+                to_emit = accepted_suffix
+            else:
+                to_emit = self._tool_calls.sanitized_tool_json(
+                    state.name, repair_prefix + accepted_suffix
+                )
             if to_emit:
                 events.append(ledger.emit_tool_delta(tool_index, to_emit))
         if not all_emitted_tools_complete(ledger, self._request):

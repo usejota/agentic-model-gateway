@@ -1539,6 +1539,61 @@ class TestStreamingExceptionHandling:
         assert not any(event.event == "error" for event in parsed)
 
     @pytest.mark.asyncio
+    async def test_tool_repair_sanitizes_empty_optional_in_completed_json(self):
+        """Repair of a truncated optional must not emit the empty key to the client."""
+        provider = _make_provider()
+        request = _make_request(
+            tools=[
+                {
+                    "name": "Read",
+                    "description": "Read a file",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "file_path": {"type": "string"},
+                            "pages": {"type": "string"},
+                        },
+                        "required": ["file_path"],
+                        "additionalProperties": False,
+                    },
+                }
+            ]
+        )
+        tool_chunk = _make_tool_calls_chunk(
+            name="Read",
+            arguments='{"file_path": "/etc/hosts", "pages": "',
+            tool_id="call_read_repair",
+        )
+        stream_mock = AsyncStreamMock([tool_chunk])
+
+        with (
+            patch.object(
+                provider._client.chat.completions,
+                "create",
+                new_callable=AsyncMock,
+                return_value=stream_mock,
+            ),
+            patch.object(
+                _OpenAIChatStreamRunner,
+                "_collect_recovery_output",
+                new_callable=AsyncMock,
+                return_value=_recovery_output(text='"}'),
+            ),
+        ):
+            events = await _collect_stream(provider, request)
+
+        event_text = "".join(events)
+        assert "pages" not in event_text
+        assert '\\"file_path\\":\\"/etc/hosts\\"' in event_text
+        parsed = parse_sse_text(event_text)
+        assert any(
+            event.event == "message_delta"
+            and event.data.get("delta", {}).get("stop_reason") == "tool_use"
+            for event in parsed
+        )
+        assert not any(event.event == "error" for event in parsed)
+
+    @pytest.mark.asyncio
     async def test_stream_rate_limit_uses_the_execution_retry_session(self):
         """A create-time 429 consumes one attempt before a successful retry."""
         provider = _make_provider()

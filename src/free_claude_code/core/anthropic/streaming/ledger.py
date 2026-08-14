@@ -158,10 +158,9 @@ class StreamBlockLedger:
                 if isinstance(args_json, dict):
                     if state.name == "Task":
                         _normalize_task_run_in_background(args_json)
-                    out = json.dumps(args_json)
+                    out = json.dumps(args_json, separators=(",", ":"))
             except (json.JSONDecodeError, TypeError, ValueError) as exc:
-                if state.name == "Task":
-                    out = "{}"
+                out = "{}"
                 digest = hashlib.sha256(
                     state.arg_buffer.encode("utf-8", errors="replace")
                 ).hexdigest()[:16]
