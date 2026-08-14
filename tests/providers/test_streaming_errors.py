@@ -15,7 +15,6 @@ from free_claude_code.core.anthropic.stream_contracts import (
     parse_sse_text,
 )
 from free_claude_code.core.anthropic.streaming import (
-    EMPTY_TURN_FILLER,
     AnthropicStreamLedger,
     make_response_recovery_body,
     make_text_recovery_body,
@@ -1385,11 +1384,12 @@ class TestStreamingExceptionHandling:
         assert "tool_choice" not in recovery_body
 
     @pytest.mark.asyncio
-    async def test_recovery_recovering_only_thinking_keeps_a_visible_block(self):
-        """Recovery that salvages only thinking must still close with visible text.
+    async def test_recovery_recovering_only_thinking_fails_instead_of_filler(self):
+        """Recovery that salvages only thinking must NOT close a filler turn.
 
-        Without this the turn reaches Claude Code carrying nothing renderable and
-        no tool to run, and the client replaces it with "[Tool use interrupted]".
+        Padding the turn with filler tells the client it succeeded, which traps
+        Claude Code in a "[Your previous response had no visible output]" retry
+        loop. The recovery must fail so the client sees the stream error.
         """
         runner = _make_stream_runner(
             _make_provider(), request=_make_request(), request_id="req_recovery"
@@ -1403,7 +1403,7 @@ class TestStreamingExceptionHandling:
             "_collect_recovery_output",
             new_callable=AsyncMock,
             return_value=_recovery_output(text="", thinking="hidden reasoning more"),
-        ):
+        ) as mock_collect:
             retry_session = runner._provider._admission.new_retry_session()
             events = await runner._recovery_events(
                 body={"messages": [{"role": "user", "content": "hello"}]},
@@ -1414,6 +1414,41 @@ class TestStreamingExceptionHandling:
                 retry_session=retry_session,
             )
 
+        assert events is None
+        # One retry with the accumulated thinking before giving up (the second
+        # continuation returns no new thinking, so the loop stops).
+        assert mock_collect.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_recovery_thinking_only_retry_recovers_visible_text(self):
+        """A thinking-only continuation retries and keeps a later text answer."""
+        runner = _make_stream_runner(
+            _make_provider(), request=_make_request(), request_id="req_recovery"
+        )
+        ledger = AnthropicStreamLedger("msg_recovery", "model")
+        ledger.start_thinking_block()
+        ledger.emit_thinking_delta("hidden reasoning")
+
+        with patch.object(
+            runner,
+            "_collect_recovery_output",
+            new_callable=AsyncMock,
+            side_effect=[
+                _recovery_output(text="", thinking="hidden reasoning more"),
+                _recovery_output(text="final answer", thinking=""),
+            ],
+        ) as mock_collect:
+            retry_session = runner._provider._admission.new_retry_session()
+            events = await runner._recovery_events(
+                body={"messages": [{"role": "user", "content": "hello"}]},
+                ledger=ledger,
+                error=TimeoutError("cutoff"),
+                tool_argument_alias_buffers={},
+                output_reasoning=True,
+                retry_session=retry_session,
+            )
+
+        assert mock_collect.await_count == 2
         assert events is not None
         parsed = parse_sse_text("".join(events))
         text_deltas = [
@@ -1421,8 +1456,11 @@ class TestStreamingExceptionHandling:
             for event in parsed
             if event.data.get("delta", {}).get("type") == "text_delta"
         ]
-        assert text_deltas == [EMPTY_TURN_FILLER]
-        assert text_deltas[0].strip(), "filler must not be whitespace-only"
+        assert text_deltas == ["final answer"]
+        # The retry continuation must carry the accumulated thinking forward.
+        retry_body = mock_collect.await_args_list[1].args[0]
+        retry_prompt = retry_body["messages"][-1]["content"]
+        assert "hidden reasoning more" in retry_prompt
 
     @pytest.mark.asyncio
     async def test_primary_stream_closes_when_iteration_fails(self):

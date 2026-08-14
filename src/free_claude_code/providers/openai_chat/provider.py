@@ -975,28 +975,71 @@ class _OpenAIChatStreamRunner:
         if not partial_text and not partial_thinking:
             return None
 
-        if body.get("tools") or isinstance(error, RetryableToolProtocolError):
-            # A tool-capable request must keep its tool contract through the
-            # continuation: stripping tools forces the model to close the turn
-            # with text like "running now:" instead of the tool call it planned.
-            recovery_body = make_response_recovery_body(
-                body,
-                partial_text,
-                partial_thinking,
-            )
-        else:
-            recovery_body = make_text_recovery_body(
-                body,
-                partial_text,
-                partial_thinking,
-            )
+        # A tool-capable request must keep its tool contract through the
+        # continuation: stripping tools forces the model to close the turn
+        # with text like "running now:" instead of the tool call it planned.
+        keep_tools = bool(body.get("tools")) or isinstance(
+            error, RetryableToolProtocolError
+        )
+
+        def build_recovery_body() -> dict[str, Any]:
+            if keep_tools:
+                return make_response_recovery_body(body, partial_text, partial_thinking)
+            return make_text_recovery_body(body, partial_text, partial_thinking)
+
         recovered = await self._collect_recovery_output(
-            recovery_body,
+            build_recovery_body(),
             include_reasoning=output_reasoning,
             retry_session=retry_session,
         )
         text_suffix = continuation_suffix(partial_text, recovered.text)
         thinking_suffix = continuation_suffix(partial_thinking, recovered.thinking)
+        while (
+            ledger.needs_visible_content()
+            and not (text_suffix or "").strip()
+            and not recovered.tool_calls
+            and thinking_suffix
+            and retry_session.can_attempt
+        ):
+            # A reasoning-only continuation leaves the turn invisible to the
+            # client; keep continuing with the accumulated thinking until the
+            # model commits text or a tool call, or the budget runs out.
+            partial_thinking = f"{partial_thinking}{thinking_suffix}"
+            trace_event(
+                stage="provider",
+                event="provider.recovery.thinking_only_continue",
+                source="provider",
+                provider=self._provider._provider_name,
+                request_id=self._request_id,
+                attempts_started=retry_session.attempts_started,
+                max_attempts=retry_session.max_attempts,
+            )
+            recovered = await self._collect_recovery_output(
+                build_recovery_body(),
+                include_reasoning=output_reasoning,
+                retry_session=retry_session,
+            )
+            text_suffix = continuation_suffix(partial_text, recovered.text)
+            thinking_suffix = continuation_suffix(partial_thinking, recovered.thinking)
+        if (
+            ledger.needs_visible_content()
+            and not recovered.tool_calls
+            and not (text_suffix or "").strip()
+        ):
+            # Nothing client-visible was recovered. Closing an end_turn whose
+            # only content is filler tells the client the turn succeeded and
+            # traps it in a "no visible output" retry loop; surface the stream
+            # failure instead.
+            trace_event(
+                stage="provider",
+                event="provider.response.empty_content",
+                source="provider",
+                provider=self._provider._provider_name,
+                request_id=self._request_id,
+                recovery_kind="openai_text",
+                had_reasoning=bool(partial_thinking.strip()),
+            )
+            return None
         events: list[str] = []
         if thinking_suffix:
             events.extend(ledger.ensure_thinking_block())
@@ -1011,6 +1054,9 @@ class _OpenAIChatStreamRunner:
         if not events:
             return None
         if ledger.needs_visible_content():
+            # Closing an end_turn whose only content is filler tells the client
+            # the turn succeeded and traps it in a "no visible output" retry
+            # loop; surface the stream failure instead.
             trace_event(
                 stage="provider",
                 event="provider.response.empty_content",
@@ -1020,7 +1066,7 @@ class _OpenAIChatStreamRunner:
                 recovery_kind="openai_text",
                 had_reasoning=bool(ledger.accumulated_reasoning.strip()),
             )
-            events.extend(ledger.ensure_visible_content())
+            return None
         events.extend(ledger.close_all_blocks())
         events.append(
             ledger.message_delta(
