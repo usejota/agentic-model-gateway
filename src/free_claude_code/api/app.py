@@ -35,6 +35,10 @@ from .routes import router
 from .validation_log import summarize_request_validation_body
 
 
+def _uses_openai_error_payload(path: str) -> bool:
+    return path == "/v1/responses" or path.startswith("/openrouter/api")
+
+
 def create_app(services: ApiServices) -> FastAPI:
     """Create the HTTP adapter around explicitly supplied runtime services."""
     app = FastAPI(title="Claude Code Proxy", version=package_version())
@@ -75,7 +79,9 @@ def create_app(services: ApiServices) -> FastAPI:
         return ordinary_application_error_response(
             exc,
             wire_api=(
-                "responses" if request.url.path == "/v1/responses" else "messages"
+                "responses"
+                if _uses_openai_error_payload(request.url.path)
+                else "messages"
             ),
             request_id=get_request_id(request),
         )
@@ -103,7 +109,7 @@ def create_app(services: ApiServices) -> FastAPI:
                     type(exc).__name__,
                 )
             message = safe_exception_message(exc)
-            if request.url.path == "/v1/responses":
+            if _uses_openai_error_payload(request.url.path):
                 content = openai_error_payload(message=message, error_type="api_error")
             else:
                 content = anthropic_error_payload(
