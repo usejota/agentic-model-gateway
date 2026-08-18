@@ -23,6 +23,7 @@ from free_claude_code.core.version import package_version
 
 from .admin_cache import AdminNoStoreMiddleware, attach_admin_no_store
 from .admin_routes import router as admin_router
+from .passthrough import router as passthrough_router
 from .ports import ApiServices
 from .request_errors import ordinary_application_error_response
 from .request_ids import (
@@ -34,6 +35,10 @@ from .routes import router
 from .validation_log import summarize_request_validation_body
 
 
+def _uses_openai_error_payload(path: str) -> bool:
+    return path == "/v1/responses" or path.startswith("/openrouter/api")
+
+
 def create_app(services: ApiServices) -> FastAPI:
     """Create the HTTP adapter around explicitly supplied runtime services."""
     app = FastAPI(title="Claude Code Proxy", version=package_version())
@@ -43,6 +48,7 @@ def create_app(services: ApiServices) -> FastAPI:
 
     app.include_router(admin_router)
     app.include_router(router)
+    app.include_router(passthrough_router)
 
     @app.exception_handler(RequestValidationError)
     async def validation_error_handler(request: Request, exc: RequestValidationError):
@@ -73,7 +79,9 @@ def create_app(services: ApiServices) -> FastAPI:
         return ordinary_application_error_response(
             exc,
             wire_api=(
-                "responses" if request.url.path == "/v1/responses" else "messages"
+                "responses"
+                if _uses_openai_error_payload(request.url.path)
+                else "messages"
             ),
             request_id=get_request_id(request),
         )
@@ -101,7 +109,7 @@ def create_app(services: ApiServices) -> FastAPI:
                     type(exc).__name__,
                 )
             message = safe_exception_message(exc)
-            if request.url.path == "/v1/responses":
+            if _uses_openai_error_payload(request.url.path):
                 content = openai_error_payload(message=message, error_type="api_error")
             else:
                 content = anthropic_error_payload(
